@@ -1,0 +1,96 @@
+X:1
+T:Glass Staircase
+C:ChatGPT
+M:7/8
+L:1/8
+Q:1/4=112
+K:Em
+"Em9"E2 G B d2 B | "Cmaj7"G2 E G B2 A |
+"D6"F2 A d c2 A | "B7"^D2 F A B3 |
+"Em"E2 G B e2 d | "Gmaj7"B2 d g f2 d |
+"Am9"A2 c e g2 e | "B7"^D2 F A B2 ^D |
+"Cmaj7"E2 G c B2 G | "D/F#"F2 A d e2 c |
+"Em9"B2 G E G2 B | "A7"A2 ^C E G2 E |
+"Cmaj7"G2 E c B2 G | "Bm7"F2 D B A2 F |
+"B7"^D2 F A c2 B | "Em"E3 B2 G2 ||
+"Em"e2 b g e2 d | "Cmaj7"c2 e g b2 g |
+"Am9"a2 e c B2 A | "B7"^D2 F A B3 |
+"Gmaj7"G2 B d g2 f | "D6"F2 A d f2 e |
+"Cmaj7"E2 G c e2 d | "B7"^D2 F A c2 B |
+"Em9"E2 G B d2 e | "Cmaj7"g2 e c B2 G |
+"Am9"A2 c e g2 a | "B7"b2 a f ^d2 B |
+"Cmaj7"c2 B G E2 G | "D"A2 F D F2 A |
+"B7"B2 ^D F A2 ^D | "Em"E7 ||
+P:B
+[M:7/8]
+"Em(add9)"E2 G B ^d2 e | "Cmaj7#11"c2 e ^f B2 G |
+"Fmaj7#11"F2 A B e2 c | "B7b9"B2 ^D F c2 _d |
+"Em9"e2 d B G2 ^F | "Bbmaj7"A2 _B d f2 e |
+"Dm9"d2 f a c'2 a | "B7alt"^d2 f a _b2 ^d |
+"Em"E2 G B e2 ^f | "Fmaj7"F2 A c e2 g |
+"Abmaj7"_A2 c e _a2 g | "B7"^D2 F A c2 B |
+"Cmaj7#11"c2 e ^f g2 e | "Ebmaj7"_e2 g _b d'2 _b |
+"F#dim7"^F2 A c _e2 c | "B7b9"B2 ^D F _A2 B |
+P:C
+[M:5/8]
+"Em"E G B e d | "Fmaj7"F A c e c |
+"Ab"_A c e _a e | "B7"B ^D F A ^D |
+"Em"e d B ^F G | "C#m7b5"^C E G B G |
+"F7"F A c _e c | "Bb7"_B D F _A F |
+[M:9/8]
+"Em(add9)"E2 G B e2 d B ^F |
+"Cmaj7#11"C2 E G B2 ^F G E |
+"Abmaj7"_A2 c e _a2 g e c |
+"B7b9"B2 ^D F A2 c _d B |
+"Em9"e2 g b e'2 d' b ^f |
+"GmMaj7"g2 _b d' ^f'2 e' d' _b |
+"Cm9"c2 _e g d'2 c' g _e |
+"F#7alt"^F2 ^A ^C E2 G _A ^F |
+P:D
+[M:4/4]
+"Bm(add11)"B2 ^C D F ^F2 A2 |
+"Gmaj7#11"G2 B ^C d ^f2 e2 |
+"Ebmaj7"_E2 G _B d g2 f2 |
+"A7sus4"A2 D E G A2 ^C2 |
+"Em9"E2 G B ^F G2 B2 |
+"Cmaj9"C2 E G B d2 e2 |
+"Fmaj7#11"F2 A B e a2 g2 |
+"B7b9"B2 ^D F A c2 _d2 |
+[M:7/8]
+"Em"E G B e g2 ^f | "EmMaj7"E ^D G B e2 g |
+"Em7"E D G B d2 g | "C#dim7"^C E G _B ^c2 e |
+"Fmaj7"F A c e a2 g | "Abmaj7"_A c e _a c'2 _b |
+"B7alt"B ^D F A _d2 c | "B7alt"B ^D F _A c2 ^d |
+[M:9/8]
+"Em(add9)"E B e g b e'2 d' b |
+"Fmaj7#11"F c e a b e'2 c' a |
+"Abmaj7"_A e _a c' e' _a'2 g' e' |
+"B7b9"B ^F A c ^d f a2 _b |
+"EmMaj9"E G B ^D ^F B e2 ^d |
+"Cmaj7#11"C G B e ^f b e'2 d' |
+"Ebmaj7#5"_E G B d g b d'2 b |
+"F#7b9"^F ^A ^C E G _A c2 ^C |
+[M:4/4]
+"Em(add9)"e2 g b e' b2 g2 |
+"Fmaj7#11"f2 a c' e' b2 a2 |
+"Abmaj9"_a2 c' e' _a' g'2 e'2 |
+"B7alt"b2 a f ^d c2 _d2 |
+"EmMaj7"e2 g b ^d' e'2 b2 |
+"Cmaj7#11"c'2 b g ^f e2 c2 |
+"Am(add9)"a2 e c B A2 E2 |
+"B7b9"B2 ^D F _A c2 _d2 |
+[M:7/8]
+"Em"E2 B G ^F2 E | "Cmaj7"C2 G E B,2 C |
+"Am9"A,2 E C B,2 A, | "B7"B,2 ^D F A2 B |
+"Em"E2 G B d2 e | "Ebmaj7"_E2 G _B d2 f |
+"Cmaj7"C2 E G B2 ^F | "B7b9"B,2 ^D F _A2 B, |
+[M:5/8]
+"Em"E G B ^D e |
+"Fmaj7"F A c e a |
+"Abmaj7"_A c e _a c' |
+"B7b9"B ^D F _A _d |
+[M:7/8]
+"Em(add9)"E2 G B e2 d |
+"Cmaj7"G2 E G B2 ^F |
+"B7sus4"F2 A B e2 ^D |
+"EmMaj9"E7 ||
