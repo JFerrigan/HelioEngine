@@ -4,11 +4,12 @@ use std::time::Instant;
 
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 use heliobound_core::{
-    Camera, CityConfig, CityGenerator, PlanetConfig, ProceduralPlanet, Vec3, VoxelCoord, VoxelWorld,
+    Camera, CityConfig, CityGenerator, PlanetConfig, ProceduralPlanet, Ray, Vec3, VoxelCoord,
+    VoxelWorld,
 };
 use heliobound_gfx::{
-    GraphicsConfig, Layer, MaterialGlyphMap, Overlay, Scene, SceneBuilder, SceneCell, TextStyle,
-    Viewport,
+    raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay, Scene, SceneBuilder, SceneCell,
+    TextStyle, Viewport,
 };
 use pixels::{PixelsBuilder, SurfaceTexture};
 use winit::{
@@ -35,6 +36,13 @@ const WALK_SPEED: f32 = 15.0;
 const BOOST_MULTIPLIER: f32 = 8.0;
 const WALK_BOOST_MULTIPLIER: f32 = 2.25;
 const WALK_EYE_HEIGHT: f32 = 3.2;
+const ENEMY_EYE_HEIGHT: f32 = 2.1;
+const ENEMY_SPEED: f32 = 5.5;
+const ENEMY_ATTACK_RANGE: f32 = 2.4;
+const ENEMY_ATTACK_DAMAGE: i32 = 8;
+const WEAPON_RANGE: f32 = 95.0;
+const WEAPON_DAMAGE: i32 = 55;
+const SHOT_FLASH_TIME: f32 = 0.12;
 const MOUSE_SENSITIVITY: f32 = 0.0025;
 const PITCH_LIMIT: f32 = 1.52;
 const ROLL_SPEED: f32 = 1.8;
@@ -84,7 +92,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     button: MouseButton::Left,
                     ..
                 } => {
-                    if app.mode != AppMode::Menu {
+                    if app.mode == AppMode::CityShooter && mouse_captured {
+                        app.fire_weapon();
+                    } else if app.mode != AppMode::Menu {
                         mouse_captured = set_mouse_captured(&window, true);
                     }
                 }
@@ -106,6 +116,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                         KeyboardAction::StartScene => {
                             mouse_captured = set_mouse_captured(&window, false);
+                        }
+                        KeyboardAction::Fire => {
+                            app.fire_weapon();
                         }
                     }
                 }
@@ -153,6 +166,7 @@ enum AppMode {
     Menu,
     PlanetFlight,
     CityWalk,
+    CityShooter,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,6 +176,7 @@ enum KeyboardAction {
     ReleaseMouse,
     EnterMenu,
     StartScene,
+    Fire,
 }
 
 struct AppState {
@@ -172,6 +187,7 @@ struct AppState {
     city_builder: SceneBuilder,
     camera: Camera,
     input: PlayerInput,
+    shooter: ShooterState,
     tick: u64,
 }
 
@@ -197,6 +213,7 @@ impl AppState {
             ),
             camera: planet_start_camera(),
             input: PlayerInput::default(),
+            shooter: ShooterState::new(),
             tick: 0,
         }
     }
@@ -214,8 +231,15 @@ impl AppState {
                     self.start_city();
                     return KeyboardAction::StartScene;
                 }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit3)) => {
+                    self.start_shooter();
+                    return KeyboardAction::StartScene;
+                }
                 (AppMode::Menu, PhysicalKey::Code(KeyCode::Escape)) => {
                     return KeyboardAction::Exit;
+                }
+                (AppMode::CityShooter, PhysicalKey::Code(KeyCode::Space)) => {
+                    return KeyboardAction::Fire;
                 }
                 (_, PhysicalKey::Code(KeyCode::Escape)) => {
                     return KeyboardAction::ReleaseMouse;
@@ -251,6 +275,13 @@ impl AppState {
         self.input = PlayerInput::default();
     }
 
+    fn start_shooter(&mut self) {
+        self.mode = AppMode::CityShooter;
+        self.camera = city_start_camera();
+        self.input = PlayerInput::default();
+        self.shooter = ShooterState::new();
+    }
+
     fn frame(&mut self, dt: f32, mouse_captured: bool) -> Scene {
         self.tick = self.tick.wrapping_add(1);
 
@@ -279,6 +310,19 @@ impl AppState {
                 });
                 scene
             }
+            AppMode::CityShooter => {
+                update_walking_camera(&mut self.camera, &self.input, &self.city, dt);
+                self.shooter.update(&self.city, self.camera.position, dt);
+                let mut scene = self.city_builder.build(&self.city, &self.camera, self.tick);
+                render_shooter_scene(
+                    &mut scene,
+                    &self.city,
+                    &self.camera,
+                    &self.shooter,
+                    mouse_captured,
+                );
+                scene
+            }
         }
     }
 
@@ -288,9 +332,15 @@ impl AppState {
             AppMode::PlanetFlight => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Unrestricted)
             }
-            AppMode::CityWalk => {
+            AppMode::CityWalk | AppMode::CityShooter => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped)
             }
+        }
+    }
+
+    fn fire_weapon(&mut self) {
+        if self.mode == AppMode::CityShooter {
+            self.shooter.fire(&self.city, &self.camera);
         }
     }
 }
@@ -326,6 +376,139 @@ struct PlayerInput {
     roll_left: bool,
     roll_right: bool,
     boost: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ShooterState {
+    enemies: Vec<Enemy>,
+    health: i32,
+    kills: u32,
+    shots_fired: u32,
+    shot_flash_timer: f32,
+}
+
+impl ShooterState {
+    fn new() -> Self {
+        Self {
+            enemies: spawn_enemies(),
+            health: 100,
+            kills: 0,
+            shots_fired: 0,
+            shot_flash_timer: 0.0,
+        }
+    }
+
+    fn update(&mut self, city: &VoxelWorld, player_position: Vec3, dt: f32) {
+        self.shot_flash_timer = (self.shot_flash_timer - dt).max(0.0);
+
+        for enemy in &mut self.enemies {
+            if !enemy.is_alive() {
+                continue;
+            }
+
+            enemy.attack_cooldown = (enemy.attack_cooldown - dt).max(0.0);
+            let to_player = horizontal(player_position - enemy.position);
+            let distance = horizontal_distance(enemy.position, player_position);
+
+            if distance <= ENEMY_ATTACK_RANGE {
+                if enemy.attack_cooldown <= 0.0 {
+                    self.health = (self.health - ENEMY_ATTACK_DAMAGE).max(0);
+                    enemy.attack_cooldown = 1.1;
+                }
+            } else if distance < 80.0 && to_player.length() > f32::EPSILON {
+                let candidate = enemy.position + to_player * ENEMY_SPEED * dt;
+                let candidate = Vec3::new(candidate.x, WALK_EYE_HEIGHT, candidate.z);
+                if can_walk_to(city, candidate) {
+                    enemy.position.x = candidate.x;
+                    enemy.position.z = candidate.z;
+                }
+            }
+        }
+    }
+
+    fn fire(&mut self, city: &VoxelWorld, camera: &Camera) {
+        self.shots_fired += 1;
+        self.shot_flash_timer = SHOT_FLASH_TIME;
+
+        let Some(index) = self
+            .enemies
+            .iter()
+            .enumerate()
+            .filter(|(_, enemy)| enemy.is_alive())
+            .filter_map(|(index, enemy)| {
+                let target = enemy.target_position();
+                let delta = target - camera.position;
+                let distance = delta.length();
+                if distance <= f32::EPSILON || distance > WEAPON_RANGE {
+                    return None;
+                }
+
+                let direction = delta.normalized();
+                let forward = direction.dot(camera.forward());
+                let aim_x = direction.dot(camera.right()).abs();
+                let aim_y = direction.dot(camera.up()).abs();
+
+                if forward < 0.985 || aim_x > 0.08 || aim_y > 0.10 {
+                    return None;
+                }
+                if !has_line_of_sight(city, camera.position, target) {
+                    return None;
+                }
+
+                Some((index, distance))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(index, _)| index)
+        else {
+            return;
+        };
+
+        let enemy = &mut self.enemies[index];
+        enemy.health = (enemy.health - WEAPON_DAMAGE).max(0);
+        if enemy.health == 0 {
+            self.kills += 1;
+        }
+    }
+
+    fn alive_count(&self) -> usize {
+        self.enemies.iter().filter(|enemy| enemy.is_alive()).count()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Enemy {
+    position: Vec3,
+    health: i32,
+    attack_cooldown: f32,
+}
+
+impl Enemy {
+    fn new(x: f32, z: f32) -> Self {
+        Self {
+            position: Vec3::new(x, 0.0, z),
+            health: 100,
+            attack_cooldown: 0.0,
+        }
+    }
+
+    fn is_alive(self) -> bool {
+        self.health > 0
+    }
+
+    fn target_position(self) -> Vec3 {
+        Vec3::new(self.position.x, ENEMY_EYE_HEIGHT, self.position.z)
+    }
+}
+
+fn spawn_enemies() -> Vec<Enemy> {
+    vec![
+        Enemy::new(0.5, -32.5),
+        Enemy::new(-31.5, -16.5),
+        Enemy::new(32.5, -0.5),
+        Enemy::new(-15.5, 31.5),
+        Enemy::new(48.5, 48.5),
+        Enemy::new(-48.5, 48.5),
+    ]
 }
 
 fn handle_movement_input(input: &mut PlayerInput, key: &PhysicalKey, state: ElementState) {
@@ -432,6 +615,20 @@ fn can_walk_to(city: &VoxelWorld, position: Vec3) -> bool {
         }
     }
     true
+}
+
+fn horizontal_distance(a: Vec3, b: Vec3) -> f32 {
+    Vec3::new(a.x - b.x, 0.0, a.z - b.z).length()
+}
+
+fn has_line_of_sight(city: &VoxelWorld, origin: Vec3, target: Vec3) -> bool {
+    let delta = target - origin;
+    let distance = delta.length();
+    if distance <= 0.5 {
+        return true;
+    }
+
+    raycast(city, Ray::new(origin, delta), distance - 0.35).is_none()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -549,12 +746,159 @@ fn build_menu_scene(tick: u64) -> Scene {
     });
     scene.overlays.push(Overlay {
         x: 48,
-        y: 48,
+        y: 45,
         z: 10,
-        text: "WASD MOVE   M MENU   ESC RELEASE/MENU".to_string(),
+        text: "3  CITY SHOOTER".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 48,
+        y: 52,
+        z: 10,
+        text: "WASD MOVE   CLICK/SPACE FIRE   M MENU".to_string(),
         style: TextStyle::default(),
     });
     scene
+}
+
+fn render_shooter_scene(
+    scene: &mut Scene,
+    city: &VoxelWorld,
+    camera: &Camera,
+    shooter: &ShooterState,
+    mouse_captured: bool,
+) {
+    let mut projected: Vec<(f32, SceneCell)> = shooter
+        .enemies
+        .iter()
+        .filter(|enemy| enemy.is_alive())
+        .filter_map(|enemy| {
+            let target = enemy.target_position();
+            if !has_line_of_sight(city, camera.position, target) {
+                return None;
+            }
+
+            project_world_point(camera, target, scene.viewport).map(|projection| {
+                let glyph = enemy_glyph(projection.distance);
+                (
+                    projection.distance,
+                    SceneCell {
+                        x: projection.x,
+                        y: projection.y,
+                        glyph,
+                        style: TextStyle::default(),
+                    },
+                )
+            })
+        })
+        .collect();
+    projected.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+    scene.layers.push(Layer {
+        name: "enemies".to_string(),
+        z: 30,
+        cells: projected.into_iter().map(|(_, cell)| cell).collect(),
+    });
+    scene.layers.push(Layer {
+        name: "weapon".to_string(),
+        z: 40,
+        cells: weapon_cells(scene.viewport, shooter.shot_flash_timer > 0.0),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "CITY SHOOTER  health {}  enemies {}  kills {}  mouse {}",
+            shooter.health,
+            shooter.alive_count(),
+            shooter.kills,
+            if mouse_captured { "locked" } else { "free" }
+        ),
+        style: TextStyle::default(),
+    });
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Projection {
+    x: i32,
+    y: i32,
+    distance: f32,
+}
+
+fn project_world_point(camera: &Camera, point: Vec3, viewport: Viewport) -> Option<Projection> {
+    let delta = point - camera.position;
+    let forward = delta.dot(camera.forward());
+    if forward <= 0.1 {
+        return None;
+    }
+
+    let aspect = viewport.width.max(1) as f32 / viewport.height.max(1) as f32;
+    let tan_half_fov = (camera.fov_y_radians * 0.5).tan();
+    let sensor_x = delta.dot(camera.right()) / forward;
+    let sensor_y = delta.dot(camera.up()) / forward;
+    let normalized_x = sensor_x / (aspect * tan_half_fov);
+    let normalized_y = sensor_y / tan_half_fov;
+
+    if !(-1.1..=1.1).contains(&normalized_x) || !(-1.1..=1.1).contains(&normalized_y) {
+        return None;
+    }
+
+    Some(Projection {
+        x: (((normalized_x + 1.0) * 0.5) * viewport.width as f32).round() as i32,
+        y: (((1.0 - normalized_y) * 0.5) * viewport.height as f32).round() as i32,
+        distance: delta.length(),
+    })
+}
+
+fn enemy_glyph(distance: f32) -> char {
+    if distance < 14.0 {
+        'M'
+    } else if distance < 36.0 {
+        '&'
+    } else {
+        'm'
+    }
+}
+
+fn weapon_cells(viewport: Viewport, flash: bool) -> Vec<SceneCell> {
+    let art = [
+        "      ||      ",
+        "     /##\\     ",
+        " ___/####\\___ ",
+        "|___  ##  ___|",
+        "    |####|    ",
+    ];
+    let start_x = (viewport.width as i32 - art[0].len() as i32) / 2;
+    let start_y = viewport.height as i32 - art.len() as i32 - 2;
+    let mut cells = Vec::new();
+
+    if flash {
+        for (x, y, glyph) in [(0, -3, '*'), (-1, -2, '+'), (1, -2, '+'), (0, -1, '*')] {
+            cells.push(SceneCell {
+                x: start_x + art[0].len() as i32 / 2 + x,
+                y: start_y + y,
+                glyph,
+                style: TextStyle::default(),
+            });
+        }
+    }
+
+    for (row, line) in art.iter().enumerate() {
+        for (col, glyph) in line.chars().enumerate() {
+            if glyph == ' ' {
+                continue;
+            }
+            cells.push(SceneCell {
+                x: start_x + col as i32,
+                y: start_y + row as i32,
+                glyph,
+                style: TextStyle::default(),
+            });
+        }
+    }
+
+    cells
 }
 
 fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
@@ -569,6 +913,8 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
             "menu" => [0x78, 0xc6, 0xa3, 0xff],
             "voxels" => [0xdf, 0xe8, 0xdb, 0xff],
             "planet" => [0xdf, 0xe8, 0xdb, 0xff],
+            "enemies" => [0xff, 0x65, 0x5a, 0xff],
+            "weapon" => [0xf0, 0xc6, 0x5b, 0xff],
             _ => [0xe6, 0xee, 0xf3, 0xff],
         };
 
@@ -719,6 +1065,46 @@ mod tests {
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::CityWalk);
+    }
+
+    #[test]
+    fn menu_can_start_city_shooter_mode() {
+        let mut app = AppState::new();
+
+        let action =
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit3), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::StartScene);
+        assert_eq!(app.mode, AppMode::CityShooter);
+    }
+
+    #[test]
+    fn shooter_fire_damages_centered_enemy() {
+        let mut app = AppState::new();
+        app.start_shooter();
+
+        let health_before = app.shooter.enemies[0].health;
+        app.fire_weapon();
+
+        assert!(app.shooter.enemies[0].health < health_before);
+        assert_eq!(app.shooter.shots_fired, 1);
+    }
+
+    #[test]
+    fn shooter_scene_projects_visible_enemies_and_weapon() {
+        let mut app = AppState::new();
+        app.start_shooter();
+
+        let scene = app.frame(0.0, true);
+
+        assert!(scene
+            .layers
+            .iter()
+            .any(|layer| layer.name == "enemies" && !layer.cells.is_empty()));
+        assert!(scene
+            .layers
+            .iter()
+            .any(|layer| layer.name == "weapon" && !layer.cells.is_empty()));
     }
 
     #[test]
