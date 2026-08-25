@@ -891,13 +891,53 @@ fn update_walking_camera(camera: &mut Camera, input: &PlayerInput, city: &VoxelW
         } else {
             WALK_SPEED
         };
-        let candidate = camera.position + movement.normalized() * speed * dt;
-        let candidate = Vec3::new(candidate.x, WALK_EYE_HEIGHT, candidate.z);
-
-        if can_walk_to(city, candidate) {
-            camera.position = candidate;
-        }
+        let step = movement.normalized() * speed * dt;
+        camera.position = move_walking_with_collision(camera.position, step, city);
     }
+}
+
+fn move_walking_with_collision(position: Vec3, step: Vec3, city: &VoxelWorld) -> Vec3 {
+    let full = Vec3::new(position.x + step.x, WALK_EYE_HEIGHT, position.z + step.z);
+    if can_walk_to(city, full) {
+        return full;
+    }
+
+    let x_then_z = resolve_axis_slide(position, step.x, step.z, true, city);
+    let z_then_x = resolve_axis_slide(position, step.z, step.x, false, city);
+    if horizontal_distance(position, x_then_z) >= horizontal_distance(position, z_then_x) {
+        x_then_z
+    } else {
+        z_then_x
+    }
+}
+
+fn resolve_axis_slide(
+    position: Vec3,
+    primary: f32,
+    secondary: f32,
+    primary_is_x: bool,
+    city: &VoxelWorld,
+) -> Vec3 {
+    let mut resolved = position;
+    let primary_candidate = if primary_is_x {
+        Vec3::new(resolved.x + primary, WALK_EYE_HEIGHT, resolved.z)
+    } else {
+        Vec3::new(resolved.x, WALK_EYE_HEIGHT, resolved.z + primary)
+    };
+    if can_walk_to(city, primary_candidate) {
+        resolved = primary_candidate;
+    }
+
+    let secondary_candidate = if primary_is_x {
+        Vec3::new(resolved.x, WALK_EYE_HEIGHT, resolved.z + secondary)
+    } else {
+        Vec3::new(resolved.x + secondary, WALK_EYE_HEIGHT, resolved.z)
+    };
+    if can_walk_to(city, secondary_candidate) {
+        resolved = secondary_candidate;
+    }
+
+    Vec3::new(resolved.x, WALK_EYE_HEIGHT, resolved.z)
 }
 
 fn horizontal(direction: Vec3) -> Vec3 {
@@ -1649,6 +1689,51 @@ mod tests {
         update_walking_camera(&mut camera, &input, &city, 1.0);
 
         assert_eq!(camera.position.y, WALK_EYE_HEIGHT);
+    }
+
+    #[test]
+    fn walking_collision_slides_along_walls() {
+        let mut world = VoxelWorld::new();
+        for y in 1..=WALK_EYE_HEIGHT.ceil() as i32 {
+            world.set(
+                VoxelCoord::new(1, y, 0),
+                VoxelCell::new(VoxelMaterial::Basalt),
+            );
+            world.set(
+                VoxelCoord::new(1, y, 1),
+                VoxelCell::new(VoxelMaterial::Basalt),
+            );
+        }
+        let start = Vec3::new(0.5, WALK_EYE_HEIGHT, 0.5);
+
+        let moved = move_walking_with_collision(start, Vec3::new(1.0, 0.0, 0.5), &world);
+
+        assert_eq!(moved.x, start.x);
+        assert!(moved.z > start.z);
+    }
+
+    #[test]
+    fn walking_collision_blocks_when_both_slide_axes_are_blocked() {
+        let mut world = VoxelWorld::new();
+        for y in 1..=WALK_EYE_HEIGHT.ceil() as i32 {
+            world.set(
+                VoxelCoord::new(1, y, 0),
+                VoxelCell::new(VoxelMaterial::Basalt),
+            );
+            world.set(
+                VoxelCoord::new(0, y, 1),
+                VoxelCell::new(VoxelMaterial::Basalt),
+            );
+            world.set(
+                VoxelCoord::new(1, y, 1),
+                VoxelCell::new(VoxelMaterial::Basalt),
+            );
+        }
+        let start = Vec3::new(0.5, WALK_EYE_HEIGHT, 0.5);
+
+        let moved = move_walking_with_collision(start, Vec3::new(1.0, 0.0, 1.0), &world);
+
+        assert_eq!(moved, start);
     }
 
     #[test]
