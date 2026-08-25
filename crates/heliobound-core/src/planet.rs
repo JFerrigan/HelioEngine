@@ -25,7 +25,26 @@ pub struct PlanetSurfaceSample {
     pub direction: Vec3,
     pub radius: f32,
     pub elevation: f32,
+    pub sea_level: f32,
+    pub moisture: f32,
+    pub ruggedness: f32,
+    pub detail: f32,
+    pub terrain: PlanetTerrainClass,
     pub material: VoxelMaterial,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PlanetTerrainClass {
+    DeepOcean,
+    ShallowOcean,
+    Coast,
+    Plains,
+    Hills,
+    Mountains,
+    IceCap,
+    CarbonBloom,
+    SiliconField,
+    Crater,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -56,12 +75,17 @@ impl ProceduralPlanet {
 
     pub fn sample_surface(&self, direction: Vec3) -> PlanetSurfaceSample {
         let direction = direction.normalized();
-        let elevation = elevation(self.config, direction);
+        let profile = terrain_profile(self.config, direction);
         PlanetSurfaceSample {
             direction,
-            radius: self.radius() + elevation,
-            elevation,
-            material: material_at(self.config, direction, elevation, 0.0),
+            radius: self.radius() + profile.elevation.max(profile.sea_level),
+            elevation: profile.elevation,
+            sea_level: profile.sea_level,
+            moisture: profile.moisture,
+            ruggedness: profile.ruggedness,
+            detail: profile.detail,
+            terrain: profile.terrain,
+            material: material_at(profile, 0.0),
         }
     }
 
@@ -121,47 +145,155 @@ impl PlanetGenerator {
         }
 
         let direction = pos / distance;
-        let elevation = elevation(self.config, direction);
-        let surface_radius = self.config.radius as f32 + elevation;
+        let profile = terrain_profile(self.config, direction);
+        let surface_radius = self.config.radius as f32 + profile.elevation.max(profile.sea_level);
         let crust_depth = self.config.crust_depth.max(1) as f32;
 
         if distance > surface_radius || distance < surface_radius - crust_depth {
             return None;
         }
 
-        let material = material_at(self.config, direction, elevation, surface_radius - distance);
+        let material = material_at(profile, surface_radius - distance);
         Some(VoxelCell::new(material))
     }
 }
 
-fn elevation(config: PlanetConfig, direction: Vec3) -> f32 {
-    let continental = value_noise(direction, 5.0, config.seed);
-    let ridges = (value_noise(direction, 14.0, config.seed ^ 0x52A3) * 2.0 - 1.0).abs();
-    let crater = crater_depression(direction, config.seed);
-    ((continental - 0.5) * 1.4 + ridges * 0.45 - crater) * config.terrain_amplitude
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TerrainProfile {
+    elevation: f32,
+    sea_level: f32,
+    moisture: f32,
+    ruggedness: f32,
+    detail: f32,
+    terrain: PlanetTerrainClass,
 }
 
-fn material_at(config: PlanetConfig, direction: Vec3, elevation: f32, depth: f32) -> VoxelMaterial {
+fn terrain_profile(config: PlanetConfig, direction: Vec3) -> TerrainProfile {
+    let amplitude = config.terrain_amplitude.max(1.0);
+    let continental = fbm(
+        direction,
+        config.seed,
+        &[(2.5, 0.8), (5.0, 0.45), (11.0, 0.22)],
+    );
+    let hills = fbm(
+        direction,
+        config.seed ^ 0xA71D,
+        &[(18.0, 0.35), (39.0, 0.18)],
+    );
+    let fine = fbm(
+        direction,
+        config.seed ^ 0xFACE,
+        &[(75.0, 0.09), (161.0, 0.045)],
+    );
+    let ridges = ridge_noise(direction, config.seed ^ 0x52A3);
+    let crater = crater_depression(direction, config.seed);
+    let sea_level = -0.18 * amplitude;
+    let elevation =
+        ((continental - 0.5) * 1.35 + (hills - 0.5) * 0.42 + ridges * 0.52 + (fine - 0.5) * 0.18
+            - crater * 0.65)
+            * amplitude;
+    let moisture = fbm(
+        direction,
+        config.seed ^ 0xC11A_7E,
+        &[(7.0, 0.7), (23.0, 0.3)],
+    )
+    .clamp(0.0, 1.0);
+    let ruggedness = (ridges * 0.75 + (hills - 0.5).abs() * 0.45 + crater * 0.55).clamp(0.0, 1.0);
+    let detail = detail_noise(direction, config.seed);
+    let terrain = terrain_class(
+        config, direction, elevation, sea_level, moisture, ruggedness, crater,
+    );
+
+    TerrainProfile {
+        elevation,
+        sea_level,
+        moisture,
+        ruggedness,
+        detail,
+        terrain,
+    }
+}
+
+fn terrain_class(
+    config: PlanetConfig,
+    direction: Vec3,
+    elevation: f32,
+    sea_level: f32,
+    moisture: f32,
+    ruggedness: f32,
+    crater: f32,
+) -> PlanetTerrainClass {
+    let latitude = direction.y.abs();
+    let amplitude = config.terrain_amplitude.max(1.0);
+    let relative_height = (elevation - sea_level) / amplitude;
+    let life_noise = value_noise(direction, 17.0, config.seed ^ 0xB10F);
+
+    if latitude > 0.74 {
+        PlanetTerrainClass::IceCap
+    } else if crater > 0.72 {
+        PlanetTerrainClass::Crater
+    } else if relative_height < -0.18 {
+        PlanetTerrainClass::DeepOcean
+    } else if relative_height < 0.03 {
+        PlanetTerrainClass::ShallowOcean
+    } else if relative_height < 0.09 {
+        PlanetTerrainClass::Coast
+    } else if life_noise > 0.86 && moisture > 0.55 && latitude < 0.62 {
+        PlanetTerrainClass::CarbonBloom
+    } else if life_noise < 0.08 && relative_height > 0.25 {
+        PlanetTerrainClass::SiliconField
+    } else if relative_height > 0.58 || ruggedness > 0.72 {
+        PlanetTerrainClass::Mountains
+    } else if relative_height > 0.22 || ruggedness > 0.38 {
+        PlanetTerrainClass::Hills
+    } else {
+        PlanetTerrainClass::Plains
+    }
+}
+
+fn material_at(profile: TerrainProfile, depth: f32) -> VoxelMaterial {
     if depth > 1.2 {
         return VoxelMaterial::Basalt;
     }
 
-    let latitude = direction.y.abs();
-    let climate_noise = value_noise(direction, 9.0, config.seed ^ 0xC11A_7E);
-    let life_noise = value_noise(direction, 17.0, config.seed ^ 0xB10F);
-    let scaled_elevation = elevation / config.terrain_amplitude.max(1.0);
-
-    if latitude > 0.72 || (scaled_elevation < -0.3 && climate_noise > 0.62) {
-        VoxelMaterial::Ice
-    } else if life_noise > 0.86 && latitude < 0.62 {
-        VoxelMaterial::CarbonLife
-    } else if life_noise < 0.08 && scaled_elevation > 0.2 {
-        VoxelMaterial::SiliconLife
-    } else if scaled_elevation > 0.5 {
-        VoxelMaterial::Basalt
-    } else {
-        VoxelMaterial::Regolith
+    match profile.terrain {
+        PlanetTerrainClass::DeepOcean | PlanetTerrainClass::ShallowOcean => VoxelMaterial::Ocean,
+        PlanetTerrainClass::Coast => VoxelMaterial::Regolith,
+        PlanetTerrainClass::IceCap => VoxelMaterial::Ice,
+        PlanetTerrainClass::CarbonBloom => VoxelMaterial::CarbonLife,
+        PlanetTerrainClass::SiliconField => VoxelMaterial::SiliconLife,
+        PlanetTerrainClass::Mountains | PlanetTerrainClass::Crater => VoxelMaterial::Basalt,
+        PlanetTerrainClass::Hills | PlanetTerrainClass::Plains => VoxelMaterial::Regolith,
     }
+}
+
+fn fbm(direction: Vec3, seed: u64, layers: &[(f32, f32)]) -> f32 {
+    let mut total = 0.0;
+    let mut weight_sum = 0.0;
+    for (scale, weight) in layers {
+        total += (value_noise(direction, *scale, seed ^ scale.to_bits() as u64) - 0.5) * *weight;
+        weight_sum += weight;
+    }
+
+    if weight_sum <= f32::EPSILON {
+        0.5
+    } else {
+        (total / weight_sum + 0.5).clamp(0.0, 1.0)
+    }
+}
+
+fn ridge_noise(direction: Vec3, seed: u64) -> f32 {
+    let primary = (value_noise(direction, 15.0, seed) * 2.0 - 1.0).abs();
+    let secondary = (value_noise(direction, 33.0, seed ^ 0xD4A3) * 2.0 - 1.0).abs();
+    (1.0 - primary.min(secondary)).clamp(0.0, 1.0)
+}
+
+fn detail_noise(direction: Vec3, seed: u64) -> f32 {
+    fbm(
+        direction,
+        seed ^ 0xD37A_11ED,
+        &[(91.0, 0.48), (223.0, 0.31), (487.0, 0.21)],
+    )
 }
 
 fn intersect_sphere(ray: Ray, radius: f32, max_distance: f32) -> Option<f32> {
@@ -232,6 +364,7 @@ fn unit_hash(value: u64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn generated_planet_is_deterministic() {
@@ -297,6 +430,31 @@ mod tests {
     }
 
     #[test]
+    fn procedural_planet_samples_diverse_surface_classes() {
+        let planet = ProceduralPlanet::new(PlanetConfig::default());
+        let samples = globe_samples(&planet);
+        let classes: HashSet<PlanetTerrainClass> =
+            samples.iter().map(|sample| sample.terrain).collect();
+
+        assert!(classes.len() >= 5);
+        assert!(
+            classes.contains(&PlanetTerrainClass::DeepOcean)
+                || classes.contains(&PlanetTerrainClass::ShallowOcean)
+        );
+        assert!(classes.contains(&PlanetTerrainClass::Mountains));
+    }
+
+    #[test]
+    fn procedural_planet_detail_changes_across_nearby_surface_points() {
+        let planet = ProceduralPlanet::new(PlanetConfig::default());
+        let a = planet.sample_surface(Vec3::new(0.120, 0.310, 0.943));
+        let b = planet.sample_surface(Vec3::new(0.124, 0.313, 0.941));
+
+        assert_ne!(a.terrain, PlanetTerrainClass::IceCap);
+        assert!((a.detail - b.detail).abs() > 0.01);
+    }
+
+    #[test]
     fn procedural_planet_raycast_hits_large_body() {
         let planet = ProceduralPlanet::new(PlanetConfig::default());
         let hit = planet
@@ -311,5 +469,22 @@ mod tests {
 
         assert!(hit.distance > 70_000_000.0);
         assert!(hit.distance < 90_000_000.0);
+    }
+
+    fn globe_samples(planet: &ProceduralPlanet) -> Vec<PlanetSurfaceSample> {
+        let mut samples = Vec::new();
+        for lat_step in -8..=8 {
+            let y = lat_step as f32 / 8.0;
+            let radius = (1.0 - y * y).max(0.0).sqrt();
+            for lon_step in 0..32 {
+                let angle = lon_step as f32 / 32.0 * std::f32::consts::TAU;
+                samples.push(planet.sample_surface(Vec3::new(
+                    radius * angle.cos(),
+                    y,
+                    radius * angle.sin(),
+                )));
+            }
+        }
+        samples
     }
 }

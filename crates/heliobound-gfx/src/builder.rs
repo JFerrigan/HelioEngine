@@ -1,7 +1,7 @@
 use crate::scene::{Layer, Overlay, Scene, SceneCell, TextStyle, Viewport};
 use heliobound_core::{
-    Camera, PlanetHit, ProceduralPlanet, Ray, Vec3, VoxelBounds, VoxelCell, VoxelCoord,
-    VoxelMaterial, VoxelWorld,
+    Camera, PlanetHit, PlanetTerrainClass, ProceduralPlanet, Ray, Vec3, VoxelBounds, VoxelCell,
+    VoxelCoord, VoxelMaterial, VoxelWorld,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -39,7 +39,26 @@ impl MaterialGlyphMap {
     }
 
     pub fn glyph_for_planet(&self, hit: PlanetHit) -> char {
-        self.glyph_for_material(hit.sample.material, hit.normal, hit.distance)
+        let lit = hit
+            .normal
+            .dot(Vec3::new(-0.35, 0.75, -0.55).normalized())
+            .max(0.0);
+        let detail = (hit.sample.detail * 0.65 + hit.sample.ruggedness * 0.35).clamp(0.0, 1.0);
+        let distance_fade = (1.0 - (hit.distance / 8_000_000.0)).clamp(0.25, 1.0);
+        let intensity = (lit * 0.45 + detail * 0.35 + distance_fade * 0.2).clamp(0.0, 1.0);
+
+        match hit.sample.terrain {
+            PlanetTerrainClass::DeepOcean => shade(intensity, "~~~=+"),
+            PlanetTerrainClass::ShallowOcean => shade(intensity, "~~-:."),
+            PlanetTerrainClass::Coast => shade(intensity, ".,:;="),
+            PlanetTerrainClass::Plains => shade(intensity, ".,;\"+"),
+            PlanetTerrainClass::Hills => shade(intensity, "nrvx#"),
+            PlanetTerrainClass::Mountains => shade(intensity, "^/A#M"),
+            PlanetTerrainClass::IceCap => shade(intensity, "`'*I#"),
+            PlanetTerrainClass::CarbonBloom => shade(intensity, "vxyY&"),
+            PlanetTerrainClass::SiliconField => shade(intensity, "^*%AX"),
+            PlanetTerrainClass::Crater => shade(intensity, " .oO@"),
+        }
     }
 
     fn glyph_for_material(&self, material: VoxelMaterial, normal: Vec3, distance: f32) -> char {
@@ -52,6 +71,7 @@ impl MaterialGlyphMap {
         match material {
             VoxelMaterial::Regolith => shade(intensity, ".,:;"),
             VoxelMaterial::Basalt => shade(intensity, "-=+#"),
+            VoxelMaterial::Ocean => shade(intensity, "~=-+"),
             VoxelMaterial::Ice => shade(intensity, "`'*I"),
             VoxelMaterial::CarbonLife => shade(intensity, "vxyY"),
             VoxelMaterial::SiliconLife => shade(intensity, "^*%A"),
@@ -525,5 +545,46 @@ mod tests {
             bg_a.cells.iter().map(|cell| cell.glyph).collect::<String>(),
             bg_b.cells.iter().map(|cell| cell.glyph).collect::<String>()
         );
+    }
+
+    #[test]
+    fn planet_glyphs_use_terrain_classes() {
+        let materials = MaterialGlyphMap;
+        let ocean =
+            materials.glyph_for_planet(fake_planet_hit(PlanetTerrainClass::DeepOcean, 0.4, 0.1));
+        let mountain =
+            materials.glyph_for_planet(fake_planet_hit(PlanetTerrainClass::Mountains, 0.4, 0.9));
+
+        assert_ne!(ocean, mountain);
+    }
+
+    #[test]
+    fn planet_glyphs_use_fine_detail_within_same_class() {
+        let materials = MaterialGlyphMap;
+        let low_detail =
+            materials.glyph_for_planet(fake_planet_hit(PlanetTerrainClass::Plains, 0.0, 0.1));
+        let high_detail =
+            materials.glyph_for_planet(fake_planet_hit(PlanetTerrainClass::Plains, 1.0, 0.1));
+
+        assert_ne!(low_detail, high_detail);
+    }
+
+    fn fake_planet_hit(terrain: PlanetTerrainClass, detail: f32, ruggedness: f32) -> PlanetHit {
+        PlanetHit {
+            distance: 100_000.0,
+            position: Vec3::new(0.0, 1.0, 0.0),
+            normal: Vec3::new(0.0, 1.0, 0.0),
+            sample: heliobound_core::PlanetSurfaceSample {
+                direction: Vec3::new(0.0, 1.0, 0.0),
+                radius: 42_000_000.0,
+                elevation: 0.0,
+                sea_level: 0.0,
+                moisture: 0.5,
+                ruggedness,
+                detail,
+                terrain,
+                material: VoxelMaterial::Regolith,
+            },
+        }
     }
 }

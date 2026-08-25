@@ -34,6 +34,7 @@ impl ChunkCoord {
 pub enum VoxelMaterial {
     Regolith,
     Basalt,
+    Ocean,
     Ice,
     CarbonLife,
     SiliconLife,
