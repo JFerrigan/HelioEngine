@@ -768,7 +768,7 @@ fn render_shooter_scene(
     shooter: &ShooterState,
     mouse_captured: bool,
 ) {
-    let mut projected: Vec<(f32, SceneCell)> = shooter
+    let mut projected: Vec<(f32, Vec<SceneCell>)> = shooter
         .enemies
         .iter()
         .filter(|enemy| enemy.is_alive())
@@ -777,19 +777,8 @@ fn render_shooter_scene(
             if !has_line_of_sight(city, camera.position, target) {
                 return None;
             }
-
-            project_world_point(camera, target, scene.viewport).map(|projection| {
-                let glyph = enemy_glyph(projection.distance);
-                (
-                    projection.distance,
-                    SceneCell {
-                        x: projection.x,
-                        y: projection.y,
-                        glyph,
-                        style: TextStyle::default(),
-                    },
-                )
-            })
+            project_world_point(camera, target, scene.viewport)
+                .map(|projection| (projection.distance, enemy_cells(projection)))
         })
         .collect();
     projected.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -797,7 +786,7 @@ fn render_shooter_scene(
     scene.layers.push(Layer {
         name: "enemies".to_string(),
         z: 30,
-        cells: projected.into_iter().map(|(_, cell)| cell).collect(),
+        cells: projected.into_iter().flat_map(|(_, cells)| cells).collect(),
     });
     scene.layers.push(Layer {
         name: "weapon".to_string(),
@@ -851,13 +840,48 @@ fn project_world_point(camera: &Camera, point: Vec3, viewport: Viewport) -> Opti
     })
 }
 
-fn enemy_glyph(distance: f32) -> char {
-    if distance < 14.0 {
-        'M'
-    } else if distance < 36.0 {
-        '&'
+fn enemy_cells(projection: Projection) -> Vec<SceneCell> {
+    let sprite = enemy_sprite(projection.distance);
+    let height = sprite.len() as i32;
+    let width = sprite.iter().map(|line| line.len()).max().unwrap_or(0) as i32;
+    let start_x = projection.x - width / 2;
+    let start_y = projection.y - height / 2;
+    let mut cells = Vec::new();
+
+    for (row, line) in sprite.iter().enumerate() {
+        for (col, glyph) in line.chars().enumerate() {
+            if glyph == ' ' {
+                continue;
+            }
+            cells.push(SceneCell {
+                x: start_x + col as i32,
+                y: start_y + row as i32,
+                glyph,
+                style: TextStyle::default(),
+            });
+        }
+    }
+
+    cells
+}
+
+fn enemy_sprite(distance: f32) -> &'static [&'static str] {
+    if distance < 12.0 {
+        &[
+            "  .---.  ",
+            " /o o \\ ",
+            "|  ^  | ",
+            "| \\_/ | ",
+            " /|||\\  ",
+            "/_|||_\\ ",
+            "  / \\   ",
+        ]
+    } else if distance < 28.0 {
+        &[" .-. ", "/o o\\", "| ^ |", "/|||\\", " / \\ "]
+    } else if distance < 55.0 {
+        &["oOo", "/|\\", "/ \\"]
     } else {
-        'm'
+        &["&"]
     }
 }
 
@@ -1105,6 +1129,19 @@ mod tests {
             .layers
             .iter()
             .any(|layer| layer.name == "weapon" && !layer.cells.is_empty()));
+    }
+
+    #[test]
+    fn visible_enemy_uses_multi_cell_sprite() {
+        let projection = Projection {
+            x: 80,
+            y: 45,
+            distance: 24.0,
+        };
+
+        let cells = enemy_cells(projection);
+
+        assert!(cells.len() > 10);
     }
 
     #[test]
