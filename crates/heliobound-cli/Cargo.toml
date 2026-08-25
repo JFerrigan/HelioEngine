@@ -1,0 +1,11 @@
+[package]
+name = "heliobound-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+heliobound-core = { path = "../heliobound-core" }
+heliobound-gfx = { path = "../heliobound-gfx" }
+font8x8 = "0.3.1"
+pixels = "0.17.2"
+winit = "0.30.13"

@@ -1,0 +1,8 @@
+[package]
+name = "heliobound-gfx"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+heliobound-core = { path = "../heliobound-core" }
+
