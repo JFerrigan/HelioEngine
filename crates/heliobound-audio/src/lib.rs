@@ -17,6 +17,7 @@ z8 C,6 z2 _E,4 z4 G,,8 z8 ^F,2 z2 C,4 z8
 z4 _B,,6 z2 F,4 z6 C,,8 z8
 "#;
 pub const GLASS_STAIRCASE_ABC: &str = include_str!("../assets/glass_staircase.abc");
+pub const ROWS_THAT_MOVE_ABC: &str = include_str!("../assets/rows_that_move.abc");
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NoteEvent {
@@ -65,6 +66,10 @@ impl GameAudio {
         self.set_ambience(AmbienceKind::City);
     }
 
+    pub fn enter_corn_maze_mode(&mut self) {
+        self.set_ambience(AmbienceKind::CornMaze);
+    }
+
     pub fn enter_doom_mode(&mut self) {
         self.set_ambience(AmbienceKind::Doom);
     }
@@ -89,6 +94,7 @@ impl GameAudio {
         if let Some(backend) = &mut self.backend {
             match ambience {
                 AmbienceKind::City => backend.start_city_ambience(),
+                AmbienceKind::CornMaze => backend.start_corn_maze_ambience(),
                 AmbienceKind::Doom => backend.start_backrooms_ambience(),
             }
         }
@@ -111,11 +117,16 @@ impl GameAudio {
     pub fn in_city_mode(&self) -> bool {
         self.ambience == Some(AmbienceKind::City)
     }
+
+    pub fn in_corn_maze_mode(&self) -> bool {
+        self.ambience == Some(AmbienceKind::CornMaze)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AmbienceKind {
     City,
+    CornMaze,
     Doom,
 }
 
@@ -143,6 +154,19 @@ impl RodioBackend {
         let samples = synthesize_abc_limited(&tune, 0.18, CITY_AMBIENCE_SECONDS);
         let player = Player::connect_new(self.sink.mixer());
         player.set_volume(0.48);
+        player.append(samples_buffer(samples).repeat_infinite());
+        self.ambience = Some(player);
+    }
+
+    fn start_corn_maze_ambience(&mut self) {
+        self.stop_ambience();
+        let Ok(tune) = parse_abc(ROWS_THAT_MOVE_ABC) else {
+            return;
+        };
+
+        let samples = synthesize_abc_limited(&tune, 0.16, CITY_AMBIENCE_SECONDS);
+        let player = Player::connect_new(self.sink.mixer());
+        player.set_volume(0.5);
         player.append(samples_buffer(samples).repeat_infinite());
         self.ambience = Some(player);
     }
@@ -567,6 +591,22 @@ mod tests {
     }
 
     #[test]
+    fn parses_rows_that_move_asset() {
+        let tune = parse_abc(ROWS_THAT_MOVE_ABC).unwrap();
+
+        assert_eq!(tune.title.as_deref(), Some("Rows That Move"));
+        assert_eq!(tune.tempo, 76.0);
+        assert!(tune.events.len() > 150);
+        assert!(
+            tune.events
+                .iter()
+                .filter(|event| event.frequency_hz.is_none())
+                .count()
+                > 10
+        );
+    }
+
+    #[test]
     fn parses_accidentals_octaves_and_fractional_lengths() {
         let tune = parse_abc("L:1/4\nQ:60\nK:C\n^C,3/2 _d/2 =F\n").unwrap();
 
@@ -624,7 +664,12 @@ mod tests {
         audio.enter_city_mode();
         assert!(audio.in_city_mode());
 
+        audio.enter_corn_maze_mode();
+        assert!(audio.in_corn_maze_mode());
+        assert!(!audio.in_city_mode());
+
         audio.leave_ambience();
         assert!(!audio.in_city_mode());
+        assert!(!audio.in_corn_maze_mode());
     }
 }

@@ -436,7 +436,8 @@ impl AppState {
 
 fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
     match mode {
-        AppMode::CityWalk | AppMode::CornMaze => audio.enter_city_mode(),
+        AppMode::CityWalk => audio.enter_city_mode(),
+        AppMode::CornMaze => audio.enter_corn_maze_mode(),
         AppMode::CityShooter => audio.enter_doom_mode(),
         AppMode::Menu | AppMode::PlanetFlight => audio.leave_ambience(),
     }

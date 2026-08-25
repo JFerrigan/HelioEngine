@@ -1,0 +1,65 @@
+X:1
+T:Rows That Move
+C:ChatGPT
+M:3/4
+L:1/8
+Q:1/4=76
+K:Cm
+"Cm"C2 G,2 _E2 | z2 G2 _B2 |
+"Cm"C2 G,2 _D2 | z2 ^F2 G2 |
+"Ab"_A,2 E2 _B2 | z2 _A2 E2 |
+"G7"G,2 D2 F2 | ^F2 G2 z2 |
+"Cm"C2 z2 G,2 | "_crickets"_E2 z2 _D2 |
+"Cm"C2 G,2 _E2 | G2 ^F2 G2 |
+"Db"_D2 _A,2 F2 | z2 E2 _D2 |
+"G7"G,2 D2 F2 | _A2 ^F2 D2 |
+"Cm"C4 z2 | z6 |
+P:B
+M:2/4
+L:1/8
+"Cm"C G, C _E | G _E C G, |
+"Cm"C G, C _D | ^F G _E C |
+"Db"_D _A, _D F | _A F _D _A, |
+"Cm"C G, C _E | G ^F G z |
+"Ab"_A, E _A c | _B _A E _D |
+"Eb"_E _B, _E G | _B G _E _D |
+"G7"D ^F G _A | G ^F D B, |
+"Cm"C2 z2 | C,2 z2 |
+P:C
+M:5/4
+L:1/8
+"Cm"C2 G, C _E G _B G _E _D |
+"Db"_D2 _A, _D F _A c _A F E |
+"Edim"E2 _B, E G _B _D' _B G ^F |
+"G7"G,2 D G _A B d B _A ^F |
+"Cm"C2 G, C _E G _B c _B G |
+"Ab"_A,2 E _A c _e c _B _A E |
+"Db"_D2 _A, _D F _A c _D' c _A |
+"G7"G,2 D ^F _A B d _e d B |
+P:D
+M:3/4
+L:1/8
+"Cm"c2 G2 _E2 | "Db"_d2 _A2 F2 |
+"Edim"e2 _B2 G2 | "G7"^f2 _A2 B2 |
+"Cm"g2 _e2 c2 | "Ab"_a2 e2 c2 |
+"Db"_d2 c2 _A2 | "G7"B2 _A2 ^F2 |
+"Cm"c2 _B2 G2 | "_wrong turn"^F2 G2 _D2 |
+"Db"_D2 F2 _A2 | "Edim"E2 G2 _B2 |
+"G7"D2 ^F2 _A2 | B2 d2 _e2 |
+"Cm"c6 | z6 |
+P:E
+M:7/8
+L:1/8
+"Cm"C G, C _E G _B G |
+"Db"_D _A, _D F _A c _A |
+"Edim"E _B, E G _B _d _B |
+"G7"G, D ^F _A B d B |
+"Cm"C G, C _D _E G _B |
+"Ab"_A, E _A c _B _A E |
+"Db"_D _A, _D F E _D _A, |
+"G7"G, D ^F _A G ^F D |
+"Cm"C2 G, C _E2 G |
+"CmMaj7"C2 G, C =B,2 _E |
+"Db"_D2 _A, _D F2 E |
+"G7"G,2 D ^F _A2 B |
+"Cm"C7 ||
