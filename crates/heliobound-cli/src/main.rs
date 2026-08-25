@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 use heliobound_core::{
-    Camera, CityConfig, CityGenerator, PlanetConfig, ProceduralPlanet, Ray, Vec3, VoxelCoord,
-    VoxelWorld,
+    Camera, CityConfig, CityGenerator, DoomMapConfig, DoomMapGenerator, PlanetConfig,
+    ProceduralPlanet, Ray, Vec3, VoxelCoord, VoxelWorld,
 };
 use heliobound_gfx::{
     raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay, Scene, SceneBuilder, SceneCell,
@@ -183,6 +183,7 @@ struct AppState {
     mode: AppMode,
     planet: ProceduralPlanet,
     city: VoxelWorld,
+    doom_map: VoxelWorld,
     planet_builder: SceneBuilder,
     city_builder: SceneBuilder,
     camera: Camera,
@@ -197,6 +198,7 @@ impl AppState {
             mode: AppMode::Menu,
             planet: build_demo_planet(),
             city: build_demo_city(),
+            doom_map: build_doom_map(),
             planet_builder: SceneBuilder::new(
                 GraphicsConfig {
                     viewport: VIEWPORT,
@@ -277,7 +279,7 @@ impl AppState {
 
     fn start_shooter(&mut self) {
         self.mode = AppMode::CityShooter;
-        self.camera = city_start_camera();
+        self.camera = doom_start_camera();
         self.input = PlayerInput::default();
         self.shooter = ShooterState::new();
     }
@@ -311,12 +313,15 @@ impl AppState {
                 scene
             }
             AppMode::CityShooter => {
-                update_walking_camera(&mut self.camera, &self.input, &self.city, dt);
-                self.shooter.update(&self.city, self.camera.position, dt);
-                let mut scene = self.city_builder.build(&self.city, &self.camera, self.tick);
+                update_walking_camera(&mut self.camera, &self.input, &self.doom_map, dt);
+                self.shooter
+                    .update(&self.doom_map, self.camera.position, dt);
+                let mut scene = self
+                    .city_builder
+                    .build(&self.doom_map, &self.camera, self.tick);
                 render_shooter_scene(
                     &mut scene,
-                    &self.city,
+                    &self.doom_map,
                     &self.camera,
                     &self.shooter,
                     mouse_captured,
@@ -340,7 +345,7 @@ impl AppState {
 
     fn fire_weapon(&mut self) {
         if self.mode == AppMode::CityShooter {
-            self.shooter.fire(&self.city, &self.camera);
+            self.shooter.fire(&self.doom_map, &self.camera);
         }
     }
 }
@@ -362,6 +367,13 @@ fn city_start_camera() -> Camera {
     Camera::new(Vec3::new(0.5, WALK_EYE_HEIGHT, -55.5))
         .looking_at(0.0, 0.0)
         .with_fov_y(62.0_f32.to_radians())
+        .with_max_distance(140.0)
+}
+
+fn doom_start_camera() -> Camera {
+    Camera::new(Vec3::new(0.5, WALK_EYE_HEIGHT, -55.5))
+        .looking_at(0.0, 0.0)
+        .with_fov_y(68.0_f32.to_radians())
         .with_max_distance(140.0)
 }
 
@@ -502,12 +514,12 @@ impl Enemy {
 
 fn spawn_enemies() -> Vec<Enemy> {
     vec![
-        Enemy::new(0.5, -32.5),
-        Enemy::new(-31.5, -16.5),
-        Enemy::new(32.5, -0.5),
-        Enemy::new(-15.5, 31.5),
-        Enemy::new(48.5, 48.5),
-        Enemy::new(-48.5, 48.5),
+        Enemy::new(0.5, -34.5),
+        Enemy::new(-42.5, -22.5),
+        Enemy::new(39.5, -5.5),
+        Enemy::new(-18.5, 39.5),
+        Enemy::new(22.5, 42.5),
+        Enemy::new(0.5, 53.5),
     ]
 }
 
@@ -696,6 +708,10 @@ fn build_demo_city() -> VoxelWorld {
     .generate()
 }
 
+fn build_doom_map() -> VoxelWorld {
+    DoomMapGenerator::new(DoomMapConfig::default()).generate()
+}
+
 fn build_menu_scene(tick: u64) -> Scene {
     let mut scene = Scene::new(VIEWPORT);
     let mut background = Layer {
@@ -748,7 +764,7 @@ fn build_menu_scene(tick: u64) -> Scene {
         x: 48,
         y: 45,
         z: 10,
-        text: "3  CITY SHOOTER".to_string(),
+        text: "3  DOOMLIKE ARENA".to_string(),
         style: TextStyle::default(),
     });
     scene.overlays.push(Overlay {
@@ -798,7 +814,7 @@ fn render_shooter_scene(
         y: 2,
         z: 120,
         text: format!(
-            "CITY SHOOTER  health {}  enemies {}  kills {}  mouse {}",
+            "DOOMLIKE ARENA  health {}  enemies {}  kills {}  mouse {}",
             shooter.health,
             shooter.alive_count(),
             shooter.kills,
@@ -1112,6 +1128,24 @@ mod tests {
 
         assert!(app.shooter.enemies[0].health < health_before);
         assert_eq!(app.shooter.shots_fired, 1);
+    }
+
+    #[test]
+    fn shooter_uses_doom_map_not_city_grid() {
+        let mut app = AppState::new();
+        app.start_shooter();
+
+        assert!(app.doom_map.get(VoxelCoord::new(0, 7, 0)).is_some());
+        assert!(app.city.get(VoxelCoord::new(0, 7, 0)).is_none());
+        assert!(app.doom_map.get(VoxelCoord::new(0, 1, -42)).is_none());
+    }
+
+    #[test]
+    fn walking_collision_blocks_doom_arena_walls() {
+        let map = build_doom_map();
+
+        assert!(!can_walk_to(&map, Vec3::new(-64.0, WALK_EYE_HEIGHT, 0.0)));
+        assert!(can_walk_to(&map, Vec3::new(0.5, WALK_EYE_HEIGHT, -55.5)));
     }
 
     #[test]

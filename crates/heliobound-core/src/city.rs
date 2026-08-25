@@ -145,6 +145,270 @@ impl CityGenerator {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DoomMapConfig {
+    pub half_extent: i32,
+    pub wall_height: i32,
+}
+
+impl Default for DoomMapConfig {
+    fn default() -> Self {
+        Self {
+            half_extent: 64,
+            wall_height: 7,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DoomMapGenerator {
+    pub config: DoomMapConfig,
+}
+
+impl DoomMapGenerator {
+    pub fn new(config: DoomMapConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn generate(&self) -> VoxelWorld {
+        let mut world = VoxelWorld::new();
+        let extent = self.config.half_extent.max(32);
+        self.place_floor_and_ceiling(&mut world, -extent, extent, -extent, extent);
+        self.place_shell(&mut world, -extent, extent, -extent, extent);
+
+        self.place_room_walls(&mut world, -13, 13, -61, -42, &[Door::north(-3, 3)]);
+        self.place_room_walls(
+            &mut world,
+            -10,
+            10,
+            -42,
+            23,
+            &[Door::south(-4, 4), Door::north(-5, 5)],
+        );
+        self.place_room_walls(&mut world, -57, -22, -35, -7, &[Door::east(-24, -18)]);
+        self.place_room_walls(
+            &mut world,
+            22,
+            57,
+            -20,
+            13,
+            &[Door::west(-7, -1), Door::north(39, 47)],
+        );
+        self.place_room_walls(
+            &mut world,
+            -33,
+            33,
+            23,
+            59,
+            &[Door::south(-5, 5), Door::east(39, 47), Door::west(38, 46)],
+        );
+
+        self.place_pillar(&mut world, -46, -24, 2, VoxelMaterial::Basalt);
+        self.place_pillar(&mut world, -34, -20, 2, VoxelMaterial::Habitat);
+        self.place_pillar(&mut world, 35, -8, 2, VoxelMaterial::Basalt);
+        self.place_pillar(&mut world, 48, -9, 2, VoxelMaterial::Habitat);
+        self.place_pillar(&mut world, -25, 42, 2, VoxelMaterial::Basalt);
+        self.place_pillar(&mut world, 23, 42, 2, VoxelMaterial::Basalt);
+        self.place_pillar(&mut world, 0, 48, 4, VoxelMaterial::Habitat);
+
+        self.place_windows(&mut world);
+        self.place_beacons(&mut world);
+        world
+    }
+
+    fn place_floor_and_ceiling(
+        &self,
+        world: &mut VoxelWorld,
+        min_x: i32,
+        max_x: i32,
+        min_z: i32,
+        max_z: i32,
+    ) {
+        for z in min_z..=max_z {
+            for x in min_x..=max_x {
+                let floor = if (x / 4 + z / 4).rem_euclid(2) == 0 {
+                    VoxelMaterial::Basalt
+                } else {
+                    VoxelMaterial::Regolith
+                };
+                world.set(VoxelCoord::new(x, 0, z), VoxelCell::new(floor));
+                world.set(
+                    VoxelCoord::new(x, self.config.wall_height, z),
+                    VoxelCell::new(VoxelMaterial::ShipHull),
+                );
+            }
+        }
+    }
+
+    fn place_shell(&self, world: &mut VoxelWorld, min_x: i32, max_x: i32, min_z: i32, max_z: i32) {
+        self.place_wall_column(world, min_x, max_x, min_z, min_z, VoxelMaterial::Habitat);
+        self.place_wall_column(world, min_x, max_x, max_z, max_z, VoxelMaterial::Habitat);
+        self.place_wall_column(world, min_x, min_x, min_z, max_z, VoxelMaterial::Habitat);
+        self.place_wall_column(world, max_x, max_x, min_z, max_z, VoxelMaterial::Habitat);
+    }
+
+    fn place_room_walls(
+        &self,
+        world: &mut VoxelWorld,
+        min_x: i32,
+        max_x: i32,
+        min_z: i32,
+        max_z: i32,
+        doors: &[Door],
+    ) {
+        for x in min_x..=max_x {
+            if !doors
+                .iter()
+                .any(|door| door.allows(x, min_z, WallSide::South))
+            {
+                self.place_wall_column(world, x, x, min_z, min_z, VoxelMaterial::Habitat);
+            }
+            if !doors
+                .iter()
+                .any(|door| door.allows(x, max_z, WallSide::North))
+            {
+                self.place_wall_column(world, x, x, max_z, max_z, VoxelMaterial::Habitat);
+            }
+        }
+
+        for z in min_z..=max_z {
+            if !doors
+                .iter()
+                .any(|door| door.allows(min_x, z, WallSide::West))
+            {
+                self.place_wall_column(world, min_x, min_x, z, z, VoxelMaterial::Habitat);
+            }
+            if !doors
+                .iter()
+                .any(|door| door.allows(max_x, z, WallSide::East))
+            {
+                self.place_wall_column(world, max_x, max_x, z, z, VoxelMaterial::Habitat);
+            }
+        }
+    }
+
+    fn place_wall_column(
+        &self,
+        world: &mut VoxelWorld,
+        min_x: i32,
+        max_x: i32,
+        min_z: i32,
+        max_z: i32,
+        material: VoxelMaterial,
+    ) {
+        for y in 1..self.config.wall_height {
+            for z in min_z..=max_z {
+                for x in min_x..=max_x {
+                    world.set(VoxelCoord::new(x, y, z), VoxelCell::new(material));
+                }
+            }
+        }
+    }
+
+    fn place_pillar(
+        &self,
+        world: &mut VoxelWorld,
+        center_x: i32,
+        center_z: i32,
+        radius: i32,
+        material: VoxelMaterial,
+    ) {
+        self.place_wall_column(
+            world,
+            center_x - radius,
+            center_x + radius,
+            center_z - radius,
+            center_z + radius,
+            material,
+        );
+    }
+
+    fn place_windows(&self, world: &mut VoxelWorld) {
+        for z in (-30..=-12).step_by(4) {
+            world.set(
+                VoxelCoord::new(-57, 3, z),
+                VoxelCell::new(VoxelMaterial::Glass),
+            );
+            world.set(
+                VoxelCoord::new(57, 3, z + 14),
+                VoxelCell::new(VoxelMaterial::Glass),
+            );
+        }
+        for x in (-24..=24).step_by(6) {
+            world.set(
+                VoxelCoord::new(x, 3, 59),
+                VoxelCell::new(VoxelMaterial::Glass),
+            );
+        }
+    }
+
+    fn place_beacons(&self, world: &mut VoxelWorld) {
+        for (x, z) in [(-46, -24), (45, -8), (-24, 41), (24, 41), (0, 52)] {
+            world.set(
+                VoxelCoord::new(x, self.config.wall_height + 1, z),
+                VoxelCell::new(VoxelMaterial::Beacon),
+            );
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WallSide {
+    North,
+    South,
+    East,
+    West,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Door {
+    side: WallSide,
+    min: i32,
+    max: i32,
+}
+
+impl Door {
+    fn north(min: i32, max: i32) -> Self {
+        Self {
+            side: WallSide::North,
+            min,
+            max,
+        }
+    }
+
+    fn south(min: i32, max: i32) -> Self {
+        Self {
+            side: WallSide::South,
+            min,
+            max,
+        }
+    }
+
+    fn east(min: i32, max: i32) -> Self {
+        Self {
+            side: WallSide::East,
+            min,
+            max,
+        }
+    }
+
+    fn west(min: i32, max: i32) -> Self {
+        Self {
+            side: WallSide::West,
+            min,
+            max,
+        }
+    }
+
+    fn allows(self, x: i32, z: i32, side: WallSide) -> bool {
+        self.side == side
+            && match side {
+                WallSide::North | WallSide::South => x >= self.min && x <= self.max,
+                WallSide::East | WallSide::West => z >= self.min && z <= self.max,
+            }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BuildingFootprint {
     min: VoxelCoord,
@@ -212,5 +476,39 @@ mod tests {
 
         assert!(city.voxel_count() > ground_cells);
         assert!(bounds.max.y > 8);
+    }
+
+    #[test]
+    fn doom_map_has_enclosed_shell_and_ceiling() {
+        let config = DoomMapConfig::default();
+        let map = DoomMapGenerator::new(config).generate();
+
+        assert_eq!(
+            map.get(VoxelCoord::new(-config.half_extent, 1, 0)),
+            Some(VoxelCell::new(VoxelMaterial::Habitat))
+        );
+        assert_eq!(
+            map.get(VoxelCoord::new(0, config.wall_height, 0)),
+            Some(VoxelCell::new(VoxelMaterial::ShipHull))
+        );
+    }
+
+    #[test]
+    fn doom_map_keeps_player_start_and_first_enemy_lane_open() {
+        let map = DoomMapGenerator::new(DoomMapConfig::default()).generate();
+
+        assert_eq!(map.get(VoxelCoord::new(0, 1, -55)), None);
+        assert_eq!(map.get(VoxelCoord::new(0, 1, -34)), None);
+        assert_eq!(map.get(VoxelCoord::new(0, 3, -42)), None);
+    }
+
+    #[test]
+    fn doom_map_contains_interior_cover() {
+        let map = DoomMapGenerator::new(DoomMapConfig::default()).generate();
+
+        assert_eq!(
+            map.get(VoxelCoord::new(35, 2, -8)),
+            Some(VoxelCell::new(VoxelMaterial::Basalt))
+        );
     }
 }
