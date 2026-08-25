@@ -39,6 +39,13 @@ impl Vec3 {
             self / length
         }
     }
+
+    pub fn rotate_around(self, axis: Self, radians: f32) -> Self {
+        let axis = axis.normalized();
+        let sin = radians.sin();
+        let cos = radians.cos();
+        self * cos + axis.cross(self) * sin + axis * axis.dot(self) * (1.0 - cos)
+    }
 }
 
 impl Add for Vec3 {
@@ -100,6 +107,9 @@ pub struct Camera {
     pub roll_radians: f32,
     pub fov_y_radians: f32,
     pub max_distance: f32,
+    basis_forward: Vec3,
+    basis_right: Vec3,
+    basis_up: Vec3,
 }
 
 impl Camera {
@@ -111,12 +121,16 @@ impl Camera {
             roll_radians: 0.0,
             fov_y_radians: 60.0_f32.to_radians(),
             max_distance: 96.0,
+            basis_forward: Vec3::new(0.0, 0.0, 1.0),
+            basis_right: Vec3::new(1.0, 0.0, 0.0),
+            basis_up: Vec3::new(0.0, 1.0, 0.0),
         }
     }
 
     pub fn looking_at(mut self, yaw_radians: f32, pitch_radians: f32) -> Self {
         self.yaw_radians = yaw_radians;
         self.pitch_radians = pitch_radians;
+        self.rebuild_basis_from_angles();
         self
     }
 
@@ -132,7 +146,45 @@ impl Camera {
 
     pub fn with_roll(mut self, roll_radians: f32) -> Self {
         self.roll_radians = roll_radians;
+        self.rebuild_basis_from_angles();
         self
+    }
+
+    pub fn set_look_angles(&mut self, yaw_radians: f32, pitch_radians: f32, roll_radians: f32) {
+        self.yaw_radians = yaw_radians;
+        self.pitch_radians = pitch_radians;
+        self.roll_radians = roll_radians;
+        self.rebuild_basis_from_angles();
+    }
+
+    pub fn rotate_local_yaw_pitch(&mut self, yaw_delta: f32, pitch_delta: f32) {
+        if yaw_delta.abs() > f32::EPSILON {
+            self.basis_forward = self.basis_forward.rotate_around(self.basis_up, yaw_delta);
+            self.basis_right = self.basis_right.rotate_around(self.basis_up, yaw_delta);
+        }
+
+        if pitch_delta.abs() > f32::EPSILON {
+            let angle = -pitch_delta;
+            self.basis_forward = self.basis_forward.rotate_around(self.basis_right, angle);
+            self.basis_up = self.basis_up.rotate_around(self.basis_right, angle);
+        }
+
+        self.yaw_radians = wrap_angle(self.yaw_radians + yaw_delta);
+        self.pitch_radians = wrap_angle(self.pitch_radians + pitch_delta);
+        self.orthonormalize_basis();
+    }
+
+    pub fn roll_by(&mut self, roll_delta: f32) {
+        if roll_delta.abs() <= f32::EPSILON {
+            return;
+        }
+
+        self.basis_right = self
+            .basis_right
+            .rotate_around(self.basis_forward, roll_delta);
+        self.basis_up = self.basis_up.rotate_around(self.basis_forward, roll_delta);
+        self.roll_radians = wrap_angle(self.roll_radians + roll_delta);
+        self.orthonormalize_basis();
     }
 
     pub fn ray_for_cell(self, x: usize, y: usize, width: usize, height: usize) -> Ray {
@@ -150,26 +202,53 @@ impl Camera {
     }
 
     pub fn forward(self) -> Vec3 {
+        self.basis_forward
+    }
+
+    pub fn right(self) -> Vec3 {
+        self.basis_right
+    }
+
+    pub fn up(self) -> Vec3 {
+        self.basis_up
+    }
+
+    fn rebuild_basis_from_angles(&mut self) {
         let yaw_sin = self.yaw_radians.sin();
         let yaw_cos = self.yaw_radians.cos();
         let pitch_sin = self.pitch_radians.sin();
         let pitch_cos = self.pitch_radians.cos();
-        Vec3::new(yaw_sin * pitch_cos, pitch_sin, yaw_cos * pitch_cos).normalized()
+
+        let forward = Vec3::new(yaw_sin * pitch_cos, pitch_sin, yaw_cos * pitch_cos).normalized();
+        let right = Vec3::new(yaw_cos, 0.0, -yaw_sin).normalized();
+        let up = forward.cross(right).normalized();
+
+        self.basis_forward = forward;
+        self.basis_right = right.rotate_around(forward, self.roll_radians);
+        self.basis_up = up.rotate_around(forward, self.roll_radians);
+        self.orthonormalize_basis();
     }
 
-    pub fn right(self) -> Vec3 {
-        let forward = self.forward();
-        let base_right =
-            Vec3::new(self.yaw_radians.cos(), 0.0, -self.yaw_radians.sin()).normalized();
-        let base_up = forward.cross(base_right).normalized();
-        let roll_sin = self.roll_radians.sin();
-        let roll_cos = self.roll_radians.cos();
-        (base_right * roll_cos + base_up * roll_sin).normalized()
-    }
+    fn orthonormalize_basis(&mut self) {
+        let forward = self.basis_forward.normalized();
+        let right = (self.basis_right - forward * self.basis_right.dot(forward)).normalized();
 
-    pub fn up(self) -> Vec3 {
-        self.forward().cross(self.right()).normalized()
+        if forward.length() <= f32::EPSILON || right.length() <= f32::EPSILON {
+            self.basis_forward = Vec3::new(0.0, 0.0, 1.0);
+            self.basis_right = Vec3::new(1.0, 0.0, 0.0);
+            self.basis_up = Vec3::new(0.0, 1.0, 0.0);
+            return;
+        }
+
+        self.basis_forward = forward;
+        self.basis_right = right;
+        self.basis_up = forward.cross(right).normalized();
     }
+}
+
+fn wrap_angle(radians: f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    (radians + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI
 }
 
 #[cfg(test)]
@@ -191,5 +270,16 @@ mod tests {
 
         assert!(camera.right().y > 0.99);
         assert!(camera.up().x < -0.99);
+    }
+
+    #[test]
+    fn local_yaw_stays_camera_relative_after_pitching_overhead() {
+        let mut camera = Camera::new(Vec3::ZERO);
+
+        camera.rotate_local_yaw_pitch(0.0, 2.0);
+        camera.rotate_local_yaw_pitch(0.05, 0.0);
+
+        assert!(camera.forward().x > 0.0);
+        assert!(camera.right().dot(Vec3::new(1.0, 0.0, 0.0)) > 0.99);
     }
 }

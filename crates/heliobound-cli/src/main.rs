@@ -128,7 +128,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             ..
         } => {
             if mouse_captured {
-                apply_mouse_look(&mut camera, delta.0 as f32, delta.1 as f32);
+                apply_mouse_look(
+                    &mut camera,
+                    delta.0 as f32,
+                    delta.1 as f32,
+                    PitchMode::Unrestricted,
+                );
             }
         }
         Event::AboutToWait => {
@@ -204,10 +209,10 @@ fn update_camera(camera: &mut Camera, input: &FlightInput, dt: f32) {
         movement = movement - camera.up();
     }
     if input.roll_left {
-        camera.roll_radians -= ROLL_SPEED * dt;
+        camera.roll_by(-ROLL_SPEED * dt);
     }
     if input.roll_right {
-        camera.roll_radians += ROLL_SPEED * dt;
+        camera.roll_by(ROLL_SPEED * dt);
     }
 
     if movement.length() > f32::EPSILON {
@@ -220,15 +225,34 @@ fn update_camera(camera: &mut Camera, input: &FlightInput, dt: f32) {
     }
 }
 
-fn apply_mouse_look(camera: &mut Camera, delta_x: f32, delta_y: f32) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PitchMode {
+    Clamped,
+    Unrestricted,
+}
+
+fn apply_mouse_look(camera: &mut Camera, delta_x: f32, delta_y: f32, pitch_mode: PitchMode) {
     let horizontal = delta_x * MOUSE_SENSITIVITY;
     let vertical = -delta_y * MOUSE_SENSITIVITY;
-    let roll_sin = camera.roll_radians.sin();
-    let roll_cos = camera.roll_radians.cos();
 
-    camera.yaw_radians += horizontal * roll_cos - vertical * roll_sin;
-    camera.pitch_radians = (camera.pitch_radians + horizontal * roll_sin + vertical * roll_cos)
-        .clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    match pitch_mode {
+        PitchMode::Clamped => {
+            let roll_sin = camera.roll_radians.sin();
+            let roll_cos = camera.roll_radians.cos();
+            let yaw = wrap_angle(camera.yaw_radians + horizontal * roll_cos - vertical * roll_sin);
+            let pitch = (camera.pitch_radians + horizontal * roll_sin + vertical * roll_cos)
+                .clamp(-PITCH_LIMIT, PITCH_LIMIT);
+            camera.set_look_angles(yaw, pitch, camera.roll_radians);
+        }
+        PitchMode::Unrestricted => {
+            camera.rotate_local_yaw_pitch(horizontal, vertical);
+        }
+    }
+}
+
+fn wrap_angle(radians: f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    (radians + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI
 }
 
 fn set_mouse_captured(window: &Window, captured: bool) -> bool {
@@ -356,9 +380,40 @@ mod tests {
     fn mouse_look_is_roll_relative() {
         let mut camera = Camera::new(Vec3::ZERO).with_roll(std::f32::consts::FRAC_PI_2);
 
-        apply_mouse_look(&mut camera, 10.0, 0.0);
+        apply_mouse_look(&mut camera, 10.0, 0.0, PitchMode::Unrestricted);
 
-        assert!(camera.yaw_radians.abs() < 0.001);
-        assert!(camera.pitch_radians > 0.0);
+        assert!(camera.forward().y > 0.0);
+        assert!(camera.forward().x.abs() < 0.001);
+    }
+
+    #[test]
+    fn space_mouse_look_allows_full_pitch_rotation() {
+        let mut camera = Camera::new(Vec3::ZERO);
+
+        apply_mouse_look(&mut camera, 0.0, -1_000.0, PitchMode::Unrestricted);
+
+        assert!(camera.pitch_radians.abs() > PITCH_LIMIT);
+        assert!(camera.pitch_radians <= std::f32::consts::PI);
+        assert!(camera.pitch_radians >= -std::f32::consts::PI);
+    }
+
+    #[test]
+    fn space_mouse_look_keeps_horizontal_direction_after_overhead_flip() {
+        let mut camera = Camera::new(Vec3::ZERO);
+
+        apply_mouse_look(&mut camera, 0.0, -800.0, PitchMode::Unrestricted);
+        apply_mouse_look(&mut camera, 20.0, 0.0, PitchMode::Unrestricted);
+
+        assert!(camera.forward().x > 0.0);
+        assert!(camera.right().dot(Vec3::new(1.0, 0.0, 0.0)) > 0.99);
+    }
+
+    #[test]
+    fn walking_mouse_look_keeps_pitch_clamped() {
+        let mut camera = Camera::new(Vec3::ZERO);
+
+        apply_mouse_look(&mut camera, 0.0, -10_000.0, PitchMode::Clamped);
+
+        assert_eq!(camera.pitch_radians, PITCH_LIMIT);
     }
 }
