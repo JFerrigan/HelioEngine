@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+heliobound-audio = { path = "../heliobound-audio" }
 heliobound-core = { path = "../heliobound-core" }
 heliobound-gfx = { path = "../heliobound-gfx" }
 font8x8 = "0.3.1"

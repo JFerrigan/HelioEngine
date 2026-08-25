@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/heliobound-core",
+    "crates/heliobound-audio",
     "crates/heliobound-cli",
     "crates/heliobound-gfx",
 ]

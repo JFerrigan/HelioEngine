@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use font8x8::{UnicodeFonts, BASIC_FONTS};
+use heliobound_audio::{GameAudio, SoundEffect};
 use heliobound_core::{
     Camera, CityConfig, CityGenerator, DoomMapConfig, DoomMapGenerator, PlanetConfig,
     ProceduralPlanet, Ray, Vec3, VoxelCoord, VoxelWorld,
@@ -53,6 +54,7 @@ const ROLL_SPEED: f32 = 1.8;
 fn main() -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
     let mut app = AppState::new();
+    let mut audio = GameAudio::open();
     let mut mouse_captured = false;
     let mut last_frame = Instant::now();
 
@@ -97,6 +99,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 } => {
                     if app.mode == AppMode::CityShooter && mouse_captured {
                         app.fire_weapon();
+                        play_audio_events(&mut audio, app.drain_audio_events());
                     } else if app.mode != AppMode::Menu {
                         mouse_captured = set_mouse_captured(&window, true);
                     }
@@ -111,17 +114,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 mouse_captured = set_mouse_captured(&window, false);
                             } else {
                                 app.enter_menu();
+                                audio.leave_doom_mode();
                             }
                         }
                         KeyboardAction::EnterMenu => {
                             app.enter_menu();
+                            audio.leave_doom_mode();
                             mouse_captured = set_mouse_captured(&window, false);
                         }
                         KeyboardAction::StartScene => {
+                            update_mode_audio(&mut audio, app.mode);
                             mouse_captured = set_mouse_captured(&window, false);
                         }
                         KeyboardAction::Fire => {
                             app.fire_weapon();
+                            play_audio_events(&mut audio, app.drain_audio_events());
                         }
                     }
                 }
@@ -136,6 +143,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     last_frame = now;
 
                     let scene = app.frame(dt, mouse_captured);
+                    play_audio_events(&mut audio, app.drain_audio_events());
                     render_scene(
                         &scene,
                         pixels.frame_mut(),
@@ -192,6 +200,7 @@ struct AppState {
     camera: Camera,
     input: PlayerInput,
     shooter: ShooterState,
+    audio_events: Vec<SoundEffect>,
     tick: u64,
 }
 
@@ -219,6 +228,7 @@ impl AppState {
             camera: planet_start_camera(),
             input: PlayerInput::default(),
             shooter: ShooterState::new(),
+            audio_events: Vec::new(),
             tick: 0,
         }
     }
@@ -317,8 +327,12 @@ impl AppState {
             }
             AppMode::CityShooter => {
                 update_walking_camera(&mut self.camera, &self.input, &self.doom_map, dt);
-                self.shooter
-                    .update(&self.doom_map, self.camera.position, dt);
+                if self
+                    .shooter
+                    .update(&self.doom_map, self.camera.position, dt)
+                {
+                    self.audio_events.push(SoundEffect::PlayerHurt);
+                }
                 let mut scene = self
                     .city_builder
                     .build(&self.doom_map, &self.camera, self.tick);
@@ -348,8 +362,27 @@ impl AppState {
 
     fn fire_weapon(&mut self) {
         if self.mode == AppMode::CityShooter {
-            self.shooter.fire(&self.doom_map, &self.camera);
+            self.audio_events
+                .extend(self.shooter.fire(&self.doom_map, &self.camera));
         }
+    }
+
+    fn drain_audio_events(&mut self) -> Vec<SoundEffect> {
+        self.audio_events.drain(..).collect()
+    }
+}
+
+fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
+    if mode == AppMode::CityShooter {
+        audio.enter_doom_mode();
+    } else {
+        audio.leave_doom_mode();
+    }
+}
+
+fn play_audio_events(audio: &mut GameAudio, events: Vec<SoundEffect>) {
+    for event in events {
+        audio.play_effect(event);
     }
 }
 
@@ -423,7 +456,7 @@ impl ShooterState {
         }
     }
 
-    fn update(&mut self, city: &VoxelWorld, player_position: Vec3, dt: f32) {
+    fn update(&mut self, city: &VoxelWorld, player_position: Vec3, dt: f32) -> bool {
         self.shot_flash_timer = (self.shot_flash_timer - dt).max(0.0);
         for trace in &mut self.bullet_traces {
             trace.time_left = (trace.time_left - dt).max(0.0);
@@ -431,6 +464,7 @@ impl ShooterState {
         self.bullet_traces
             .retain(|trace| trace.time_left > f32::EPSILON);
 
+        let mut player_hurt = false;
         for enemy in &mut self.enemies {
             if !enemy.is_alive() {
                 continue;
@@ -444,6 +478,7 @@ impl ShooterState {
                 if enemy.attack_cooldown <= 0.0 {
                     self.health = (self.health - ENEMY_ATTACK_DAMAGE).max(0);
                     enemy.attack_cooldown = 1.1;
+                    player_hurt = true;
                 }
             } else if distance < 80.0 && to_player.length() > f32::EPSILON {
                 let candidate = enemy.position + to_player * ENEMY_SPEED * dt;
@@ -454,12 +489,15 @@ impl ShooterState {
                 }
             }
         }
+
+        player_hurt
     }
 
-    fn fire(&mut self, city: &VoxelWorld, camera: &Camera) {
+    fn fire(&mut self, city: &VoxelWorld, camera: &Camera) -> Vec<SoundEffect> {
         self.shots_fired += 1;
         self.shot_flash_timer = SHOT_FLASH_TIME;
         self.bullet_traces.push(BulletTrace::from_camera(camera));
+        let mut effects = vec![SoundEffect::Gunshot];
 
         let Some(index) = self
             .enemies
@@ -491,14 +529,18 @@ impl ShooterState {
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(index, _)| index)
         else {
-            return;
+            return effects;
         };
 
         let enemy = &mut self.enemies[index];
         enemy.health = (enemy.health - WEAPON_DAMAGE).max(0);
         if enemy.health == 0 {
             self.kills += 1;
+            effects.push(SoundEffect::EnemyDeath);
+        } else {
+            effects.push(SoundEffect::EnemyHit);
         }
+        effects
     }
 
     fn alive_count(&self) -> usize {
@@ -1261,6 +1303,44 @@ mod tests {
 
         assert!(app.shooter.enemies[0].health < health_before);
         assert_eq!(app.shooter.shots_fired, 1);
+    }
+
+    #[test]
+    fn shooter_fire_queues_gunshot_and_hit_audio() {
+        let mut app = AppState::new();
+        app.start_shooter();
+
+        app.fire_weapon();
+        let events = app.drain_audio_events();
+
+        assert_eq!(events, vec![SoundEffect::Gunshot, SoundEffect::EnemyHit]);
+    }
+
+    #[test]
+    fn shooter_kill_queues_death_audio() {
+        let mut app = AppState::new();
+        app.start_shooter();
+
+        app.fire_weapon();
+        app.drain_audio_events();
+        app.fire_weapon();
+        let events = app.drain_audio_events();
+
+        assert_eq!(events, vec![SoundEffect::Gunshot, SoundEffect::EnemyDeath]);
+        assert_eq!(app.shooter.kills, 1);
+    }
+
+    #[test]
+    fn shooter_enemy_attack_queues_player_hurt_audio() {
+        let mut app = AppState::new();
+        app.start_shooter();
+        app.shooter.enemies[0].position = app.camera.position + Vec3::new(0.5, 0.0, 0.0);
+
+        app.frame(0.016, true);
+        let events = app.drain_audio_events();
+
+        assert_eq!(events, vec![SoundEffect::PlayerHurt]);
+        assert!(app.shooter.health < 100);
     }
 
     #[test]
