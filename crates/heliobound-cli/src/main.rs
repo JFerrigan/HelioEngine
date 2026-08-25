@@ -57,6 +57,7 @@ const ROLL_SPEED: f32 = 1.8;
 const CORN_MAZE_TILES: usize = 25;
 const CORN_MAZE_TILE_SIZE: i32 = 3;
 const CORN_MAZE_WALL_HEIGHT: i32 = 7;
+const CORN_MINIMAP_RADIUS: i32 = 6;
 const NPC_BODY_OFFSETS: [(i32, i32, i32, bool); 19] = [
     (-1, 1, 0, false),
     (1, 1, 0, false),
@@ -383,7 +384,7 @@ impl AppState {
                 let mut scene =
                     self.city_builder
                         .build(&self.corn_maze.world, &self.camera, self.tick);
-                render_corn_maze_scene(&mut scene, &self.corn_maze, mouse_captured);
+                render_corn_maze_scene(&mut scene, &self.corn_maze, &self.camera, mouse_captured);
                 scene
             }
         }
@@ -632,6 +633,7 @@ fn spawn_city_figures() -> Vec<CityFigure> {
 #[derive(Clone, Debug)]
 struct CornMazeState {
     world: VoxelWorld,
+    open_tiles: Vec<bool>,
     start_position: Vec3,
     exit_position: Vec3,
     escaped: bool,
@@ -639,9 +641,10 @@ struct CornMazeState {
 
 impl CornMazeState {
     fn new() -> Self {
-        let (world, start_position, exit_position) = build_corn_maze();
+        let (world, open_tiles, start_position, exit_position) = build_corn_maze();
         Self {
             world,
+            open_tiles,
             start_position,
             exit_position,
             escaped: false,
@@ -1038,7 +1041,7 @@ fn build_doom_map() -> VoxelWorld {
     DoomMapGenerator::new(DoomMapConfig::default()).generate()
 }
 
-fn build_corn_maze() -> (VoxelWorld, Vec3, Vec3) {
+fn build_corn_maze() -> (VoxelWorld, Vec<bool>, Vec3, Vec3) {
     let open = carve_corn_maze_tiles();
     let mut world = VoxelWorld::new();
     let start = corn_tile_center(1, 1);
@@ -1078,7 +1081,7 @@ fn build_corn_maze() -> (VoxelWorld, Vec3, Vec3) {
     }
 
     stamp_exit_marker(&mut world, exit);
-    (world, start, exit)
+    (world, open, start, exit)
 }
 
 fn carve_corn_maze_tiles() -> Vec<bool> {
@@ -1159,6 +1162,21 @@ fn corn_tile_center(tile_x: usize, tile_z: usize) -> Vec3 {
         0.0,
         tile_z as f32 * CORN_MAZE_TILE_SIZE as f32 - half as f32 + 1.5,
     )
+}
+
+fn corn_tile_from_world(position: Vec3) -> Option<(usize, usize)> {
+    let half = corn_maze_half_extent();
+    let tile_x = ((position.x.floor() as i32 + half).div_euclid(CORN_MAZE_TILE_SIZE)) as isize;
+    let tile_z = ((position.z.floor() as i32 + half).div_euclid(CORN_MAZE_TILE_SIZE)) as isize;
+    if tile_x < 0
+        || tile_z < 0
+        || tile_x >= CORN_MAZE_TILES as isize
+        || tile_z >= CORN_MAZE_TILES as isize
+    {
+        return None;
+    }
+
+    Some((tile_x as usize, tile_z as usize))
 }
 
 fn stamp_exit_marker(world: &mut VoxelWorld, position: Vec3) {
@@ -1323,7 +1341,17 @@ fn render_city_walk_scene(scene: &mut Scene, figures: &CityFigureState, mouse_ca
     });
 }
 
-fn render_corn_maze_scene(scene: &mut Scene, maze: &CornMazeState, mouse_captured: bool) {
+fn render_corn_maze_scene(
+    scene: &mut Scene,
+    maze: &CornMazeState,
+    camera: &Camera,
+    mouse_captured: bool,
+) {
+    scene.layers.push(Layer {
+        name: "minimap".to_string(),
+        z: 80,
+        cells: corn_minimap_cells(scene.viewport, maze, camera),
+    });
     scene.overlays.push(Overlay {
         x: 2,
         y: 2,
@@ -1339,6 +1367,75 @@ fn render_corn_maze_scene(scene: &mut Scene, maze: &CornMazeState, mouse_capture
         ),
         style: TextStyle::default(),
     });
+}
+
+fn corn_minimap_cells(viewport: Viewport, maze: &CornMazeState, camera: &Camera) -> Vec<SceneCell> {
+    let Some((player_x, player_z)) = corn_tile_from_world(camera.position) else {
+        return Vec::new();
+    };
+    let Some((exit_x, exit_z)) = corn_tile_from_world(maze.exit_position) else {
+        return Vec::new();
+    };
+
+    let diameter = CORN_MINIMAP_RADIUS * 2 + 1;
+    let origin_x = viewport.width as i32 - diameter - 3;
+    let origin_y = 3;
+    let mut cells = Vec::new();
+
+    for dz in -CORN_MINIMAP_RADIUS..=CORN_MINIMAP_RADIUS {
+        for dx in -CORN_MINIMAP_RADIUS..=CORN_MINIMAP_RADIUS {
+            let distance_sq = dx * dx + dz * dz;
+            if distance_sq > CORN_MINIMAP_RADIUS * CORN_MINIMAP_RADIUS {
+                continue;
+            }
+
+            let map_x = player_x as isize + dx as isize;
+            let map_z = player_z as isize + dz as isize;
+            let glyph = if dx == 0 && dz == 0 {
+                player_minimap_glyph(camera)
+            } else if map_x == exit_x as isize && map_z == exit_z as isize {
+                'X'
+            } else if distance_sq >= (CORN_MINIMAP_RADIUS - 1) * (CORN_MINIMAP_RADIUS - 1) {
+                'O'
+            } else if map_x < 0
+                || map_z < 0
+                || map_x >= CORN_MAZE_TILES as isize
+                || map_z >= CORN_MAZE_TILES as isize
+            {
+                ' '
+            } else if corn_tile_open(&maze.open_tiles, map_x as usize, map_z as usize) {
+                '.'
+            } else {
+                '#'
+            };
+
+            if glyph != ' ' {
+                cells.push(SceneCell {
+                    x: origin_x + dx + CORN_MINIMAP_RADIUS,
+                    y: origin_y + dz + CORN_MINIMAP_RADIUS,
+                    glyph,
+                    style: TextStyle::default(),
+                });
+            }
+        }
+    }
+
+    cells
+}
+
+fn player_minimap_glyph(camera: &Camera) -> char {
+    let forward = horizontal(camera.forward());
+    if forward.x.abs() > forward.z.abs() {
+        if forward.x >= 0.0 {
+            '>'
+        } else {
+            '<'
+        }
+    } else if forward.z >= 0.0 {
+        'v'
+    } else {
+        '^'
+    }
 }
 
 fn render_shooter_scene(
@@ -1534,6 +1631,7 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
             "bullets" => [0xff, 0xea, 0x8a, 0xff],
             "weapon" => [0xf0, 0xc6, 0x5b, 0xff],
             "reticle" => [0x9f, 0xf5, 0xff, 0xff],
+            "minimap" => [0x9f, 0xf5, 0xff, 0xff],
             _ => [0xe6, 0xee, 0xf3, 0xff],
         };
 
@@ -1922,6 +2020,53 @@ mod tests {
         ));
 
         assert!(maze.escaped);
+    }
+
+    #[test]
+    fn corn_maze_maps_world_position_to_tile() {
+        let maze = CornMazeState::new();
+
+        assert_eq!(corn_tile_from_world(maze.start_position), Some((1, 1)));
+        assert_eq!(
+            corn_tile_from_world(maze.exit_position),
+            Some((CORN_MAZE_TILES - 2, CORN_MAZE_TILES - 2))
+        );
+    }
+
+    #[test]
+    fn corn_maze_minimap_draws_player_walls_and_exit_when_visible() {
+        let maze = CornMazeState::new();
+        let camera = look_at(
+            Vec3::new(
+                maze.exit_position.x - 6.0,
+                WALK_EYE_HEIGHT,
+                maze.exit_position.z,
+            ),
+            maze.exit_position,
+        )
+        .with_fov_y(64.0_f32.to_radians());
+
+        let cells = corn_minimap_cells(VIEWPORT, &maze, &camera);
+
+        assert!(cells
+            .iter()
+            .any(|cell| ['<', '>', '^', 'v'].contains(&cell.glyph)));
+        assert!(cells.iter().any(|cell| cell.glyph == '#'));
+        assert!(cells.iter().any(|cell| cell.glyph == '.'));
+        assert!(cells.iter().any(|cell| cell.glyph == 'X'));
+    }
+
+    #[test]
+    fn corn_maze_scene_draws_minimap_layer() {
+        let mut app = AppState::new();
+        app.start_corn_maze();
+
+        let scene = app.frame(0.0, true);
+
+        assert!(scene
+            .layers
+            .iter()
+            .any(|layer| layer.name == "minimap" && !layer.cells.is_empty()));
     }
 
     #[test]
