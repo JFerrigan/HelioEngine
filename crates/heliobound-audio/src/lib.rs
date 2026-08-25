@@ -5,6 +5,7 @@ use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, MixerDeviceSink, Player, S
 
 const SAMPLE_RATE: u32 = 44_100;
 const CHANNELS: u16 = 2;
+const CITY_AMBIENCE_SECONDS: f32 = 40.0;
 
 pub const BACKROOMS_ABC: &str = r#"
 X:1
@@ -15,6 +16,7 @@ K:C
 z8 C,6 z2 _E,4 z4 G,,8 z8 ^F,2 z2 C,4 z8
 z4 _B,,6 z2 F,4 z6 C,,8 z8
 "#;
+pub const GLASS_STAIRCASE_ABC: &str = include_str!("../assets/glass_staircase.abc");
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NoteEvent {
@@ -41,39 +43,54 @@ pub enum SoundEffect {
 
 pub struct GameAudio {
     backend: Option<RodioBackend>,
-    in_doom_mode: bool,
+    ambience: Option<AmbienceKind>,
 }
 
 impl GameAudio {
     pub fn open() -> Self {
         Self {
             backend: RodioBackend::open().ok(),
-            in_doom_mode: false,
+            ambience: None,
         }
     }
 
     pub fn silent() -> Self {
         Self {
             backend: None,
-            in_doom_mode: false,
+            ambience: None,
         }
     }
 
-    pub fn enter_doom_mode(&mut self) {
-        if self.in_doom_mode {
-            return;
-        }
+    pub fn enter_city_mode(&mut self) {
+        self.set_ambience(AmbienceKind::City);
+    }
 
-        self.in_doom_mode = true;
+    pub fn enter_doom_mode(&mut self) {
+        self.set_ambience(AmbienceKind::Doom);
+    }
+
+    pub fn leave_ambience(&mut self) {
+        self.ambience = None;
         if let Some(backend) = &mut self.backend {
-            backend.start_backrooms_ambience();
+            backend.stop_ambience();
         }
     }
 
     pub fn leave_doom_mode(&mut self) {
-        self.in_doom_mode = false;
+        self.leave_ambience();
+    }
+
+    fn set_ambience(&mut self, ambience: AmbienceKind) {
+        if self.ambience == Some(ambience) {
+            return;
+        }
+
+        self.ambience = Some(ambience);
         if let Some(backend) = &mut self.backend {
-            backend.stop_ambience();
+            match ambience {
+                AmbienceKind::City => backend.start_city_ambience(),
+                AmbienceKind::Doom => backend.start_backrooms_ambience(),
+            }
         }
     }
 
@@ -88,8 +105,18 @@ impl GameAudio {
     }
 
     pub fn in_doom_mode(&self) -> bool {
-        self.in_doom_mode
+        self.ambience == Some(AmbienceKind::Doom)
     }
+
+    pub fn in_city_mode(&self) -> bool {
+        self.ambience == Some(AmbienceKind::City)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AmbienceKind {
+    City,
+    Doom,
 }
 
 struct RodioBackend {
@@ -105,6 +132,19 @@ impl RodioBackend {
             sink,
             ambience: None,
         })
+    }
+
+    fn start_city_ambience(&mut self) {
+        self.stop_ambience();
+        let Ok(tune) = parse_abc(GLASS_STAIRCASE_ABC) else {
+            return;
+        };
+
+        let samples = synthesize_abc_limited(&tune, 0.18, CITY_AMBIENCE_SECONDS);
+        let player = Player::connect_new(self.sink.mixer());
+        player.set_volume(0.48);
+        player.append(samples_buffer(samples).repeat_infinite());
+        self.ambience = Some(player);
     }
 
     fn start_backrooms_ambience(&mut self) {
@@ -187,7 +227,8 @@ pub fn parse_abc(input: &str) -> Result<AbcTune, String> {
 fn parse_tempo(value: &str) -> Option<f32> {
     value
         .split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
-        .find(|part| !part.is_empty())
+        .filter(|part| !part.is_empty())
+        .last()
         .and_then(|part| part.parse::<f32>().ok())
         .filter(|tempo| *tempo > 0.0)
 }
@@ -203,9 +244,11 @@ fn parse_events(body: &str, unit_note_seconds: f32) -> Result<Vec<NoteEvent>, St
 
     while let Some(ch) = chars.peek().copied() {
         match ch {
-            ' ' | '\t' | '\r' | '\n' | '|' | '[' | ']' | ':' => {
+            ' ' | '\t' | '\r' | '\n' | '|' | ':' => {
                 chars.next();
             }
+            '"' => skip_until(&mut chars, '"'),
+            '[' => skip_until(&mut chars, ']'),
             '^' | '_' | '=' | 'A'..='G' | 'a'..='g' | 'z' => {
                 let semitone_offset = parse_accidental(&mut chars);
                 let Some(symbol) = chars.next() else {
@@ -252,6 +295,18 @@ fn parse_events(body: &str, unit_note_seconds: f32) -> Result<Vec<NoteEvent>, St
     }
 
     Ok(events)
+}
+
+fn skip_until<I>(chars: &mut std::iter::Peekable<I>, terminator: char)
+where
+    I: Iterator<Item = char>,
+{
+    chars.next();
+    for ch in chars.by_ref() {
+        if ch == terminator {
+            break;
+        }
+    }
 }
 
 fn parse_accidental<I>(chars: &mut std::iter::Peekable<I>) -> i32
@@ -338,9 +393,19 @@ fn note_frequency(note: char, accidental: i32, octave_shift: i32) -> f32 {
 }
 
 pub fn synthesize_abc(tune: &AbcTune, gain: f32) -> Vec<f32> {
+    synthesize_abc_limited(tune, gain, f32::INFINITY)
+}
+
+fn synthesize_abc_limited(tune: &AbcTune, gain: f32, max_seconds: f32) -> Vec<f32> {
     let mut samples = Vec::new();
+    let mut elapsed = 0.0;
     for event in &tune.events {
-        let frames = (event.duration_seconds * SAMPLE_RATE as f32).max(1.0) as usize;
+        if elapsed >= max_seconds {
+            break;
+        }
+
+        let duration_seconds = event.duration_seconds.min(max_seconds - elapsed);
+        let frames = (duration_seconds * SAMPLE_RATE as f32).max(1.0) as usize;
         for frame in 0..frames {
             let t = frame as f32 / SAMPLE_RATE as f32;
             let envelope = envelope(frame, frames, 0.08, 0.22);
@@ -352,6 +417,7 @@ pub fn synthesize_abc(tune: &AbcTune, gain: f32) -> Vec<f32> {
             };
             push_stereo(&mut samples, sample, sample);
         }
+        elapsed += duration_seconds;
     }
     samples
 }
@@ -479,6 +545,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_tempo_ratio_chord_annotations_and_inline_headers() {
+        let tune = parse_abc("L:1/8\nQ:1/4=112\nK:Em\n\"Em9\"E2 G | [M:5/8] \"B7\"^D F\n").unwrap();
+
+        assert_eq!(tune.tempo, 112.0);
+        assert_eq!(tune.events.len(), 4);
+        assert!(tune.events.iter().all(|event| event.frequency_hz.is_some()));
+    }
+
+    #[test]
+    fn parses_glass_staircase_asset() {
+        let tune = parse_abc(GLASS_STAIRCASE_ABC).unwrap();
+
+        assert_eq!(tune.title.as_deref(), Some("Glass Staircase"));
+        assert!(tune.events.len() > 250);
+        assert!(tune
+            .events
+            .iter()
+            .filter_map(|event| event.frequency_hz)
+            .any(|freq| freq > 1_000.0));
+    }
+
+    #[test]
     fn parses_accidentals_octaves_and_fractional_lengths() {
         let tune = parse_abc("L:1/4\nQ:60\nK:C\n^C,3/2 _d/2 =F\n").unwrap();
 
@@ -532,5 +620,11 @@ mod tests {
 
         audio.leave_doom_mode();
         assert!(!audio.in_doom_mode());
+
+        audio.enter_city_mode();
+        assert!(audio.in_city_mode());
+
+        audio.leave_ambience();
+        assert!(!audio.in_city_mode());
     }
 }

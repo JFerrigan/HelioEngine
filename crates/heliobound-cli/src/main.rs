@@ -114,12 +114,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 mouse_captured = set_mouse_captured(&window, false);
                             } else {
                                 app.enter_menu();
-                                audio.leave_doom_mode();
+                                audio.leave_ambience();
                             }
                         }
                         KeyboardAction::EnterMenu => {
                             app.enter_menu();
-                            audio.leave_doom_mode();
+                            audio.leave_ambience();
                             mouse_captured = set_mouse_captured(&window, false);
                         }
                         KeyboardAction::StartScene => {
@@ -373,10 +373,10 @@ impl AppState {
 }
 
 fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
-    if mode == AppMode::CityShooter {
-        audio.enter_doom_mode();
-    } else {
-        audio.leave_doom_mode();
+    match mode {
+        AppMode::CityWalk => audio.enter_city_mode(),
+        AppMode::CityShooter => audio.enter_doom_mode(),
+        AppMode::Menu | AppMode::PlanetFlight => audio.leave_ambience(),
     }
 }
 
