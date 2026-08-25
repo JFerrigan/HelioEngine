@@ -39,6 +39,10 @@ const WALK_SPEED: f32 = 15.0;
 const BOOST_MULTIPLIER: f32 = 8.0;
 const WALK_BOOST_MULTIPLIER: f32 = 2.25;
 const WALK_EYE_HEIGHT: f32 = 3.2;
+const CITY_FIGURE_EYE_HEIGHT: f32 = 2.2;
+const CITY_FIGURE_SPEED: f32 = 4.0;
+const CITY_FIGURE_GAZE_DISTANCE: f32 = 70.0;
+const CITY_FIGURE_GAZE_DOT: f32 = 0.93;
 const ENEMY_EYE_HEIGHT: f32 = 2.1;
 const ENEMY_SPEED: f32 = 5.5;
 const ENEMY_ATTACK_RANGE: f32 = 2.4;
@@ -199,6 +203,7 @@ struct AppState {
     city_builder: SceneBuilder,
     camera: Camera,
     input: PlayerInput,
+    city_figures: CityFigureState,
     shooter: ShooterState,
     audio_events: Vec<SoundEffect>,
     tick: u64,
@@ -227,6 +232,7 @@ impl AppState {
             ),
             camera: planet_start_camera(),
             input: PlayerInput::default(),
+            city_figures: CityFigureState::new(),
             shooter: ShooterState::new(),
             audio_events: Vec::new(),
             tick: 0,
@@ -288,6 +294,7 @@ impl AppState {
         self.mode = AppMode::CityWalk;
         self.camera = city_start_camera();
         self.input = PlayerInput::default();
+        self.city_figures = CityFigureState::new();
     }
 
     fn start_shooter(&mut self) {
@@ -309,20 +316,15 @@ impl AppState {
             }
             AppMode::CityWalk => {
                 update_walking_camera(&mut self.camera, &self.input, &self.city, dt);
+                self.city_figures.update(&self.city, &self.camera, dt);
                 let mut scene = self.city_builder.build(&self.city, &self.camera, self.tick);
-                scene.overlays.push(Overlay {
-                    x: 2,
-                    y: 2,
-                    z: 120,
-                    text: format!(
-                        "CITY WALK  mouse {}  M menu  pos {:.1},{:.1},{:.1}",
-                        if mouse_captured { "locked" } else { "free" },
-                        self.camera.position.x,
-                        self.camera.position.y,
-                        self.camera.position.z
-                    ),
-                    style: TextStyle::default(),
-                });
+                render_city_walk_scene(
+                    &mut scene,
+                    &self.city,
+                    &self.camera,
+                    &self.city_figures,
+                    mouse_captured,
+                );
                 scene
             }
             AppMode::CityShooter => {
@@ -432,6 +434,143 @@ struct PlayerInput {
     roll_left: bool,
     roll_right: bool,
     boost: bool,
+}
+
+#[derive(Clone, Debug)]
+struct CityFigureState {
+    figures: Vec<CityFigure>,
+}
+
+impl CityFigureState {
+    fn new() -> Self {
+        Self {
+            figures: spawn_city_figures(),
+        }
+    }
+
+    fn update(&mut self, city: &VoxelWorld, camera: &Camera, dt: f32) {
+        for figure in &mut self.figures {
+            figure.watching_player = figure.is_looking_at_player(city, camera);
+            if figure.watching_player {
+                continue;
+            }
+
+            figure.advance(city, dt);
+        }
+    }
+
+    fn watching_count(&self) -> usize {
+        self.figures
+            .iter()
+            .filter(|figure| figure.watching_player)
+            .count()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CityFigure {
+    position: Vec3,
+    route: Vec<Vec3>,
+    waypoint: usize,
+    last_direction: Vec3,
+    watching_player: bool,
+}
+
+impl CityFigure {
+    fn new(route: Vec<Vec3>) -> Self {
+        let position = route.first().copied().unwrap_or(Vec3::ZERO);
+        let waypoint = if route.len() > 1 { 1 } else { 0 };
+        let last_direction = route
+            .get(waypoint)
+            .copied()
+            .map(|target| horizontal(target - position))
+            .unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+
+        Self {
+            position,
+            route,
+            waypoint,
+            last_direction,
+            watching_player: false,
+        }
+    }
+
+    fn advance(&mut self, city: &VoxelWorld, dt: f32) {
+        if self.route.is_empty() {
+            return;
+        }
+
+        let mut to_waypoint = horizontal(self.route[self.waypoint] - self.position);
+        if horizontal_distance(self.position, self.route[self.waypoint]) < 0.35 {
+            self.waypoint = (self.waypoint + 1) % self.route.len();
+            to_waypoint = horizontal(self.route[self.waypoint] - self.position);
+        }
+
+        if to_waypoint.length() <= f32::EPSILON {
+            return;
+        }
+
+        self.last_direction = to_waypoint;
+        let candidate = self.position + to_waypoint * CITY_FIGURE_SPEED * dt;
+        let candidate = Vec3::new(candidate.x, 0.0, candidate.z);
+        if can_walk_to(city, Vec3::new(candidate.x, WALK_EYE_HEIGHT, candidate.z)) {
+            self.position = candidate;
+        }
+    }
+
+    fn is_looking_at_player(&self, city: &VoxelWorld, camera: &Camera) -> bool {
+        let distance = horizontal_distance(self.position, camera.position);
+        if distance > CITY_FIGURE_GAZE_DISTANCE {
+            return false;
+        }
+
+        let to_player = horizontal(camera.position - self.target_position());
+        if to_player.length() <= f32::EPSILON {
+            return true;
+        }
+
+        self.last_direction.dot(to_player) >= CITY_FIGURE_GAZE_DOT
+            && has_line_of_sight(city, self.target_position(), camera.position)
+    }
+
+    fn target_position(&self) -> Vec3 {
+        Vec3::new(self.position.x, CITY_FIGURE_EYE_HEIGHT, self.position.z)
+    }
+}
+
+fn spawn_city_figures() -> Vec<CityFigure> {
+    vec![
+        CityFigure::new(vec![
+            Vec3::new(0.5, 0.0, -48.5),
+            Vec3::new(0.5, 0.0, 48.5),
+            Vec3::new(48.5, 0.0, 48.5),
+            Vec3::new(48.5, 0.0, -48.5),
+        ]),
+        CityFigure::new(vec![
+            Vec3::new(-32.5, 0.0, -64.5),
+            Vec3::new(-32.5, 0.0, 0.5),
+            Vec3::new(32.5, 0.0, 0.5),
+            Vec3::new(32.5, 0.0, -64.5),
+        ]),
+        CityFigure::new(vec![
+            Vec3::new(-64.5, 0.0, 16.5),
+            Vec3::new(16.5, 0.0, 16.5),
+            Vec3::new(16.5, 0.0, 64.5),
+            Vec3::new(-64.5, 0.0, 64.5),
+        ]),
+        CityFigure::new(vec![
+            Vec3::new(64.5, 0.0, -16.5),
+            Vec3::new(-16.5, 0.0, -16.5),
+            Vec3::new(-16.5, 0.0, 32.5),
+            Vec3::new(64.5, 0.0, 32.5),
+        ]),
+        CityFigure::new(vec![
+            Vec3::new(-48.5, 0.0, 48.5),
+            Vec3::new(-48.5, 0.0, -32.5),
+            Vec3::new(16.5, 0.0, -32.5),
+            Vec3::new(16.5, 0.0, 48.5),
+        ]),
+    ]
 }
 
 #[derive(Clone, Debug)]
@@ -855,6 +994,50 @@ fn build_menu_scene(tick: u64) -> Scene {
     scene
 }
 
+fn render_city_walk_scene(
+    scene: &mut Scene,
+    city: &VoxelWorld,
+    camera: &Camera,
+    figures: &CityFigureState,
+    mouse_captured: bool,
+) {
+    let mut projected: Vec<(f32, Vec<SceneCell>)> = figures
+        .figures
+        .iter()
+        .filter_map(|figure| {
+            let target = figure.target_position();
+            if !has_line_of_sight(city, camera.position, target) {
+                return None;
+            }
+            project_world_point(camera, target, scene.viewport).map(|projection| {
+                (
+                    projection.distance,
+                    city_figure_cells(projection, figure.watching_player),
+                )
+            })
+        })
+        .collect();
+    projected.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+    scene.layers.push(Layer {
+        name: "city_figures".to_string(),
+        z: 30,
+        cells: projected.into_iter().flat_map(|(_, cells)| cells).collect(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "CITY WALK  figures {} watching {}  mouse {}  M menu",
+            figures.figures.len(),
+            figures.watching_count(),
+            if mouse_captured { "locked" } else { "free" }
+        ),
+        style: TextStyle::default(),
+    });
+}
+
 fn render_shooter_scene(
     scene: &mut Scene,
     city: &VoxelWorld,
@@ -989,6 +1172,48 @@ fn enemy_sprite(distance: f32) -> &'static [&'static str] {
     }
 }
 
+fn city_figure_cells(projection: Projection, watching_player: bool) -> Vec<SceneCell> {
+    let sprite = city_figure_sprite(projection.distance, watching_player);
+    let height = sprite.len() as i32;
+    let width = sprite.iter().map(|line| line.len()).max().unwrap_or(0) as i32;
+    let start_x = projection.x - width / 2;
+    let start_y = projection.y - height / 2;
+    let mut cells = Vec::new();
+
+    for (row, line) in sprite.iter().enumerate() {
+        for (col, glyph) in line.chars().enumerate() {
+            if glyph == ' ' {
+                continue;
+            }
+            cells.push(SceneCell {
+                x: start_x + col as i32,
+                y: start_y + row as i32,
+                glyph,
+                style: TextStyle::default(),
+            });
+        }
+    }
+
+    cells
+}
+
+fn city_figure_sprite(distance: f32, watching_player: bool) -> &'static [&'static str] {
+    match (distance, watching_player) {
+        (distance, true) if distance < 14.0 => &[
+            "  /_\\  ", " (@ @) ", "  \\_/  ", "-<|=|>-", " /|_|\\ ", "  / \\  ",
+        ],
+        (distance, false) if distance < 14.0 => &[
+            "  /_\\  ", " (o o) ", "  \\_/  ", " ~|=|~ ", " /|_|\\ ", "  / \\  ",
+        ],
+        (distance, true) if distance < 32.0 => &["/_\\", "@_@", "/|\\", "/ \\"],
+        (distance, false) if distance < 32.0 => &["/_\\", "o_o", "/|\\", "/ \\"],
+        (distance, true) if distance < 62.0 => &["@_@", "/|\\"],
+        (distance, false) if distance < 62.0 => &["o_o", "/|\\"],
+        (_, true) => &["@"],
+        (_, false) => &["o"],
+    }
+}
+
 fn bullet_cells(viewport: Viewport, camera: &Camera, traces: &[BulletTrace]) -> Vec<SceneCell> {
     let mut cells = Vec::new();
 
@@ -1110,6 +1335,7 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
             "menu" => [0x78, 0xc6, 0xa3, 0xff],
             "voxels" => [0xdf, 0xe8, 0xdb, 0xff],
             "planet" => [0xdf, 0xe8, 0xdb, 0xff],
+            "city_figures" => [0xff, 0x7a, 0xd9, 0xff],
             "enemies" => [0xff, 0x65, 0x5a, 0xff],
             "bullets" => [0xff, 0xea, 0x8a, 0xff],
             "weapon" => [0xf0, 0xc6, 0x5b, 0xff],
@@ -1280,6 +1506,63 @@ mod tests {
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::CityWalk);
+    }
+
+    #[test]
+    fn city_figure_moves_when_not_watching_player() {
+        let city = build_demo_city();
+        let camera = Camera::new(Vec3::new(60.5, WALK_EYE_HEIGHT, 60.5)).looking_at(0.0, 0.0);
+        let mut figure =
+            CityFigure::new(vec![Vec3::new(0.5, 0.0, -48.5), Vec3::new(0.5, 0.0, -32.5)]);
+        let before = figure.position;
+
+        figure.watching_player = figure.is_looking_at_player(&city, &camera);
+        figure.advance(&city, 1.0);
+
+        assert!(!figure.watching_player);
+        assert_ne!(figure.position, before);
+    }
+
+    #[test]
+    fn city_figure_stops_when_it_is_watching_player() {
+        let city = build_demo_city();
+        let camera = city_start_camera();
+        let mut figures = CityFigureState {
+            figures: vec![CityFigure::new(vec![
+                Vec3::new(0.5, 0.0, -48.5),
+                Vec3::new(0.5, 0.0, -64.5),
+            ])],
+        };
+        let before = figures.figures[0].position;
+
+        figures.update(&city, &camera, 1.0);
+
+        assert!(figures.figures[0].watching_player);
+        assert_eq!(figures.figures[0].position, before);
+    }
+
+    #[test]
+    fn city_walk_scene_projects_clownlike_figures() {
+        let mut app = AppState::new();
+        app.start_city();
+        app.city_figures = CityFigureState {
+            figures: vec![CityFigure::new(vec![
+                Vec3::new(0.5, 0.0, -44.5),
+                Vec3::new(0.5, 0.0, -32.5),
+            ])],
+        };
+
+        let scene = app.frame(0.0, true);
+        let figures = scene
+            .layers
+            .iter()
+            .find(|layer| layer.name == "city_figures")
+            .expect("city walk scene should include city figures");
+
+        assert!(figures
+            .cells
+            .iter()
+            .any(|cell| cell.glyph == 'o' || cell.glyph == '@'));
     }
 
     #[test]
