@@ -55,9 +55,10 @@ const MOUSE_SENSITIVITY: f32 = 0.0025;
 const PITCH_LIMIT: f32 = 1.52;
 const ROLL_SPEED: f32 = 1.8;
 const CORN_MAZE_TILES: usize = 25;
-const CORN_MAZE_TILE_SIZE: i32 = 3;
-const CORN_MAZE_WALL_HEIGHT: i32 = 7;
+const CORN_MAZE_TILE_SIZE: i32 = 5;
+const CORN_STALK_BASE_HEIGHT: i32 = 6;
 const CORN_MINIMAP_RADIUS: i32 = 6;
+const WALK_COLLISION_RADIUS: f32 = 0.34;
 const NPC_BODY_OFFSETS: [(i32, i32, i32, bool); 19] = [
     (-1, 1, 0, false),
     (1, 1, 0, false),
@@ -948,6 +949,22 @@ fn horizontal(direction: Vec3) -> Vec3 {
 }
 
 fn can_walk_to(city: &VoxelWorld, position: Vec3) -> bool {
+    let samples = [
+        (0.0, 0.0),
+        (-WALK_COLLISION_RADIUS, -WALK_COLLISION_RADIUS),
+        (-WALK_COLLISION_RADIUS, WALK_COLLISION_RADIUS),
+        (WALK_COLLISION_RADIUS, -WALK_COLLISION_RADIUS),
+        (WALK_COLLISION_RADIUS, WALK_COLLISION_RADIUS),
+    ];
+    samples.iter().all(|(offset_x, offset_z)| {
+        has_standing_clearance(
+            city,
+            Vec3::new(position.x + offset_x, position.y, position.z + offset_z),
+        )
+    })
+}
+
+fn has_standing_clearance(city: &VoxelWorld, position: Vec3) -> bool {
     let x = position.x.floor() as i32;
     let z = position.z.floor() as i32;
     for y in 1..=WALK_EYE_HEIGHT.ceil() as i32 {
@@ -1067,13 +1084,8 @@ fn build_corn_maze() -> (VoxelWorld, Vec<bool>, Vec3, Vec3) {
                         continue;
                     }
 
-                    for y in 1..=CORN_MAZE_WALL_HEIGHT {
-                        let material = if y == CORN_MAZE_WALL_HEIGHT {
-                            VoxelMaterial::CarbonLife
-                        } else {
-                            VoxelMaterial::CornStalk
-                        };
-                        world.set(VoxelCoord::new(x, y, z), VoxelCell::new(material));
+                    if should_place_corn_stalk(tile_x, tile_z, local_x, local_z) {
+                        stamp_corn_stalk(&mut world, x, z, corn_stalk_height(tile_x, tile_z, x, z));
                     }
                 }
             }
@@ -1145,6 +1157,57 @@ fn shuffled_maze_dirs(x: usize, z: usize) -> [(isize, isize); 4] {
 
 fn corn_tile_open(open: &[bool], x: usize, z: usize) -> bool {
     open[z * CORN_MAZE_TILES + x]
+}
+
+fn should_place_corn_stalk(tile_x: usize, tile_z: usize, local_x: i32, local_z: i32) -> bool {
+    if local_x == 0
+        || local_z == 0
+        || local_x == CORN_MAZE_TILE_SIZE - 1
+        || local_z == CORN_MAZE_TILE_SIZE - 1
+    {
+        return true;
+    }
+
+    ((local_x + local_z + tile_x as i32 + tile_z as i32) & 1) == 0
+}
+
+fn corn_stalk_height(tile_x: usize, tile_z: usize, x: i32, z: i32) -> i32 {
+    let hash = ((tile_x as u64 + 3).wrapping_mul(0x517C_C1B7))
+        ^ ((tile_z as u64 + 5).wrapping_mul(0xA24B_AED5))
+        ^ ((x as i64 as u64).wrapping_mul(0x9E37_79B1))
+        ^ ((z as i64 as u64).wrapping_mul(0x85EB_CA77));
+    CORN_STALK_BASE_HEIGHT + (hash % 3) as i32
+}
+
+fn stamp_corn_stalk(world: &mut VoxelWorld, x: i32, z: i32, height: i32) {
+    for y in 1..=height {
+        world.set(
+            VoxelCoord::new(x, y, z),
+            VoxelCell::new(VoxelMaterial::CornStalk),
+        );
+    }
+
+    for (dx, dz) in corn_leaf_offsets(x, z) {
+        for y in [2, 4] {
+            world.set(
+                VoxelCoord::new(x + dx, y, z + dz),
+                VoxelCell::new(VoxelMaterial::CarbonLife),
+            );
+        }
+    }
+
+    world.set(
+        VoxelCoord::new(x, height + 1, z),
+        VoxelCell::new(VoxelMaterial::CarbonLife),
+    );
+}
+
+fn corn_leaf_offsets(x: i32, z: i32) -> [(i32, i32); 2] {
+    if (x + z).rem_euclid(2) == 0 {
+        [(-1, 0), (1, 0)]
+    } else {
+        [(0, -1), (0, 1)]
+    }
 }
 
 fn set_corn_tile_open(open: &mut [bool], x: usize, z: usize) {
@@ -1961,8 +2024,9 @@ mod tests {
         assert!(maze.world.voxel_count() > 4_000);
         assert!(maze
             .world
-            .get(VoxelCoord::new(-36, 4, -36))
+            .get(VoxelCoord::new(-60, 4, -60))
             .is_some_and(|cell| cell.material == VoxelMaterial::CornStalk));
+        assert_eq!(maze.world.get(VoxelCoord::new(-61, 5, -60)), None);
         assert!(maze
             .world
             .get(VoxelCoord::new(
