@@ -54,6 +54,27 @@ const BULLET_TRACE_TIME: f32 = 0.18;
 const MOUSE_SENSITIVITY: f32 = 0.0025;
 const PITCH_LIMIT: f32 = 1.52;
 const ROLL_SPEED: f32 = 1.8;
+const NPC_BODY_OFFSETS: [(i32, i32, i32, bool); 19] = [
+    (-1, 1, 0, false),
+    (1, 1, 0, false),
+    (-1, 2, 0, false),
+    (0, 2, 0, false),
+    (1, 2, 0, false),
+    (-2, 2, 0, true),
+    (2, 2, 0, true),
+    (-1, 3, -1, true),
+    (0, 3, -1, false),
+    (1, 3, -1, true),
+    (-1, 3, 0, true),
+    (0, 3, 0, false),
+    (1, 3, 0, true),
+    (-1, 3, 1, true),
+    (0, 3, 1, false),
+    (1, 3, 1, true),
+    (-1, 4, 0, true),
+    (0, 4, 0, true),
+    (1, 4, 0, true),
+];
 
 fn main() -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
@@ -630,36 +651,15 @@ impl ShooterState {
         self.bullet_traces.push(BulletTrace::from_camera(camera));
         let mut effects = vec![SoundEffect::Gunshot];
 
-        let Some(index) = self
-            .enemies
-            .iter()
-            .enumerate()
-            .filter(|(_, enemy)| enemy.is_alive())
-            .filter_map(|(index, enemy)| {
-                let target = enemy.target_position();
-                let delta = target - camera.position;
-                let distance = delta.length();
-                if distance <= f32::EPSILON || distance > WEAPON_RANGE {
-                    return None;
-                }
-
-                let direction = delta.normalized();
-                let forward = direction.dot(camera.forward());
-                let aim_x = direction.dot(camera.right()).abs();
-                let aim_y = direction.dot(camera.up()).abs();
-
-                if forward < 0.985 || aim_x > 0.08 || aim_y > 0.10 {
-                    return None;
-                }
-                if !has_line_of_sight(city, camera.position, target) {
-                    return None;
-                }
-
-                Some((index, distance))
-            })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(index, _)| index)
-        else {
+        let render_world = shooter_world_with_enemies(city, self);
+        let Some(hit) = raycast(
+            &render_world,
+            Ray::new(camera.position, camera.forward()),
+            WEAPON_RANGE,
+        ) else {
+            return effects;
+        };
+        let Some(index) = self.enemy_index_for_voxel(hit.coord) else {
             return effects;
         };
 
@@ -672,6 +672,14 @@ impl ShooterState {
             effects.push(SoundEffect::EnemyHit);
         }
         effects
+    }
+
+    fn enemy_index_for_voxel(&self, coord: VoxelCoord) -> Option<usize> {
+        self.enemies
+            .iter()
+            .enumerate()
+            .filter(|(_, enemy)| enemy.is_alive())
+            .find_map(|(index, enemy)| enemy.contains_voxel(coord).then_some(index))
     }
 
     fn alive_count(&self) -> usize {
@@ -716,8 +724,8 @@ impl Enemy {
         self.health > 0
     }
 
-    fn target_position(self) -> Vec3 {
-        Vec3::new(self.position.x, ENEMY_EYE_HEIGHT, self.position.z)
+    fn contains_voxel(self, coord: VoxelCoord) -> bool {
+        npc_body_contains_voxel(self.position, coord)
     }
 }
 
@@ -964,32 +972,20 @@ fn stamp_npc_body(
     accent: VoxelMaterial,
 ) {
     let origin = VoxelCoord::new(position.x.floor() as i32, 0, position.z.floor() as i32);
-    for (x, y, z, material) in [
-        (-1, 1, 0, body),
-        (1, 1, 0, body),
-        (-1, 2, 0, body),
-        (0, 2, 0, body),
-        (1, 2, 0, body),
-        (-2, 2, 0, accent),
-        (2, 2, 0, accent),
-        (-1, 3, -1, accent),
-        (0, 3, -1, body),
-        (1, 3, -1, accent),
-        (-1, 3, 0, accent),
-        (0, 3, 0, body),
-        (1, 3, 0, accent),
-        (-1, 3, 1, accent),
-        (0, 3, 1, body),
-        (1, 3, 1, accent),
-        (-1, 4, 0, accent),
-        (0, 4, 0, accent),
-        (1, 4, 0, accent),
-    ] {
+    for (x, y, z, is_accent) in NPC_BODY_OFFSETS {
+        let material = if is_accent { accent } else { body };
         world.set(
             VoxelCoord::new(origin.x + x, origin.y + y, origin.z + z),
             VoxelCell::new(material),
         );
     }
+}
+
+fn npc_body_contains_voxel(position: Vec3, coord: VoxelCoord) -> bool {
+    let origin = VoxelCoord::new(position.x.floor() as i32, 0, position.z.floor() as i32);
+    NPC_BODY_OFFSETS
+        .iter()
+        .any(|(x, y, z, _)| VoxelCoord::new(origin.x + *x, origin.y + *y, origin.z + *z) == coord)
 }
 
 fn build_menu_scene(tick: u64) -> Scene {
@@ -1541,6 +1537,36 @@ mod tests {
 
         assert!(app.shooter.enemies[0].health < health_before);
         assert_eq!(app.shooter.shots_fired, 1);
+    }
+
+    #[test]
+    fn shooter_fire_uses_enemy_voxel_hitbox() {
+        let mut app = AppState::new();
+        app.start_shooter();
+        let target = Vec3::new(-0.5, ENEMY_EYE_HEIGHT, -35.5);
+        app.camera = look_at(app.camera.position, target)
+            .with_fov_y(68.0_f32.to_radians())
+            .with_max_distance(140.0);
+
+        let health_before = app.shooter.enemies[0].health;
+        app.fire_weapon();
+
+        assert!(app.shooter.enemies[0].health < health_before);
+    }
+
+    #[test]
+    fn shooter_fire_ignores_non_enemy_voxel_hits() {
+        let mut app = AppState::new();
+        app.start_shooter();
+        app.camera = look_at(app.camera.position, Vec3::new(12.0, 3.0, -42.0))
+            .with_fov_y(68.0_f32.to_radians())
+            .with_max_distance(140.0);
+
+        let health_before = app.shooter.enemies[0].health;
+        app.fire_weapon();
+
+        assert_eq!(app.shooter.enemies[0].health, health_before);
+        assert_eq!(app.drain_audio_events(), vec![SoundEffect::Gunshot]);
     }
 
     #[test]
