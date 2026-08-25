@@ -39,6 +39,7 @@ const WALK_SPEED: f32 = 15.0;
 const BOOST_MULTIPLIER: f32 = 8.0;
 const WALK_BOOST_MULTIPLIER: f32 = 2.25;
 const WALK_EYE_HEIGHT: f32 = 3.2;
+const WALK_COLLISION_RADIUS: f32 = 0.34;
 const CITY_FIGURE_EYE_HEIGHT: f32 = WALK_EYE_HEIGHT;
 const CITY_FIGURE_SPEED: f32 = 4.0;
 const CITY_FIGURE_GAZE_DISTANCE: f32 = 70.0;
@@ -55,10 +56,22 @@ const MOUSE_SENSITIVITY: f32 = 0.0025;
 const PITCH_LIMIT: f32 = 1.52;
 const ROLL_SPEED: f32 = 1.8;
 const CORN_MAZE_TILES: usize = 25;
-const CORN_MAZE_TILE_SIZE: i32 = 5;
-const CORN_STALK_BASE_HEIGHT: i32 = 6;
+const CORN_MAZE_TILE_SIZE: i32 = 15;
+const CORN_WALK_EYE_HEIGHT: f32 = 9.6;
+const CORN_WALK_SPEED: f32 = 34.0;
+const CORN_COLLISION_RADIUS: f32 = 1.15;
+const CORN_STALK_BASE_HEIGHT: i32 = 15;
 const CORN_MINIMAP_RADIUS: i32 = 6;
-const WALK_COLLISION_RADIUS: f32 = 0.34;
+const STANDARD_WALK_PROFILE: WalkProfile = WalkProfile {
+    eye_height: WALK_EYE_HEIGHT,
+    speed: WALK_SPEED,
+    collision_radius: WALK_COLLISION_RADIUS,
+};
+const CORN_WALK_PROFILE: WalkProfile = WalkProfile {
+    eye_height: CORN_WALK_EYE_HEIGHT,
+    speed: CORN_WALK_SPEED,
+    collision_radius: CORN_COLLISION_RADIUS,
+};
 const NPC_BODY_OFFSETS: [(i32, i32, i32, bool); 19] = [
     (-1, 1, 0, false),
     (1, 1, 0, false),
@@ -380,7 +393,13 @@ impl AppState {
                 scene
             }
             AppMode::CornMaze => {
-                update_walking_camera(&mut self.camera, &self.input, &self.corn_maze.world, dt);
+                update_walking_camera_with_profile(
+                    &mut self.camera,
+                    &self.input,
+                    &self.corn_maze.world,
+                    CORN_WALK_PROFILE,
+                    dt,
+                );
                 self.corn_maze.update(self.camera.position);
                 let mut scene =
                     self.city_builder
@@ -468,17 +487,17 @@ fn corn_maze_start_camera(maze: &CornMazeState) -> Camera {
     look_at(
         Vec3::new(
             maze.start_position.x,
-            WALK_EYE_HEIGHT,
+            CORN_WALK_EYE_HEIGHT,
             maze.start_position.z,
         ),
         Vec3::new(
-            maze.start_position.x + 8.0,
-            WALK_EYE_HEIGHT,
+            maze.start_position.x + 24.0,
+            CORN_WALK_EYE_HEIGHT,
             maze.start_position.z,
         ),
     )
     .with_fov_y(64.0_f32.to_radians())
-    .with_max_distance(140.0)
+    .with_max_distance(180.0)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -492,6 +511,13 @@ struct PlayerInput {
     roll_left: bool,
     roll_right: bool,
     boost: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WalkProfile {
+    eye_height: f32,
+    speed: f32,
+    collision_radius: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -872,6 +898,16 @@ fn update_flight_camera(camera: &mut Camera, input: &PlayerInput, dt: f32) {
 }
 
 fn update_walking_camera(camera: &mut Camera, input: &PlayerInput, city: &VoxelWorld, dt: f32) {
+    update_walking_camera_with_profile(camera, input, city, STANDARD_WALK_PROFILE, dt);
+}
+
+fn update_walking_camera_with_profile(
+    camera: &mut Camera,
+    input: &PlayerInput,
+    city: &VoxelWorld,
+    profile: WalkProfile,
+    dt: f32,
+) {
     let mut movement = Vec3::ZERO;
     let forward = horizontal(camera.forward());
     let right = horizontal(camera.right());
@@ -891,23 +927,28 @@ fn update_walking_camera(camera: &mut Camera, input: &PlayerInput, city: &VoxelW
 
     if movement.length() > f32::EPSILON {
         let speed = if input.boost {
-            WALK_SPEED * WALK_BOOST_MULTIPLIER
+            profile.speed * WALK_BOOST_MULTIPLIER
         } else {
-            WALK_SPEED
+            profile.speed
         };
         let step = movement.normalized() * speed * dt;
-        camera.position = move_walking_with_collision(camera.position, step, city);
+        camera.position = move_walking_with_collision(camera.position, step, city, profile);
     }
 }
 
-fn move_walking_with_collision(position: Vec3, step: Vec3, city: &VoxelWorld) -> Vec3 {
-    let full = Vec3::new(position.x + step.x, WALK_EYE_HEIGHT, position.z + step.z);
-    if can_walk_to(city, full) {
+fn move_walking_with_collision(
+    position: Vec3,
+    step: Vec3,
+    city: &VoxelWorld,
+    profile: WalkProfile,
+) -> Vec3 {
+    let full = Vec3::new(position.x + step.x, profile.eye_height, position.z + step.z);
+    if can_walk_to_with_profile(city, full, profile) {
         return full;
     }
 
-    let x_then_z = resolve_axis_slide(position, step.x, step.z, true, city);
-    let z_then_x = resolve_axis_slide(position, step.z, step.x, false, city);
+    let x_then_z = resolve_axis_slide(position, step.x, step.z, true, city, profile);
+    let z_then_x = resolve_axis_slide(position, step.z, step.x, false, city, profile);
     if horizontal_distance(position, x_then_z) >= horizontal_distance(position, z_then_x) {
         x_then_z
     } else {
@@ -921,27 +962,28 @@ fn resolve_axis_slide(
     secondary: f32,
     primary_is_x: bool,
     city: &VoxelWorld,
+    profile: WalkProfile,
 ) -> Vec3 {
     let mut resolved = position;
     let primary_candidate = if primary_is_x {
-        Vec3::new(resolved.x + primary, WALK_EYE_HEIGHT, resolved.z)
+        Vec3::new(resolved.x + primary, profile.eye_height, resolved.z)
     } else {
-        Vec3::new(resolved.x, WALK_EYE_HEIGHT, resolved.z + primary)
+        Vec3::new(resolved.x, profile.eye_height, resolved.z + primary)
     };
-    if can_walk_to(city, primary_candidate) {
+    if can_walk_to_with_profile(city, primary_candidate, profile) {
         resolved = primary_candidate;
     }
 
     let secondary_candidate = if primary_is_x {
-        Vec3::new(resolved.x, WALK_EYE_HEIGHT, resolved.z + secondary)
+        Vec3::new(resolved.x, profile.eye_height, resolved.z + secondary)
     } else {
-        Vec3::new(resolved.x + secondary, WALK_EYE_HEIGHT, resolved.z)
+        Vec3::new(resolved.x + secondary, profile.eye_height, resolved.z)
     };
-    if can_walk_to(city, secondary_candidate) {
+    if can_walk_to_with_profile(city, secondary_candidate, profile) {
         resolved = secondary_candidate;
     }
 
-    Vec3::new(resolved.x, WALK_EYE_HEIGHT, resolved.z)
+    Vec3::new(resolved.x, profile.eye_height, resolved.z)
 }
 
 fn horizontal(direction: Vec3) -> Vec3 {
@@ -949,25 +991,30 @@ fn horizontal(direction: Vec3) -> Vec3 {
 }
 
 fn can_walk_to(city: &VoxelWorld, position: Vec3) -> bool {
+    can_walk_to_with_profile(city, position, STANDARD_WALK_PROFILE)
+}
+
+fn can_walk_to_with_profile(city: &VoxelWorld, position: Vec3, profile: WalkProfile) -> bool {
     let samples = [
         (0.0, 0.0),
-        (-WALK_COLLISION_RADIUS, -WALK_COLLISION_RADIUS),
-        (-WALK_COLLISION_RADIUS, WALK_COLLISION_RADIUS),
-        (WALK_COLLISION_RADIUS, -WALK_COLLISION_RADIUS),
-        (WALK_COLLISION_RADIUS, WALK_COLLISION_RADIUS),
+        (-profile.collision_radius, -profile.collision_radius),
+        (-profile.collision_radius, profile.collision_radius),
+        (profile.collision_radius, -profile.collision_radius),
+        (profile.collision_radius, profile.collision_radius),
     ];
     samples.iter().all(|(offset_x, offset_z)| {
         has_standing_clearance(
             city,
             Vec3::new(position.x + offset_x, position.y, position.z + offset_z),
+            profile,
         )
     })
 }
 
-fn has_standing_clearance(city: &VoxelWorld, position: Vec3) -> bool {
+fn has_standing_clearance(city: &VoxelWorld, position: Vec3, profile: WalkProfile) -> bool {
     let x = position.x.floor() as i32;
     let z = position.z.floor() as i32;
-    for y in 1..=WALK_EYE_HEIGHT.ceil() as i32 {
+    for y in 1..=profile.eye_height.ceil() as i32 {
         if city.get(VoxelCoord::new(x, y, z)).is_some() {
             return false;
         }
@@ -1165,10 +1212,11 @@ fn should_place_corn_stalk(tile_x: usize, tile_z: usize, local_x: i32, local_z: 
         || local_x == CORN_MAZE_TILE_SIZE - 1
         || local_z == CORN_MAZE_TILE_SIZE - 1
     {
-        return true;
+        return (local_x + local_z).rem_euclid(2) == 0;
     }
 
-    ((local_x + local_z + tile_x as i32 + tile_z as i32) & 1) == 0
+    local_x.rem_euclid(3) == (tile_z as i32).rem_euclid(3)
+        && local_z.rem_euclid(3) == (tile_x as i32).rem_euclid(3)
 }
 
 fn corn_stalk_height(tile_x: usize, tile_z: usize, x: i32, z: i32) -> i32 {
@@ -1187,18 +1235,29 @@ fn stamp_corn_stalk(world: &mut VoxelWorld, x: i32, z: i32, height: i32) {
         );
     }
 
-    for (dx, dz) in corn_leaf_offsets(x, z) {
-        for y in [2, 4] {
-            world.set(
-                VoxelCoord::new(x + dx, y, z + dz),
-                VoxelCell::new(VoxelMaterial::CarbonLife),
-            );
+    for (index, y) in [4, 7, 10, 13].into_iter().enumerate() {
+        if y >= height {
+            continue;
+        }
+
+        let [(dx_a, dz_a), (dx_b, dz_b)] = corn_leaf_offsets(x + index as i32, z);
+        for length in 1..=2 {
+            for (dx, dz) in [(dx_a, dz_a), (dx_b, dz_b)] {
+                world.set(
+                    VoxelCoord::new(x + dx * length, y, z + dz * length),
+                    VoxelCell::new(VoxelMaterial::CarbonLife),
+                );
+            }
         }
     }
 
     world.set(
         VoxelCoord::new(x, height + 1, z),
         VoxelCell::new(VoxelMaterial::CarbonLife),
+    );
+    world.set(
+        VoxelCoord::new(x, height + 2, z),
+        VoxelCell::new(VoxelMaterial::CornStalk),
     );
 }
 
@@ -1220,10 +1279,11 @@ fn corn_maze_half_extent() -> i32 {
 
 fn corn_tile_center(tile_x: usize, tile_z: usize) -> Vec3 {
     let half = corn_maze_half_extent();
+    let center_offset = CORN_MAZE_TILE_SIZE as f32 * 0.5;
     Vec3::new(
-        tile_x as f32 * CORN_MAZE_TILE_SIZE as f32 - half as f32 + 1.5,
+        tile_x as f32 * CORN_MAZE_TILE_SIZE as f32 - half as f32 + center_offset,
         0.0,
-        tile_z as f32 * CORN_MAZE_TILE_SIZE as f32 - half as f32 + 1.5,
+        tile_z as f32 * CORN_MAZE_TILE_SIZE as f32 - half as f32 + center_offset,
     )
 }
 
@@ -1867,7 +1927,12 @@ mod tests {
         }
         let start = Vec3::new(0.5, WALK_EYE_HEIGHT, 0.5);
 
-        let moved = move_walking_with_collision(start, Vec3::new(1.0, 0.0, 0.5), &world);
+        let moved = move_walking_with_collision(
+            start,
+            Vec3::new(1.0, 0.0, 0.5),
+            &world,
+            STANDARD_WALK_PROFILE,
+        );
 
         assert_eq!(moved.x, start.x);
         assert!(moved.z > start.z);
@@ -1892,7 +1957,12 @@ mod tests {
         }
         let start = Vec3::new(0.5, WALK_EYE_HEIGHT, 0.5);
 
-        let moved = move_walking_with_collision(start, Vec3::new(1.0, 0.0, 1.0), &world);
+        let moved = move_walking_with_collision(
+            start,
+            Vec3::new(1.0, 0.0, 1.0),
+            &world,
+            STANDARD_WALK_PROFILE,
+        );
 
         assert_eq!(moved, start);
     }
@@ -2020,13 +2090,23 @@ mod tests {
     #[test]
     fn corn_maze_contains_tall_corn_and_exit_marker() {
         let maze = CornMazeState::new();
+        let wall_base = -corn_maze_half_extent();
 
         assert!(maze.world.voxel_count() > 4_000);
+        assert!(CORN_MAZE_TILE_SIZE > 10);
+        assert!(CORN_WALK_EYE_HEIGHT > WALK_EYE_HEIGHT * 2.0);
         assert!(maze
             .world
-            .get(VoxelCoord::new(-60, 4, -60))
+            .get(VoxelCoord::new(wall_base, 8, wall_base))
             .is_some_and(|cell| cell.material == VoxelMaterial::CornStalk));
-        assert_eq!(maze.world.get(VoxelCoord::new(-61, 5, -60)), None);
+        assert_eq!(
+            maze.world.get(VoxelCoord::new(wall_base + 1, 8, wall_base)),
+            None
+        );
+        assert!(maze
+            .world
+            .get(VoxelCoord::new(wall_base + 2, 10, wall_base))
+            .is_some_and(|cell| cell.material == VoxelMaterial::CarbonLife));
         assert!(maze
             .world
             .get(VoxelCoord::new(
@@ -2041,32 +2121,38 @@ mod tests {
     fn corn_maze_start_is_walkable() {
         let maze = CornMazeState::new();
 
-        assert!(can_walk_to(
+        assert!(can_walk_to_with_profile(
             &maze.world,
             Vec3::new(
                 maze.start_position.x,
-                WALK_EYE_HEIGHT,
+                CORN_WALK_EYE_HEIGHT,
                 maze.start_position.z
-            )
+            ),
+            CORN_WALK_PROFILE
         ));
     }
 
     #[test]
     fn corn_maze_corn_is_hit_by_voxel_raycast() {
         let maze = CornMazeState::new();
+        let half = corn_maze_half_extent();
         let camera = look_at(
             Vec3::new(
                 maze.start_position.x,
-                WALK_EYE_HEIGHT,
+                CORN_WALK_EYE_HEIGHT,
                 maze.start_position.z,
             ),
-            Vec3::new(-36.0, WALK_EYE_HEIGHT, -36.0),
+            Vec3::new(
+                -half as f32 + 0.5,
+                CORN_WALK_EYE_HEIGHT,
+                maze.start_position.z + 0.5,
+            ),
         );
 
         let hit = raycast(
             &maze.world,
             Ray::new(camera.position, camera.forward()),
-            12.0,
+            40.0,
         )
         .expect("ray should hit nearby corn wall");
 
@@ -2079,7 +2165,7 @@ mod tests {
 
         maze.update(Vec3::new(
             maze.exit_position.x + 1.0,
-            WALK_EYE_HEIGHT,
+            CORN_WALK_EYE_HEIGHT,
             maze.exit_position.z,
         ));
 
@@ -2102,8 +2188,8 @@ mod tests {
         let maze = CornMazeState::new();
         let camera = look_at(
             Vec3::new(
-                maze.exit_position.x - 6.0,
-                WALK_EYE_HEIGHT,
+                maze.exit_position.x - CORN_MAZE_TILE_SIZE as f32,
+                CORN_WALK_EYE_HEIGHT,
                 maze.exit_position.z,
             ),
             maze.exit_position,
