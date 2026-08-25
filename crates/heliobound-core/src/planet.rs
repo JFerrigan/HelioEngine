@@ -13,9 +13,9 @@ impl Default for PlanetConfig {
     fn default() -> Self {
         Self {
             seed: 0xA11C_E5EED,
-            radius: 42_000,
+            radius: 42_000_000,
             crust_depth: 3,
-            terrain_amplitude: 5_000.0,
+            terrain_amplitude: 5_000_000.0,
         }
     }
 }
@@ -289,11 +289,11 @@ mod tests {
     fn procedural_planet_supports_large_scale_without_generation() {
         let planet = ProceduralPlanet::new(PlanetConfig::default());
 
-        assert_eq!(planet.radius(), 42_000.0);
+        assert_eq!(planet.radius(), 42_000_000.0);
         assert!(planet.outer_radius() > planet.radius());
 
         let sample = planet.sample_surface(Vec3::new(0.0, 1.0, 0.0));
-        assert!(sample.radius > 35_000.0);
+        assert!(sample.radius > 35_000_000.0);
     }
 
     #[test]
@@ -301,12 +301,15 @@ mod tests {
         let planet = ProceduralPlanet::new(PlanetConfig::default());
         let hit = planet
             .raycast(
-                Ray::new(Vec3::new(0.0, 0.0, -125_000.0), Vec3::new(0.0, 0.0, 1.0)),
-                200_000.0,
+                Ray::new(
+                    Vec3::new(0.0, 0.0, -125_000_000.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                ),
+                200_000_000.0,
             )
             .expect("ray should hit large planet");
 
-        assert!(hit.distance > 70_000.0);
-        assert!(hit.distance < 90_000.0);
+        assert!(hit.distance > 70_000_000.0);
+        assert!(hit.distance < 90_000_000.0);
     }
 }

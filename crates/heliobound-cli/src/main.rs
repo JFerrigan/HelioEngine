@@ -27,7 +27,10 @@ const VIEWPORT: Viewport = Viewport {
 };
 const FRAME_WIDTH: u32 = (VIEWPORT.width * CHAR_WIDTH) as u32;
 const FRAME_HEIGHT: u32 = (VIEWPORT.height * CHAR_HEIGHT) as u32;
-const FLIGHT_SPEED: f32 = 12_000.0;
+const PLANET_RADIUS: i32 = 42_000_000;
+const PLANET_TERRAIN_AMPLITUDE: f32 = 5_000_000.0;
+const PLANET_VIEW_DISTANCE: f32 = 220_000_000.0;
+const FLIGHT_SPEED: f32 = 12_000_000.0;
 const WALK_SPEED: f32 = 15.0;
 const BOOST_MULTIPLIER: f32 = 8.0;
 const WALK_BOOST_MULTIPLIER: f32 = 2.25;
@@ -181,7 +184,7 @@ impl AppState {
             planet_builder: SceneBuilder::new(
                 GraphicsConfig {
                     viewport: VIEWPORT,
-                    max_distance: 220_000.0,
+                    max_distance: PLANET_VIEW_DISTANCE,
                 },
                 MaterialGlyphMap,
             ),
@@ -300,9 +303,9 @@ fn look_at(position: Vec3, target: Vec3) -> Camera {
 }
 
 fn planet_start_camera() -> Camera {
-    look_at(Vec3::new(0.0, 18_000.0, -125_000.0), Vec3::ZERO)
+    look_at(Vec3::new(0.0, 18_000_000.0, -125_000_000.0), Vec3::ZERO)
         .with_fov_y(55.0_f32.to_radians())
-        .with_max_distance(220_000.0)
+        .with_max_distance(PLANET_VIEW_DISTANCE)
 }
 
 fn city_start_camera() -> Camera {
@@ -479,9 +482,9 @@ fn set_mouse_captured(window: &Window, captured: bool) -> bool {
 fn build_demo_planet() -> ProceduralPlanet {
     ProceduralPlanet::new(PlanetConfig {
         seed: 0x48E1_10B0_0D,
-        radius: 42_000,
+        radius: PLANET_RADIUS,
         crust_depth: 3,
-        terrain_amplitude: 5_000.0,
+        terrain_amplitude: PLANET_TERRAIN_AMPLITUDE,
     })
 }
 
