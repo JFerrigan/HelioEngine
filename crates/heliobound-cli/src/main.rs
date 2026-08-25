@@ -3,8 +3,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use font8x8::{UnicodeFonts, BASIC_FONTS};
-use heliobound_core::{Camera, PlanetConfig, ProceduralPlanet, Vec3};
-use heliobound_gfx::{GraphicsConfig, MaterialGlyphMap, Scene, SceneBuilder, Viewport};
+use heliobound_core::{
+    Camera, CityConfig, CityGenerator, PlanetConfig, ProceduralPlanet, Vec3, VoxelCoord, VoxelWorld,
+};
+use heliobound_gfx::{
+    GraphicsConfig, Layer, MaterialGlyphMap, Overlay, Scene, SceneBuilder, SceneCell, TextStyle,
+    Viewport,
+};
 use pixels::{PixelsBuilder, SurfaceTexture};
 use winit::{
     dpi::LogicalSize,
@@ -22,29 +27,20 @@ const VIEWPORT: Viewport = Viewport {
 };
 const FRAME_WIDTH: u32 = (VIEWPORT.width * CHAR_WIDTH) as u32;
 const FRAME_HEIGHT: u32 = (VIEWPORT.height * CHAR_HEIGHT) as u32;
-const BASE_SPEED: f32 = 12_000.0;
+const FLIGHT_SPEED: f32 = 12_000.0;
+const WALK_SPEED: f32 = 15.0;
 const BOOST_MULTIPLIER: f32 = 8.0;
+const WALK_BOOST_MULTIPLIER: f32 = 2.25;
+const WALK_EYE_HEIGHT: f32 = 3.2;
 const MOUSE_SENSITIVITY: f32 = 0.0025;
 const PITCH_LIMIT: f32 = 1.52;
 const ROLL_SPEED: f32 = 1.8;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
-    let planet = build_demo_planet();
-    let builder = SceneBuilder::new(
-        GraphicsConfig {
-            viewport: VIEWPORT,
-            max_distance: 220_000.0,
-        },
-        MaterialGlyphMap,
-    );
-    let mut tick = 0_u64;
-    let mut input = FlightInput::default();
+    let mut app = AppState::new();
     let mut mouse_captured = false;
     let mut last_frame = Instant::now();
-    let mut camera = look_at(Vec3::new(0.0, 18_000.0, -125_000.0), Vec3::ZERO)
-        .with_fov_y(55.0_f32.to_radians())
-        .with_max_distance(220_000.0);
 
     let window = {
         let size = LogicalSize::new(FRAME_WIDTH as f64, FRAME_HEIGHT as f64);
@@ -77,7 +73,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             match event {
                 WindowEvent::CloseRequested => elwt.exit(),
                 WindowEvent::Focused(false) => {
-                    input = FlightInput::default();
+                    app.input = PlayerInput::default();
                     mouse_captured = set_mouse_captured(&window, false);
                 }
                 WindowEvent::MouseInput {
@@ -85,18 +81,28 @@ fn main() -> Result<(), Box<dyn Error>> {
                     button: MouseButton::Left,
                     ..
                 } => {
-                    mouse_captured = set_mouse_captured(&window, true);
+                    if app.mode != AppMode::Menu {
+                        mouse_captured = set_mouse_captured(&window, true);
+                    }
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
-                    if handle_keyboard(&mut input, &event.physical_key, event.state) {
-                        if event.state == ElementState::Pressed {
+                    let action = app.handle_keyboard(&event.physical_key, event.state);
+                    match action {
+                        KeyboardAction::None => {}
+                        KeyboardAction::Exit => elwt.exit(),
+                        KeyboardAction::ReleaseMouse => {
                             if mouse_captured {
-                                mouse_captured = false;
-                                let _ = window.set_cursor_grab(CursorGrabMode::None);
-                                window.set_cursor_visible(true);
+                                mouse_captured = set_mouse_captured(&window, false);
                             } else {
-                                elwt.exit();
+                                app.enter_menu();
                             }
+                        }
+                        KeyboardAction::EnterMenu => {
+                            app.enter_menu();
+                            mouse_captured = set_mouse_captured(&window, false);
+                        }
+                        KeyboardAction::StartScene => {
+                            mouse_captured = set_mouse_captured(&window, false);
                         }
                     }
                 }
@@ -109,9 +115,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let now = Instant::now();
                     let dt = (now - last_frame).as_secs_f32().min(0.1);
                     last_frame = now;
-                    tick = tick.wrapping_add(1);
-                    update_camera(&mut camera, &input, dt);
-                    let scene = builder.build_planet(&planet, &camera, tick);
+
+                    let scene = app.frame(dt, mouse_captured);
                     render_scene(
                         &scene,
                         pixels.frame_mut(),
@@ -128,12 +133,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ..
         } => {
             if mouse_captured {
-                apply_mouse_look(
-                    &mut camera,
-                    delta.0 as f32,
-                    delta.1 as f32,
-                    PitchMode::Unrestricted,
-                );
+                app.apply_mouse_motion(delta.0 as f32, delta.1 as f32);
             }
         }
         Event::AboutToWait => {
@@ -145,6 +145,153 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AppMode {
+    Menu,
+    PlanetFlight,
+    CityWalk,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyboardAction {
+    None,
+    Exit,
+    ReleaseMouse,
+    EnterMenu,
+    StartScene,
+}
+
+struct AppState {
+    mode: AppMode,
+    planet: ProceduralPlanet,
+    city: VoxelWorld,
+    planet_builder: SceneBuilder,
+    city_builder: SceneBuilder,
+    camera: Camera,
+    input: PlayerInput,
+    tick: u64,
+}
+
+impl AppState {
+    fn new() -> Self {
+        Self {
+            mode: AppMode::Menu,
+            planet: build_demo_planet(),
+            city: build_demo_city(),
+            planet_builder: SceneBuilder::new(
+                GraphicsConfig {
+                    viewport: VIEWPORT,
+                    max_distance: 220_000.0,
+                },
+                MaterialGlyphMap,
+            ),
+            city_builder: SceneBuilder::new(
+                GraphicsConfig {
+                    viewport: VIEWPORT,
+                    max_distance: 140.0,
+                },
+                MaterialGlyphMap,
+            ),
+            camera: planet_start_camera(),
+            input: PlayerInput::default(),
+            tick: 0,
+        }
+    }
+
+    fn handle_keyboard(&mut self, key: &PhysicalKey, state: ElementState) -> KeyboardAction {
+        let pressed = state == ElementState::Pressed;
+
+        if pressed {
+            match (self.mode, key) {
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit1)) => {
+                    self.start_planet();
+                    return KeyboardAction::StartScene;
+                }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit2)) => {
+                    self.start_city();
+                    return KeyboardAction::StartScene;
+                }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::Escape)) => {
+                    return KeyboardAction::Exit;
+                }
+                (_, PhysicalKey::Code(KeyCode::Escape)) => {
+                    return KeyboardAction::ReleaseMouse;
+                }
+                (_, PhysicalKey::Code(KeyCode::KeyM)) => {
+                    return KeyboardAction::EnterMenu;
+                }
+                _ => {}
+            }
+        }
+
+        if self.mode != AppMode::Menu {
+            handle_movement_input(&mut self.input, key, state);
+        }
+
+        KeyboardAction::None
+    }
+
+    fn enter_menu(&mut self) {
+        self.mode = AppMode::Menu;
+        self.input = PlayerInput::default();
+    }
+
+    fn start_planet(&mut self) {
+        self.mode = AppMode::PlanetFlight;
+        self.camera = planet_start_camera();
+        self.input = PlayerInput::default();
+    }
+
+    fn start_city(&mut self) {
+        self.mode = AppMode::CityWalk;
+        self.camera = city_start_camera();
+        self.input = PlayerInput::default();
+    }
+
+    fn frame(&mut self, dt: f32, mouse_captured: bool) -> Scene {
+        self.tick = self.tick.wrapping_add(1);
+
+        match self.mode {
+            AppMode::Menu => build_menu_scene(self.tick),
+            AppMode::PlanetFlight => {
+                update_flight_camera(&mut self.camera, &self.input, dt);
+                self.planet_builder
+                    .build_planet(&self.planet, &self.camera, self.tick)
+            }
+            AppMode::CityWalk => {
+                update_walking_camera(&mut self.camera, &self.input, &self.city, dt);
+                let mut scene = self.city_builder.build(&self.city, &self.camera, self.tick);
+                scene.overlays.push(Overlay {
+                    x: 2,
+                    y: 2,
+                    z: 120,
+                    text: format!(
+                        "CITY WALK  mouse {}  M menu  pos {:.1},{:.1},{:.1}",
+                        if mouse_captured { "locked" } else { "free" },
+                        self.camera.position.x,
+                        self.camera.position.y,
+                        self.camera.position.z
+                    ),
+                    style: TextStyle::default(),
+                });
+                scene
+            }
+        }
+    }
+
+    fn apply_mouse_motion(&mut self, delta_x: f32, delta_y: f32) {
+        match self.mode {
+            AppMode::Menu => {}
+            AppMode::PlanetFlight => {
+                apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Unrestricted)
+            }
+            AppMode::CityWalk => {
+                apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped)
+            }
+        }
+    }
+}
+
 fn look_at(position: Vec3, target: Vec3) -> Camera {
     let direction = (target - position).normalized();
     let yaw = direction.x.atan2(direction.z);
@@ -152,8 +299,21 @@ fn look_at(position: Vec3, target: Vec3) -> Camera {
     Camera::new(position).looking_at(yaw, pitch)
 }
 
+fn planet_start_camera() -> Camera {
+    look_at(Vec3::new(0.0, 18_000.0, -125_000.0), Vec3::ZERO)
+        .with_fov_y(55.0_f32.to_radians())
+        .with_max_distance(220_000.0)
+}
+
+fn city_start_camera() -> Camera {
+    Camera::new(Vec3::new(0.5, WALK_EYE_HEIGHT, -55.5))
+        .looking_at(0.0, 0.0)
+        .with_fov_y(62.0_f32.to_radians())
+        .with_max_distance(140.0)
+}
+
 #[derive(Clone, Copy, Debug, Default)]
-struct FlightInput {
+struct PlayerInput {
     forward: bool,
     backward: bool,
     left: bool,
@@ -165,7 +325,7 @@ struct FlightInput {
     boost: bool,
 }
 
-fn handle_keyboard(input: &mut FlightInput, key: &PhysicalKey, state: ElementState) -> bool {
+fn handle_movement_input(input: &mut PlayerInput, key: &PhysicalKey, state: ElementState) {
     let pressed = state == ElementState::Pressed;
     match key {
         PhysicalKey::Code(KeyCode::KeyW) => input.forward = pressed,
@@ -181,13 +341,11 @@ fn handle_keyboard(input: &mut FlightInput, key: &PhysicalKey, state: ElementSta
         PhysicalKey::Code(KeyCode::ShiftLeft) | PhysicalKey::Code(KeyCode::ShiftRight) => {
             input.boost = pressed
         }
-        PhysicalKey::Code(KeyCode::Escape) => return true,
         _ => {}
     }
-    false
 }
 
-fn update_camera(camera: &mut Camera, input: &FlightInput, dt: f32) {
+fn update_flight_camera(camera: &mut Camera, input: &PlayerInput, dt: f32) {
     let mut movement = Vec3::ZERO;
 
     if input.forward {
@@ -209,20 +367,68 @@ fn update_camera(camera: &mut Camera, input: &FlightInput, dt: f32) {
         movement = movement - camera.up();
     }
     if input.roll_left {
-        camera.roll_by(-ROLL_SPEED * dt);
+        camera.roll_by(ROLL_SPEED * dt);
     }
     if input.roll_right {
-        camera.roll_by(ROLL_SPEED * dt);
+        camera.roll_by(-ROLL_SPEED * dt);
     }
 
     if movement.length() > f32::EPSILON {
         let speed = if input.boost {
-            BASE_SPEED * BOOST_MULTIPLIER
+            FLIGHT_SPEED * BOOST_MULTIPLIER
         } else {
-            BASE_SPEED
+            FLIGHT_SPEED
         };
         camera.position = camera.position + movement.normalized() * speed * dt;
     }
+}
+
+fn update_walking_camera(camera: &mut Camera, input: &PlayerInput, city: &VoxelWorld, dt: f32) {
+    let mut movement = Vec3::ZERO;
+    let forward = horizontal(camera.forward());
+    let right = horizontal(camera.right());
+
+    if input.forward {
+        movement = movement + forward;
+    }
+    if input.backward {
+        movement = movement - forward;
+    }
+    if input.right {
+        movement = movement + right;
+    }
+    if input.left {
+        movement = movement - right;
+    }
+
+    if movement.length() > f32::EPSILON {
+        let speed = if input.boost {
+            WALK_SPEED * WALK_BOOST_MULTIPLIER
+        } else {
+            WALK_SPEED
+        };
+        let candidate = camera.position + movement.normalized() * speed * dt;
+        let candidate = Vec3::new(candidate.x, WALK_EYE_HEIGHT, candidate.z);
+
+        if can_walk_to(city, candidate) {
+            camera.position = candidate;
+        }
+    }
+}
+
+fn horizontal(direction: Vec3) -> Vec3 {
+    Vec3::new(direction.x, 0.0, direction.z).normalized()
+}
+
+fn can_walk_to(city: &VoxelWorld, position: Vec3) -> bool {
+    let x = position.x.floor() as i32;
+    let z = position.z.floor() as i32;
+    for y in 1..=WALK_EYE_HEIGHT.ceil() as i32 {
+        if city.get(VoxelCoord::new(x, y, z)).is_some() {
+            return false;
+        }
+    }
+    true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,7 +448,7 @@ fn apply_mouse_look(camera: &mut Camera, delta_x: f32, delta_y: f32, pitch_mode:
             let yaw = wrap_angle(camera.yaw_radians + horizontal * roll_cos - vertical * roll_sin);
             let pitch = (camera.pitch_radians + horizontal * roll_sin + vertical * roll_cos)
                 .clamp(-PITCH_LIMIT, PITCH_LIMIT);
-            camera.set_look_angles(yaw, pitch, camera.roll_radians);
+            camera.set_look_angles(yaw, pitch, 0.0);
         }
         PitchMode::Unrestricted => {
             camera.rotate_local_yaw_pitch(horizontal, vertical);
@@ -279,6 +485,75 @@ fn build_demo_planet() -> ProceduralPlanet {
     })
 }
 
+fn build_demo_city() -> VoxelWorld {
+    CityGenerator::new(CityConfig {
+        seed: 0x51D5_C17A,
+        half_extent: 72,
+        block_size: 16,
+        road_width: 5,
+        max_height: 32,
+    })
+    .generate()
+}
+
+fn build_menu_scene(tick: u64) -> Scene {
+    let mut scene = Scene::new(VIEWPORT);
+    let mut background = Layer {
+        name: "menu".to_string(),
+        z: 0,
+        cells: Vec::with_capacity(VIEWPORT.width * VIEWPORT.height),
+    };
+
+    for y in 0..VIEWPORT.height {
+        for x in 0..VIEWPORT.width {
+            let glyph = if x == 0 || y == 0 || x == VIEWPORT.width - 1 || y == VIEWPORT.height - 1 {
+                '#'
+            } else if (x + y + tick as usize / 18) % 37 == 0 {
+                '.'
+            } else {
+                ' '
+            };
+            background.cells.push(SceneCell {
+                x: x as i32,
+                y: y as i32,
+                glyph,
+                style: TextStyle::default(),
+            });
+        }
+    }
+
+    scene.layers.push(background);
+    scene.overlays.push(Overlay {
+        x: 57,
+        y: 30,
+        z: 10,
+        text: "HELIOBOUND".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 48,
+        y: 37,
+        z: 10,
+        text: "1  PLANET FLIGHT".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 48,
+        y: 41,
+        z: 10,
+        text: "2  CITY WALK".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 48,
+        y: 48,
+        z: 10,
+        text: "WASD MOVE   M MENU   ESC RELEASE/MENU".to_string(),
+        style: TextStyle::default(),
+    });
+    scene
+}
+
 fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
     clear(frame, [0x08, 0x0b, 0x10, 0xff]);
 
@@ -288,6 +563,7 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
     for layer in &scene.layers {
         let color = match layer.name.as_str() {
             "background" => [0x50, 0x58, 0x66, 0xff],
+            "menu" => [0x78, 0xc6, 0xa3, 0xff],
             "voxels" => [0xdf, 0xe8, 0xdb, 0xff],
             "planet" => [0xdf, 0xe8, 0xdb, 0xff],
             _ => [0xe6, 0xee, 0xf3, 0xff],
@@ -415,5 +691,56 @@ mod tests {
         apply_mouse_look(&mut camera, 0.0, -10_000.0, PitchMode::Clamped);
 
         assert_eq!(camera.pitch_radians, PITCH_LIMIT);
+    }
+
+    #[test]
+    fn walking_movement_stays_on_eye_height() {
+        let city = build_demo_city();
+        let mut camera = city_start_camera();
+        let input = PlayerInput {
+            forward: true,
+            ..PlayerInput::default()
+        };
+
+        update_walking_camera(&mut camera, &input, &city, 1.0);
+
+        assert_eq!(camera.position.y, WALK_EYE_HEIGHT);
+    }
+
+    #[test]
+    fn menu_can_start_city_mode() {
+        let mut app = AppState::new();
+
+        let action =
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit2), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::StartScene);
+        assert_eq!(app.mode, AppMode::CityWalk);
+    }
+
+    #[test]
+    fn q_and_e_roll_are_reversed_for_flight() {
+        let mut q_camera = planet_start_camera();
+        let mut e_camera = planet_start_camera();
+
+        update_flight_camera(
+            &mut q_camera,
+            &PlayerInput {
+                roll_left: true,
+                ..PlayerInput::default()
+            },
+            1.0,
+        );
+        update_flight_camera(
+            &mut e_camera,
+            &PlayerInput {
+                roll_right: true,
+                ..PlayerInput::default()
+            },
+            1.0,
+        );
+
+        assert!(q_camera.roll_radians > 0.0);
+        assert!(e_camera.roll_radians < 0.0);
     }
 }
