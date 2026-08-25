@@ -6,7 +6,7 @@ use font8x8::{UnicodeFonts, BASIC_FONTS};
 use heliobound_audio::{GameAudio, SoundEffect};
 use heliobound_core::{
     Camera, CityConfig, CityGenerator, DoomMapConfig, DoomMapGenerator, PlanetConfig,
-    ProceduralPlanet, Ray, Vec3, VoxelCoord, VoxelWorld,
+    ProceduralPlanet, Ray, Vec3, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld,
 };
 use heliobound_gfx::{
     raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay, Scene, SceneBuilder, SceneCell,
@@ -39,11 +39,11 @@ const WALK_SPEED: f32 = 15.0;
 const BOOST_MULTIPLIER: f32 = 8.0;
 const WALK_BOOST_MULTIPLIER: f32 = 2.25;
 const WALK_EYE_HEIGHT: f32 = 3.2;
-const CITY_FIGURE_EYE_HEIGHT: f32 = 2.2;
+const CITY_FIGURE_EYE_HEIGHT: f32 = WALK_EYE_HEIGHT;
 const CITY_FIGURE_SPEED: f32 = 4.0;
 const CITY_FIGURE_GAZE_DISTANCE: f32 = 70.0;
 const CITY_FIGURE_GAZE_DOT: f32 = 0.93;
-const ENEMY_EYE_HEIGHT: f32 = 2.1;
+const ENEMY_EYE_HEIGHT: f32 = WALK_EYE_HEIGHT;
 const ENEMY_SPEED: f32 = 5.5;
 const ENEMY_ATTACK_RANGE: f32 = 2.4;
 const ENEMY_ATTACK_DAMAGE: i32 = 8;
@@ -317,14 +317,11 @@ impl AppState {
             AppMode::CityWalk => {
                 update_walking_camera(&mut self.camera, &self.input, &self.city, dt);
                 self.city_figures.update(&self.city, &self.camera, dt);
-                let mut scene = self.city_builder.build(&self.city, &self.camera, self.tick);
-                render_city_walk_scene(
-                    &mut scene,
-                    &self.city,
-                    &self.camera,
-                    &self.city_figures,
-                    mouse_captured,
-                );
+                let render_world = city_world_with_figures(&self.city, &self.city_figures);
+                let mut scene = self
+                    .city_builder
+                    .build(&render_world, &self.camera, self.tick);
+                render_city_walk_scene(&mut scene, &self.city_figures, mouse_captured);
                 scene
             }
             AppMode::CityShooter => {
@@ -335,16 +332,11 @@ impl AppState {
                 {
                     self.audio_events.push(SoundEffect::PlayerHurt);
                 }
+                let render_world = shooter_world_with_enemies(&self.doom_map, &self.shooter);
                 let mut scene = self
                     .city_builder
-                    .build(&self.doom_map, &self.camera, self.tick);
-                render_shooter_scene(
-                    &mut scene,
-                    &self.doom_map,
-                    &self.camera,
-                    &self.shooter,
-                    mouse_captured,
-                );
+                    .build(&render_world, &self.camera, self.tick);
+                render_shooter_scene(&mut scene, &self.camera, &self.shooter, mouse_captured);
                 scene
             }
         }
@@ -929,6 +921,77 @@ fn build_doom_map() -> VoxelWorld {
     DoomMapGenerator::new(DoomMapConfig::default()).generate()
 }
 
+fn city_world_with_figures(base: &VoxelWorld, figures: &CityFigureState) -> VoxelWorld {
+    let mut world = base.clone();
+    for figure in &figures.figures {
+        stamp_city_figure(&mut world, figure);
+    }
+    world
+}
+
+fn shooter_world_with_enemies(base: &VoxelWorld, shooter: &ShooterState) -> VoxelWorld {
+    let mut world = base.clone();
+    for enemy in &shooter.enemies {
+        if enemy.is_alive() {
+            stamp_shooter_enemy(&mut world, enemy);
+        }
+    }
+    world
+}
+
+fn stamp_city_figure(world: &mut VoxelWorld, figure: &CityFigure) {
+    let accent = if figure.watching_player {
+        VoxelMaterial::Beacon
+    } else {
+        VoxelMaterial::Glass
+    };
+    stamp_npc_body(world, figure.position, VoxelMaterial::CarbonLife, accent);
+}
+
+fn stamp_shooter_enemy(world: &mut VoxelWorld, enemy: &Enemy) {
+    stamp_npc_body(
+        world,
+        enemy.position,
+        VoxelMaterial::SiliconLife,
+        VoxelMaterial::Beacon,
+    );
+}
+
+fn stamp_npc_body(
+    world: &mut VoxelWorld,
+    position: Vec3,
+    body: VoxelMaterial,
+    accent: VoxelMaterial,
+) {
+    let origin = VoxelCoord::new(position.x.floor() as i32, 0, position.z.floor() as i32);
+    for (x, y, z, material) in [
+        (-1, 1, 0, body),
+        (1, 1, 0, body),
+        (-1, 2, 0, body),
+        (0, 2, 0, body),
+        (1, 2, 0, body),
+        (-2, 2, 0, accent),
+        (2, 2, 0, accent),
+        (-1, 3, -1, accent),
+        (0, 3, -1, body),
+        (1, 3, -1, accent),
+        (-1, 3, 0, accent),
+        (0, 3, 0, body),
+        (1, 3, 0, accent),
+        (-1, 3, 1, accent),
+        (0, 3, 1, body),
+        (1, 3, 1, accent),
+        (-1, 4, 0, accent),
+        (0, 4, 0, accent),
+        (1, 4, 0, accent),
+    ] {
+        world.set(
+            VoxelCoord::new(origin.x + x, origin.y + y, origin.z + z),
+            VoxelCell::new(material),
+        );
+    }
+}
+
 fn build_menu_scene(tick: u64) -> Scene {
     let mut scene = Scene::new(VIEWPORT);
     let mut background = Layer {
@@ -994,36 +1057,7 @@ fn build_menu_scene(tick: u64) -> Scene {
     scene
 }
 
-fn render_city_walk_scene(
-    scene: &mut Scene,
-    city: &VoxelWorld,
-    camera: &Camera,
-    figures: &CityFigureState,
-    mouse_captured: bool,
-) {
-    let mut projected: Vec<(f32, Vec<SceneCell>)> = figures
-        .figures
-        .iter()
-        .filter_map(|figure| {
-            let target = figure.target_position();
-            if !has_line_of_sight(city, camera.position, target) {
-                return None;
-            }
-            project_world_point(camera, target, scene.viewport).map(|projection| {
-                (
-                    projection.distance,
-                    city_figure_cells(projection, figure.watching_player),
-                )
-            })
-        })
-        .collect();
-    projected.sort_by(|a, b| b.0.total_cmp(&a.0));
-
-    scene.layers.push(Layer {
-        name: "city_figures".to_string(),
-        z: 30,
-        cells: projected.into_iter().flat_map(|(_, cells)| cells).collect(),
-    });
+fn render_city_walk_scene(scene: &mut Scene, figures: &CityFigureState, mouse_captured: bool) {
     scene.overlays.push(Overlay {
         x: 2,
         y: 2,
@@ -1040,31 +1074,10 @@ fn render_city_walk_scene(
 
 fn render_shooter_scene(
     scene: &mut Scene,
-    city: &VoxelWorld,
     camera: &Camera,
     shooter: &ShooterState,
     mouse_captured: bool,
 ) {
-    let mut projected: Vec<(f32, Vec<SceneCell>)> = shooter
-        .enemies
-        .iter()
-        .filter(|enemy| enemy.is_alive())
-        .filter_map(|enemy| {
-            let target = enemy.target_position();
-            if !has_line_of_sight(city, camera.position, target) {
-                return None;
-            }
-            project_world_point(camera, target, scene.viewport)
-                .map(|projection| (projection.distance, enemy_cells(projection)))
-        })
-        .collect();
-    projected.sort_by(|a, b| b.0.total_cmp(&a.0));
-
-    scene.layers.push(Layer {
-        name: "enemies".to_string(),
-        z: 30,
-        cells: projected.into_iter().flat_map(|(_, cells)| cells).collect(),
-    });
     scene.layers.push(Layer {
         name: "bullets".to_string(),
         z: 35,
@@ -1125,93 +1138,6 @@ fn project_world_point(camera: &Camera, point: Vec3, viewport: Viewport) -> Opti
         y: (((1.0 - normalized_y) * 0.5) * viewport.height as f32).round() as i32,
         distance: delta.length(),
     })
-}
-
-fn enemy_cells(projection: Projection) -> Vec<SceneCell> {
-    let sprite = enemy_sprite(projection.distance);
-    let height = sprite.len() as i32;
-    let width = sprite.iter().map(|line| line.len()).max().unwrap_or(0) as i32;
-    let start_x = projection.x - width / 2;
-    let start_y = projection.y - height / 2;
-    let mut cells = Vec::new();
-
-    for (row, line) in sprite.iter().enumerate() {
-        for (col, glyph) in line.chars().enumerate() {
-            if glyph == ' ' {
-                continue;
-            }
-            cells.push(SceneCell {
-                x: start_x + col as i32,
-                y: start_y + row as i32,
-                glyph,
-                style: TextStyle::default(),
-            });
-        }
-    }
-
-    cells
-}
-
-fn enemy_sprite(distance: f32) -> &'static [&'static str] {
-    if distance < 12.0 {
-        &[
-            "  .---.  ",
-            " /o o \\ ",
-            "|  ^  | ",
-            "| \\_/ | ",
-            " /|||\\  ",
-            "/_|||_\\ ",
-            "  / \\   ",
-        ]
-    } else if distance < 28.0 {
-        &[" .-. ", "/o o\\", "| ^ |", "/|||\\", " / \\ "]
-    } else if distance < 55.0 {
-        &["oOo", "/|\\", "/ \\"]
-    } else {
-        &["&"]
-    }
-}
-
-fn city_figure_cells(projection: Projection, watching_player: bool) -> Vec<SceneCell> {
-    let sprite = city_figure_sprite(projection.distance, watching_player);
-    let height = sprite.len() as i32;
-    let width = sprite.iter().map(|line| line.len()).max().unwrap_or(0) as i32;
-    let start_x = projection.x - width / 2;
-    let start_y = projection.y - height / 2;
-    let mut cells = Vec::new();
-
-    for (row, line) in sprite.iter().enumerate() {
-        for (col, glyph) in line.chars().enumerate() {
-            if glyph == ' ' {
-                continue;
-            }
-            cells.push(SceneCell {
-                x: start_x + col as i32,
-                y: start_y + row as i32,
-                glyph,
-                style: TextStyle::default(),
-            });
-        }
-    }
-
-    cells
-}
-
-fn city_figure_sprite(distance: f32, watching_player: bool) -> &'static [&'static str] {
-    match (distance, watching_player) {
-        (distance, true) if distance < 14.0 => &[
-            "  /_\\  ", " (@ @) ", "  \\_/  ", "-<|=|>-", " /|_|\\ ", "  / \\  ",
-        ],
-        (distance, false) if distance < 14.0 => &[
-            "  /_\\  ", " (o o) ", "  \\_/  ", " ~|=|~ ", " /|_|\\ ", "  / \\  ",
-        ],
-        (distance, true) if distance < 32.0 => &["/_\\", "@_@", "/|\\", "/ \\"],
-        (distance, false) if distance < 32.0 => &["/_\\", "o_o", "/|\\", "/ \\"],
-        (distance, true) if distance < 62.0 => &["@_@", "/|\\"],
-        (distance, false) if distance < 62.0 => &["o_o", "/|\\"],
-        (_, true) => &["@"],
-        (_, false) => &["o"],
-    }
 }
 
 fn bullet_cells(viewport: Viewport, camera: &Camera, traces: &[BulletTrace]) -> Vec<SceneCell> {
@@ -1335,7 +1261,6 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
             "menu" => [0x78, 0xc6, 0xa3, 0xff],
             "voxels" => [0xdf, 0xe8, 0xdb, 0xff],
             "planet" => [0xdf, 0xe8, 0xdb, 0xff],
-            "city_figures" => [0xff, 0x7a, 0xd9, 0xff],
             "enemies" => [0xff, 0x65, 0x5a, 0xff],
             "bullets" => [0xff, 0xea, 0x8a, 0xff],
             "weapon" => [0xf0, 0xc6, 0x5b, 0xff],
@@ -1542,7 +1467,7 @@ mod tests {
     }
 
     #[test]
-    fn city_walk_scene_projects_clownlike_figures() {
+    fn city_figures_are_inserted_as_voxel_objects() {
         let mut app = AppState::new();
         app.start_city();
         app.city_figures = CityFigureState {
@@ -1552,17 +1477,47 @@ mod tests {
             ])],
         };
 
-        let scene = app.frame(0.0, true);
-        let figures = scene
-            .layers
-            .iter()
-            .find(|layer| layer.name == "city_figures")
-            .expect("city walk scene should include city figures");
+        let world = city_world_with_figures(&app.city, &app.city_figures);
 
-        assert!(figures
-            .cells
-            .iter()
-            .any(|cell| cell.glyph == 'o' || cell.glyph == '@'));
+        assert_eq!(
+            world.get(VoxelCoord::new(0, 3, -45)),
+            Some(VoxelCell::new(VoxelMaterial::CarbonLife))
+        );
+        assert_eq!(
+            world.get(VoxelCoord::new(-1, 3, -46)),
+            Some(VoxelCell::new(VoxelMaterial::Glass))
+        );
+    }
+
+    #[test]
+    fn npc_eye_heights_match_player_eye_height() {
+        assert_eq!(CITY_FIGURE_EYE_HEIGHT, WALK_EYE_HEIGHT);
+        assert_eq!(ENEMY_EYE_HEIGHT, WALK_EYE_HEIGHT);
+    }
+
+    #[test]
+    fn city_figure_is_hit_by_voxel_raycast() {
+        let mut app = AppState::new();
+        app.start_city();
+        app.city_figures = CityFigureState {
+            figures: vec![CityFigure::new(vec![
+                Vec3::new(0.5, 0.0, -44.5),
+                Vec3::new(0.5, 0.0, -32.5),
+            ])],
+        };
+        let world = city_world_with_figures(&app.city, &app.city_figures);
+
+        let hit = raycast(
+            &world,
+            Ray::new(app.camera.position, app.camera.forward()),
+            20.0,
+        )
+        .expect("center ray should hit city figure object");
+
+        assert!(matches!(
+            hit.cell.material,
+            VoxelMaterial::CarbonLife | VoxelMaterial::Glass | VoxelMaterial::Beacon
+        ));
     }
 
     #[test]
@@ -1645,20 +1600,52 @@ mod tests {
     }
 
     #[test]
-    fn shooter_scene_projects_visible_enemies_and_weapon() {
+    fn shooter_scene_draws_weapon_with_enemies_in_voxel_world() {
         let mut app = AppState::new();
         app.start_shooter();
 
         let scene = app.frame(0.0, true);
 
-        assert!(scene
-            .layers
-            .iter()
-            .any(|layer| layer.name == "enemies" && !layer.cells.is_empty()));
+        assert!(!scene.layers.iter().any(|layer| layer.name == "enemies"));
         assert!(scene
             .layers
             .iter()
             .any(|layer| layer.name == "weapon" && !layer.cells.is_empty()));
+    }
+
+    #[test]
+    fn shooter_enemies_are_inserted_as_voxel_objects() {
+        let mut app = AppState::new();
+        app.start_shooter();
+        let world = shooter_world_with_enemies(&app.doom_map, &app.shooter);
+
+        assert_eq!(
+            world.get(VoxelCoord::new(0, 3, -35)),
+            Some(VoxelCell::new(VoxelMaterial::SiliconLife))
+        );
+        assert_eq!(
+            world.get(VoxelCoord::new(-1, 3, -36)),
+            Some(VoxelCell::new(VoxelMaterial::Beacon))
+        );
+    }
+
+    #[test]
+    fn shooter_enemy_is_hit_by_voxel_raycast() {
+        let mut app = AppState::new();
+        app.start_shooter();
+        let world = shooter_world_with_enemies(&app.doom_map, &app.shooter);
+
+        let hit = raycast(
+            &world,
+            Ray::new(app.camera.position, app.camera.forward()),
+            30.0,
+        )
+        .expect("center ray should hit shooter enemy object");
+
+        assert!(matches!(
+            hit.cell.material,
+            VoxelMaterial::SiliconLife | VoxelMaterial::Beacon
+        ));
     }
 
     #[test]
@@ -1694,19 +1681,6 @@ mod tests {
             .expect("shooter scene should include bullet layer");
 
         assert!(!bullets.cells.is_empty());
-    }
-
-    #[test]
-    fn visible_enemy_uses_multi_cell_sprite() {
-        let projection = Projection {
-            x: 80,
-            y: 45,
-            distance: 24.0,
-        };
-
-        let cells = enemy_cells(projection);
-
-        assert!(cells.len() > 10);
     }
 
     #[test]
