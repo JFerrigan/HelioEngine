@@ -76,7 +76,6 @@ impl SceneBuilder {
 
     pub fn build(&self, world: &VoxelWorld, camera: &Camera, tick: u64) -> Scene {
         let mut scene = Scene::new(self.config.viewport);
-        let width = self.config.viewport.width as i32;
         let height = self.config.viewport.height as i32;
 
         let mut background = Layer {
@@ -91,11 +90,15 @@ impl SceneBuilder {
         };
         let ray_grid = RayGrid::new(*camera, self.config.viewport);
 
-        self.fill_background(&mut background, tick, width, height);
-
         for y in 0..self.config.viewport.height {
             for x in 0..self.config.viewport.width {
                 let ray = ray_grid.ray_for_cell(x, y);
+                background.cells.push(SceneCell {
+                    x: x as i32,
+                    y: y as i32,
+                    glyph: star_for_direction(ray.direction),
+                    style: TextStyle::default(),
+                });
                 if let Some(hit) = raycast(
                     world,
                     ray,
@@ -134,7 +137,6 @@ impl SceneBuilder {
 
     pub fn build_planet(&self, planet: &ProceduralPlanet, camera: &Camera, tick: u64) -> Scene {
         let mut scene = Scene::new(self.config.viewport);
-        let width = self.config.viewport.width as i32;
         let height = self.config.viewport.height as i32;
 
         let mut background = Layer {
@@ -149,11 +151,15 @@ impl SceneBuilder {
         };
         let ray_grid = RayGrid::new(*camera, self.config.viewport);
 
-        self.fill_background(&mut background, tick, width, height);
-
         for y in 0..self.config.viewport.height {
             for x in 0..self.config.viewport.width {
                 let ray = ray_grid.ray_for_cell(x, y);
+                background.cells.push(SceneCell {
+                    x: x as i32,
+                    y: y as i32,
+                    glyph: star_for_direction(ray.direction),
+                    style: TextStyle::default(),
+                });
                 if let Some(hit) =
                     planet.raycast(ray, self.config.max_distance.min(camera.max_distance))
                 {
@@ -186,31 +192,6 @@ impl SceneBuilder {
         });
 
         scene
-    }
-
-    fn fill_background(&self, layer: &mut Layer, tick: u64, width: i32, height: i32) {
-        for y in 0..height {
-            for x in 0..width {
-                let seed = (x as u64).wrapping_mul(47)
-                    ^ (y as u64).wrapping_mul(91)
-                    ^ tick.wrapping_mul(7);
-                let glyph = if seed % 211 == 0 {
-                    '*'
-                } else if seed % 97 == 0 {
-                    '.'
-                } else if y > height * 2 / 3 && seed % 29 == 0 {
-                    '`'
-                } else {
-                    ' '
-                };
-                layer.cells.push(SceneCell {
-                    x,
-                    y,
-                    glyph,
-                    style: TextStyle::default(),
-                });
-            }
-        }
     }
 }
 
@@ -399,6 +380,38 @@ fn shade(intensity: f32, ramp: &str) -> char {
     chars[idx]
 }
 
+fn star_for_direction(direction: Vec3) -> char {
+    let direction = direction.normalized();
+    let x = (direction.x * 4096.0).round() as i32;
+    let y = (direction.y * 4096.0).round() as i32;
+    let z = (direction.z * 4096.0).round() as i32;
+    let hash = hash_sky_cell(x, y, z);
+
+    if hash % 997 == 0 {
+        '*'
+    } else if hash % 431 == 0 {
+        '+'
+    } else if hash % 149 == 0 {
+        '.'
+    } else {
+        ' '
+    }
+}
+
+fn hash_sky_cell(x: i32, y: i32, z: i32) -> u64 {
+    let mut h = 0xD1B5_4A32_D192_ED03_u64;
+    h ^= (x as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h = h.rotate_left(21);
+    h ^= (y as i64 as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h = h.rotate_left(27);
+    h ^= (z as i64 as u64).wrapping_mul(0x94D0_49BB_1331_11EB);
+    h ^= h >> 30;
+    h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= h >> 27;
+    h = h.wrapping_mul(0x94D0_49BB_1331_11EB);
+    h ^ (h >> 31)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,5 +482,48 @@ mod tests {
         );
 
         assert_eq!(hit, None);
+    }
+
+    #[test]
+    fn starfield_is_direction_locked() {
+        assert_eq!(
+            star_for_direction(Vec3::new(0.1, 0.2, 1.0)),
+            star_for_direction(Vec3::new(0.1, 0.2, 1.0))
+        );
+    }
+
+    #[test]
+    fn starfield_uses_camera_direction_not_screen_position() {
+        let builder = SceneBuilder::new(
+            GraphicsConfig {
+                viewport: Viewport {
+                    width: 32,
+                    height: 18,
+                },
+                max_distance: 1.0,
+            },
+            MaterialGlyphMap,
+        );
+        let world = VoxelWorld::new();
+        let a = Camera::new(Vec3::ZERO);
+        let b = Camera::new(Vec3::ZERO).looking_at(0.4, 0.0);
+
+        let scene_a = builder.build(&world, &a, 1);
+        let scene_b = builder.build(&world, &b, 1);
+        let bg_a = scene_a
+            .layers
+            .iter()
+            .find(|layer| layer.name == "background")
+            .unwrap();
+        let bg_b = scene_b
+            .layers
+            .iter()
+            .find(|layer| layer.name == "background")
+            .unwrap();
+
+        assert_ne!(
+            bg_a.cells.iter().map(|cell| cell.glyph).collect::<String>(),
+            bg_b.cells.iter().map(|cell| cell.glyph).collect::<String>()
+        );
     }
 }

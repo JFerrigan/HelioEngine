@@ -128,9 +128,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ..
         } => {
             if mouse_captured {
-                camera.yaw_radians += delta.0 as f32 * MOUSE_SENSITIVITY;
-                camera.pitch_radians = (camera.pitch_radians - delta.1 as f32 * MOUSE_SENSITIVITY)
-                    .clamp(-PITCH_LIMIT, PITCH_LIMIT);
+                apply_mouse_look(&mut camera, delta.0 as f32, delta.1 as f32);
             }
         }
         Event::AboutToWait => {
@@ -220,6 +218,17 @@ fn update_camera(camera: &mut Camera, input: &FlightInput, dt: f32) {
         };
         camera.position = camera.position + movement.normalized() * speed * dt;
     }
+}
+
+fn apply_mouse_look(camera: &mut Camera, delta_x: f32, delta_y: f32) {
+    let horizontal = delta_x * MOUSE_SENSITIVITY;
+    let vertical = -delta_y * MOUSE_SENSITIVITY;
+    let roll_sin = camera.roll_radians.sin();
+    let roll_cos = camera.roll_radians.cos();
+
+    camera.yaw_radians += horizontal * roll_cos - vertical * roll_sin;
+    camera.pitch_radians = (camera.pitch_radians + horizontal * roll_sin + vertical * roll_cos)
+        .clamp(-PITCH_LIMIT, PITCH_LIMIT);
 }
 
 fn set_mouse_captured(window: &Window, captured: bool) -> bool {
@@ -337,4 +346,19 @@ fn set_pixel(frame: &mut [u8], width: usize, height: usize, x: i32, y: i32, colo
     }
     let idx = (y * width + x) * 4;
     frame[idx..idx + 4].copy_from_slice(&color);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mouse_look_is_roll_relative() {
+        let mut camera = Camera::new(Vec3::ZERO).with_roll(std::f32::consts::FRAC_PI_2);
+
+        apply_mouse_look(&mut camera, 10.0, 0.0);
+
+        assert!(camera.yaw_radians.abs() < 0.001);
+        assert!(camera.pitch_radians > 0.0);
+    }
 }
