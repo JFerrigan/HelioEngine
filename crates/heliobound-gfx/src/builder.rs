@@ -73,6 +73,7 @@ impl MaterialGlyphMap {
             VoxelMaterial::Basalt => shade(intensity, "-=+#"),
             VoxelMaterial::Ocean => shade(intensity, "~=-+"),
             VoxelMaterial::Ice => shade(intensity, "`'*I"),
+            VoxelMaterial::CornStalk => shade(intensity, ".,!|Y"),
             VoxelMaterial::CarbonLife => shade(intensity, "vxyY"),
             VoxelMaterial::SiliconLife => shade(intensity, "^*%A"),
             VoxelMaterial::Habitat => shade(intensity, "[]HM"),

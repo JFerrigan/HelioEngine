@@ -54,6 +54,9 @@ const BULLET_TRACE_TIME: f32 = 0.18;
 const MOUSE_SENSITIVITY: f32 = 0.0025;
 const PITCH_LIMIT: f32 = 1.52;
 const ROLL_SPEED: f32 = 1.8;
+const CORN_MAZE_TILES: usize = 25;
+const CORN_MAZE_TILE_SIZE: i32 = 3;
+const CORN_MAZE_WALL_HEIGHT: i32 = 7;
 const NPC_BODY_OFFSETS: [(i32, i32, i32, bool); 19] = [
     (-1, 1, 0, false),
     (1, 1, 0, false),
@@ -203,6 +206,7 @@ enum AppMode {
     PlanetFlight,
     CityWalk,
     CityShooter,
+    CornMaze,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -220,6 +224,7 @@ struct AppState {
     planet: ProceduralPlanet,
     city: VoxelWorld,
     doom_map: VoxelWorld,
+    corn_maze: CornMazeState,
     planet_builder: SceneBuilder,
     city_builder: SceneBuilder,
     camera: Camera,
@@ -237,6 +242,7 @@ impl AppState {
             planet: build_demo_planet(),
             city: build_demo_city(),
             doom_map: build_doom_map(),
+            corn_maze: CornMazeState::new(),
             planet_builder: SceneBuilder::new(
                 GraphicsConfig {
                     viewport: VIEWPORT,
@@ -275,6 +281,10 @@ impl AppState {
                 }
                 (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit3)) => {
                     self.start_shooter();
+                    return KeyboardAction::StartScene;
+                }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit4)) => {
+                    self.start_corn_maze();
                     return KeyboardAction::StartScene;
                 }
                 (AppMode::Menu, PhysicalKey::Code(KeyCode::Escape)) => {
@@ -325,6 +335,13 @@ impl AppState {
         self.shooter = ShooterState::new();
     }
 
+    fn start_corn_maze(&mut self) {
+        self.mode = AppMode::CornMaze;
+        self.corn_maze = CornMazeState::new();
+        self.camera = corn_maze_start_camera(&self.corn_maze);
+        self.input = PlayerInput::default();
+    }
+
     fn frame(&mut self, dt: f32, mouse_captured: bool) -> Scene {
         self.tick = self.tick.wrapping_add(1);
 
@@ -360,6 +377,15 @@ impl AppState {
                 render_shooter_scene(&mut scene, &self.camera, &self.shooter, mouse_captured);
                 scene
             }
+            AppMode::CornMaze => {
+                update_walking_camera(&mut self.camera, &self.input, &self.corn_maze.world, dt);
+                self.corn_maze.update(self.camera.position);
+                let mut scene =
+                    self.city_builder
+                        .build(&self.corn_maze.world, &self.camera, self.tick);
+                render_corn_maze_scene(&mut scene, &self.corn_maze, mouse_captured);
+                scene
+            }
         }
     }
 
@@ -369,7 +395,7 @@ impl AppState {
             AppMode::PlanetFlight => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Unrestricted)
             }
-            AppMode::CityWalk | AppMode::CityShooter => {
+            AppMode::CityWalk | AppMode::CityShooter | AppMode::CornMaze => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped)
             }
         }
@@ -389,7 +415,7 @@ impl AppState {
 
 fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
     match mode {
-        AppMode::CityWalk => audio.enter_city_mode(),
+        AppMode::CityWalk | AppMode::CornMaze => audio.enter_city_mode(),
         AppMode::CityShooter => audio.enter_doom_mode(),
         AppMode::Menu | AppMode::PlanetFlight => audio.leave_ambience(),
     }
@@ -434,6 +460,23 @@ fn doom_start_camera() -> Camera {
         .looking_at(0.0, 0.0)
         .with_fov_y(68.0_f32.to_radians())
         .with_max_distance(140.0)
+}
+
+fn corn_maze_start_camera(maze: &CornMazeState) -> Camera {
+    look_at(
+        Vec3::new(
+            maze.start_position.x,
+            WALK_EYE_HEIGHT,
+            maze.start_position.z,
+        ),
+        Vec3::new(
+            maze.start_position.x + 8.0,
+            WALK_EYE_HEIGHT,
+            maze.start_position.z,
+        ),
+    )
+    .with_fov_y(64.0_f32.to_radians())
+    .with_max_distance(140.0)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -584,6 +627,32 @@ fn spawn_city_figures() -> Vec<CityFigure> {
             Vec3::new(16.5, 0.0, 48.5),
         ]),
     ]
+}
+
+#[derive(Clone, Debug)]
+struct CornMazeState {
+    world: VoxelWorld,
+    start_position: Vec3,
+    exit_position: Vec3,
+    escaped: bool,
+}
+
+impl CornMazeState {
+    fn new() -> Self {
+        let (world, start_position, exit_position) = build_corn_maze();
+        Self {
+            world,
+            start_position,
+            exit_position,
+            escaped: false,
+        }
+    }
+
+    fn update(&mut self, player_position: Vec3) {
+        if horizontal_distance(player_position, self.exit_position) < 3.2 {
+            self.escaped = true;
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -929,6 +998,145 @@ fn build_doom_map() -> VoxelWorld {
     DoomMapGenerator::new(DoomMapConfig::default()).generate()
 }
 
+fn build_corn_maze() -> (VoxelWorld, Vec3, Vec3) {
+    let open = carve_corn_maze_tiles();
+    let mut world = VoxelWorld::new();
+    let start = corn_tile_center(1, 1);
+    let exit = corn_tile_center(CORN_MAZE_TILES - 2, CORN_MAZE_TILES - 2);
+    let half = corn_maze_half_extent();
+
+    for tile_z in 0..CORN_MAZE_TILES {
+        for tile_x in 0..CORN_MAZE_TILES {
+            let tile_open = open[tile_z * CORN_MAZE_TILES + tile_x];
+            let base_x = tile_x as i32 * CORN_MAZE_TILE_SIZE - half;
+            let base_z = tile_z as i32 * CORN_MAZE_TILE_SIZE - half;
+
+            for local_z in 0..CORN_MAZE_TILE_SIZE {
+                for local_x in 0..CORN_MAZE_TILE_SIZE {
+                    let x = base_x + local_x;
+                    let z = base_z + local_z;
+                    world.set(
+                        VoxelCoord::new(x, 0, z),
+                        VoxelCell::new(VoxelMaterial::Regolith),
+                    );
+
+                    if tile_open {
+                        continue;
+                    }
+
+                    for y in 1..=CORN_MAZE_WALL_HEIGHT {
+                        let material = if y == CORN_MAZE_WALL_HEIGHT {
+                            VoxelMaterial::CarbonLife
+                        } else {
+                            VoxelMaterial::CornStalk
+                        };
+                        world.set(VoxelCoord::new(x, y, z), VoxelCell::new(material));
+                    }
+                }
+            }
+        }
+    }
+
+    stamp_exit_marker(&mut world, exit);
+    (world, start, exit)
+}
+
+fn carve_corn_maze_tiles() -> Vec<bool> {
+    let mut open = vec![false; CORN_MAZE_TILES * CORN_MAZE_TILES];
+    let mut stack = vec![(1usize, 1usize)];
+    set_corn_tile_open(&mut open, 1, 1);
+
+    while let Some((x, z)) = stack.pop() {
+        let mut moved = false;
+        for (dx, dz) in shuffled_maze_dirs(x, z) {
+            let Some(next_x) = x.checked_add_signed(dx * 2) else {
+                continue;
+            };
+            let Some(next_z) = z.checked_add_signed(dz * 2) else {
+                continue;
+            };
+            if next_x == 0
+                || next_z == 0
+                || next_x >= CORN_MAZE_TILES - 1
+                || next_z >= CORN_MAZE_TILES - 1
+                || corn_tile_open(&open, next_x, next_z)
+            {
+                continue;
+            }
+
+            set_corn_tile_open(
+                &mut open,
+                x.checked_add_signed(dx).unwrap(),
+                z.checked_add_signed(dz).unwrap(),
+            );
+            set_corn_tile_open(&mut open, next_x, next_z);
+            stack.push((x, z));
+            stack.push((next_x, next_z));
+            moved = true;
+            break;
+        }
+
+        if !moved {
+            continue;
+        }
+    }
+
+    set_corn_tile_open(&mut open, CORN_MAZE_TILES - 2, CORN_MAZE_TILES - 2);
+    open
+}
+
+fn shuffled_maze_dirs(x: usize, z: usize) -> [(isize, isize); 4] {
+    let mut dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+    let mut seed = (x as u64 + 1).wrapping_mul(0x9E37_79B1_85EB_CA87)
+        ^ (z as u64 + 1).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+        ^ 0xC0A1_FE1D_5EED;
+    for index in 0..dirs.len() {
+        seed ^= seed.wrapping_shl(13);
+        seed ^= seed.wrapping_shr(7);
+        seed ^= seed.wrapping_shl(17);
+        let swap = index + (seed as usize % (dirs.len() - index));
+        dirs.swap(index, swap);
+    }
+    dirs
+}
+
+fn corn_tile_open(open: &[bool], x: usize, z: usize) -> bool {
+    open[z * CORN_MAZE_TILES + x]
+}
+
+fn set_corn_tile_open(open: &mut [bool], x: usize, z: usize) {
+    open[z * CORN_MAZE_TILES + x] = true;
+}
+
+fn corn_maze_half_extent() -> i32 {
+    (CORN_MAZE_TILES as i32 * CORN_MAZE_TILE_SIZE) / 2
+}
+
+fn corn_tile_center(tile_x: usize, tile_z: usize) -> Vec3 {
+    let half = corn_maze_half_extent();
+    Vec3::new(
+        tile_x as f32 * CORN_MAZE_TILE_SIZE as f32 - half as f32 + 1.5,
+        0.0,
+        tile_z as f32 * CORN_MAZE_TILE_SIZE as f32 - half as f32 + 1.5,
+    )
+}
+
+fn stamp_exit_marker(world: &mut VoxelWorld, position: Vec3) {
+    let origin = VoxelCoord::new(position.x.floor() as i32, 0, position.z.floor() as i32);
+    for y in 1..=9 {
+        world.set(
+            VoxelCoord::new(origin.x, y, origin.z),
+            VoxelCell::new(VoxelMaterial::Beacon),
+        );
+    }
+    for (x, z) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+        world.set(
+            VoxelCoord::new(origin.x + x, 1, origin.z + z),
+            VoxelCell::new(VoxelMaterial::Glass),
+        );
+    }
+}
+
 fn city_world_with_figures(base: &VoxelWorld, figures: &CityFigureState) -> VoxelWorld {
     let mut world = base.clone();
     for figure in &figures.figures {
@@ -1045,7 +1253,14 @@ fn build_menu_scene(tick: u64) -> Scene {
     });
     scene.overlays.push(Overlay {
         x: 48,
-        y: 52,
+        y: 49,
+        z: 10,
+        text: "4  CORN MAZE".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 48,
+        y: 56,
         z: 10,
         text: "WASD MOVE   CLICK/SPACE FIRE   M MENU".to_string(),
         style: TextStyle::default(),
@@ -1062,6 +1277,24 @@ fn render_city_walk_scene(scene: &mut Scene, figures: &CityFigureState, mouse_ca
             "CITY WALK  figures {} watching {}  mouse {}  M menu",
             figures.figures.len(),
             figures.watching_count(),
+            if mouse_captured { "locked" } else { "free" }
+        ),
+        style: TextStyle::default(),
+    });
+}
+
+fn render_corn_maze_scene(scene: &mut Scene, maze: &CornMazeState, mouse_captured: bool) {
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "CORN MAZE  {}  mouse {}  M menu",
+            if maze.escaped {
+                "exit found"
+            } else {
+                "find the beacon"
+            },
             if mouse_captured { "locked" } else { "free" }
         ),
         style: TextStyle::default(),
@@ -1525,6 +1758,85 @@ mod tests {
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::CityShooter);
+    }
+
+    #[test]
+    fn menu_can_start_corn_maze_mode() {
+        let mut app = AppState::new();
+
+        let action =
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit4), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::StartScene);
+        assert_eq!(app.mode, AppMode::CornMaze);
+    }
+
+    #[test]
+    fn corn_maze_contains_tall_corn_and_exit_marker() {
+        let maze = CornMazeState::new();
+
+        assert!(maze.world.voxel_count() > 4_000);
+        assert!(maze
+            .world
+            .get(VoxelCoord::new(-36, 4, -36))
+            .is_some_and(|cell| cell.material == VoxelMaterial::CornStalk));
+        assert!(maze
+            .world
+            .get(VoxelCoord::new(
+                maze.exit_position.x.floor() as i32,
+                8,
+                maze.exit_position.z.floor() as i32,
+            ))
+            .is_some_and(|cell| cell.material == VoxelMaterial::Beacon));
+    }
+
+    #[test]
+    fn corn_maze_start_is_walkable() {
+        let maze = CornMazeState::new();
+
+        assert!(can_walk_to(
+            &maze.world,
+            Vec3::new(
+                maze.start_position.x,
+                WALK_EYE_HEIGHT,
+                maze.start_position.z
+            )
+        ));
+    }
+
+    #[test]
+    fn corn_maze_corn_is_hit_by_voxel_raycast() {
+        let maze = CornMazeState::new();
+        let camera = look_at(
+            Vec3::new(
+                maze.start_position.x,
+                WALK_EYE_HEIGHT,
+                maze.start_position.z,
+            ),
+            Vec3::new(-36.0, WALK_EYE_HEIGHT, -36.0),
+        );
+
+        let hit = raycast(
+            &maze.world,
+            Ray::new(camera.position, camera.forward()),
+            12.0,
+        )
+        .expect("ray should hit nearby corn wall");
+
+        assert_eq!(hit.cell.material, VoxelMaterial::CornStalk);
+    }
+
+    #[test]
+    fn corn_maze_marks_exit_when_player_reaches_beacon() {
+        let mut maze = CornMazeState::new();
+
+        maze.update(Vec3::new(
+            maze.exit_position.x + 1.0,
+            WALK_EYE_HEIGHT,
+            maze.exit_position.z,
+        ));
+
+        assert!(maze.escaped);
     }
 
     #[test]

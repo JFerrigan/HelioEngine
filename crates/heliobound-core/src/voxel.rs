@@ -36,6 +36,7 @@ pub enum VoxelMaterial {
     Basalt,
     Ocean,
     Ice,
+    CornStalk,
     CarbonLife,
     SiliconLife,
     Habitat,
