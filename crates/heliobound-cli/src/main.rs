@@ -45,6 +45,7 @@ const ENEMY_ATTACK_DAMAGE: i32 = 8;
 const WEAPON_RANGE: f32 = 95.0;
 const WEAPON_DAMAGE: i32 = 55;
 const SHOT_FLASH_TIME: f32 = 0.12;
+const BULLET_TRACE_TIME: f32 = 0.18;
 const MOUSE_SENSITIVITY: f32 = 0.0025;
 const PITCH_LIMIT: f32 = 1.52;
 const ROLL_SPEED: f32 = 1.8;
@@ -403,6 +404,7 @@ struct PlayerInput {
 #[derive(Clone, Debug)]
 struct ShooterState {
     enemies: Vec<Enemy>,
+    bullet_traces: Vec<BulletTrace>,
     health: i32,
     kills: u32,
     shots_fired: u32,
@@ -413,6 +415,7 @@ impl ShooterState {
     fn new() -> Self {
         Self {
             enemies: spawn_enemies(),
+            bullet_traces: Vec::new(),
             health: 100,
             kills: 0,
             shots_fired: 0,
@@ -422,6 +425,11 @@ impl ShooterState {
 
     fn update(&mut self, city: &VoxelWorld, player_position: Vec3, dt: f32) {
         self.shot_flash_timer = (self.shot_flash_timer - dt).max(0.0);
+        for trace in &mut self.bullet_traces {
+            trace.time_left = (trace.time_left - dt).max(0.0);
+        }
+        self.bullet_traces
+            .retain(|trace| trace.time_left > f32::EPSILON);
 
         for enemy in &mut self.enemies {
             if !enemy.is_alive() {
@@ -451,6 +459,7 @@ impl ShooterState {
     fn fire(&mut self, city: &VoxelWorld, camera: &Camera) {
         self.shots_fired += 1;
         self.shot_flash_timer = SHOT_FLASH_TIME;
+        self.bullet_traces.push(BulletTrace::from_camera(camera));
 
         let Some(index) = self
             .enemies
@@ -494,6 +503,23 @@ impl ShooterState {
 
     fn alive_count(&self) -> usize {
         self.enemies.iter().filter(|enemy| enemy.is_alive()).count()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BulletTrace {
+    origin: Vec3,
+    direction: Vec3,
+    time_left: f32,
+}
+
+impl BulletTrace {
+    fn from_camera(camera: &Camera) -> Self {
+        Self {
+            origin: camera.position + camera.right() * 0.22 - camera.up() * 0.34,
+            direction: camera.forward(),
+            time_left: BULLET_TRACE_TIME,
+        }
     }
 }
 
@@ -815,9 +841,19 @@ fn render_shooter_scene(
         cells: projected.into_iter().flat_map(|(_, cells)| cells).collect(),
     });
     scene.layers.push(Layer {
+        name: "bullets".to_string(),
+        z: 35,
+        cells: bullet_cells(scene.viewport, camera, &shooter.bullet_traces),
+    });
+    scene.layers.push(Layer {
         name: "weapon".to_string(),
         z: 40,
         cells: weapon_cells(scene.viewport, shooter.shot_flash_timer > 0.0),
+    });
+    scene.layers.push(Layer {
+        name: "reticle".to_string(),
+        z: 50,
+        cells: reticle_cells(scene.viewport),
     });
     scene.overlays.push(Overlay {
         x: 2,
@@ -911,6 +947,75 @@ fn enemy_sprite(distance: f32) -> &'static [&'static str] {
     }
 }
 
+fn bullet_cells(viewport: Viewport, camera: &Camera, traces: &[BulletTrace]) -> Vec<SceneCell> {
+    let mut cells = Vec::new();
+
+    for trace in traces {
+        let progress = 1.0 - (trace.time_left / BULLET_TRACE_TIME).clamp(0.0, 1.0);
+        let near = 4.0 + progress * 14.0;
+        let far = 34.0 + progress * 46.0;
+
+        for (step, distance) in evenly_spaced(near, far, 8).into_iter().enumerate() {
+            let point = trace.origin + trace.direction * distance;
+            if let Some(projection) = project_world_point(camera, point, viewport) {
+                cells.push(SceneCell {
+                    x: projection.x,
+                    y: projection.y,
+                    glyph: bullet_glyph(step, projection.distance),
+                    style: TextStyle::default(),
+                });
+            }
+        }
+    }
+
+    cells
+}
+
+fn evenly_spaced(start: f32, end: f32, count: usize) -> Vec<f32> {
+    if count <= 1 {
+        return vec![start];
+    }
+
+    (0..count)
+        .map(|index| {
+            let t = index as f32 / (count - 1) as f32;
+            start + (end - start) * t
+        })
+        .collect()
+}
+
+fn bullet_glyph(step: usize, distance: f32) -> char {
+    if step == 0 || distance < 12.0 {
+        '*'
+    } else if step % 2 == 0 {
+        '+'
+    } else {
+        '.'
+    }
+}
+
+fn reticle_cells(viewport: Viewport) -> Vec<SceneCell> {
+    let center_x = viewport.width as i32 / 2;
+    let center_y = viewport.height as i32 / 2;
+    [
+        (-2, 0, '-'),
+        (-1, 0, '-'),
+        (0, 0, '+'),
+        (1, 0, '-'),
+        (2, 0, '-'),
+        (0, -1, '|'),
+        (0, 1, '|'),
+    ]
+    .into_iter()
+    .map(|(x, y, glyph)| SceneCell {
+        x: center_x + x,
+        y: center_y + y,
+        glyph,
+        style: TextStyle::default(),
+    })
+    .collect()
+}
+
 fn weapon_cells(viewport: Viewport, flash: bool) -> Vec<SceneCell> {
     let art = [
         "      ||      ",
@@ -964,7 +1069,9 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
             "voxels" => [0xdf, 0xe8, 0xdb, 0xff],
             "planet" => [0xdf, 0xe8, 0xdb, 0xff],
             "enemies" => [0xff, 0x65, 0x5a, 0xff],
+            "bullets" => [0xff, 0xea, 0x8a, 0xff],
             "weapon" => [0xf0, 0xc6, 0x5b, 0xff],
+            "reticle" => [0x9f, 0xf5, 0xff, 0xff],
             _ => [0xe6, 0xee, 0xf3, 0xff],
         };
 
@@ -1189,6 +1296,41 @@ mod tests {
             .layers
             .iter()
             .any(|layer| layer.name == "weapon" && !layer.cells.is_empty()));
+    }
+
+    #[test]
+    fn shooter_scene_draws_center_reticle() {
+        let mut app = AppState::new();
+        app.start_shooter();
+
+        let scene = app.frame(0.0, true);
+        let reticle = scene
+            .layers
+            .iter()
+            .find(|layer| layer.name == "reticle")
+            .expect("shooter scene should include reticle layer");
+
+        assert!(reticle.cells.iter().any(|cell| {
+            cell.x == VIEWPORT.width as i32 / 2
+                && cell.y == VIEWPORT.height as i32 / 2
+                && cell.glyph == '+'
+        }));
+    }
+
+    #[test]
+    fn shooter_fire_draws_bullet_tracer() {
+        let mut app = AppState::new();
+        app.start_shooter();
+        app.fire_weapon();
+
+        let scene = app.frame(0.0, true);
+        let bullets = scene
+            .layers
+            .iter()
+            .find(|layer| layer.name == "bullets")
+            .expect("shooter scene should include bullet layer");
+
+        assert!(!bullets.cells.is_empty());
     }
 
     #[test]
