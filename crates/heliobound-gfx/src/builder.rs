@@ -401,21 +401,89 @@ fn shade(intensity: f32, ramp: &str) -> char {
     chars[idx]
 }
 
-fn star_for_direction(direction: Vec3) -> char {
-    let direction = direction.normalized();
-    let x = (direction.x * 4096.0).round() as i32;
-    let y = (direction.y * 4096.0).round() as i32;
-    let z = (direction.z * 4096.0).round() as i32;
-    let hash = hash_sky_cell(x, y, z);
+const SKY_CELL_RADIANS: f32 = 0.09;
+const STAR_CORE_RADIANS: f32 = 0.008;
+const STAR_HALO_RADIANS: f32 = 0.016;
+const MIN_POLAR_WIDTH: f32 = 0.2;
 
-    if hash % 997 == 0 {
+fn star_for_direction(direction: Vec3) -> char {
+    let (yaw, pitch) = sky_angles(direction);
+    let (cell_x, cell_y) = sky_cell_for_angles(yaw, pitch);
+    let mut closest: Option<(f32, char)> = None;
+
+    for y in (cell_y - 1)..=(cell_y + 1) {
+        for x in (cell_x - 1)..=(cell_x + 1) {
+            let hash = hash_sky_cell(x, y, 0);
+            if hash % 3 != 0 {
+                continue;
+            }
+
+            let center_yaw =
+                (x as f32 + hash_unit(hash, 0)) * SKY_CELL_RADIANS - std::f32::consts::PI;
+            let center_pitch = ((y as f32 + hash_unit(hash, 16)) * SKY_CELL_RADIANS
+                - std::f32::consts::FRAC_PI_2)
+                .clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
+            let yaw_delta = short_angle_delta(yaw, center_yaw);
+            let pitch_delta = pitch - center_pitch;
+            let polar_width = pitch.cos().abs().max(MIN_POLAR_WIDTH);
+            let distance = ((yaw_delta * polar_width).powi(2) + pitch_delta.powi(2)).sqrt();
+
+            if distance <= STAR_HALO_RADIANS {
+                let glyph = if distance <= STAR_CORE_RADIANS {
+                    bright_star_glyph(hash)
+                } else {
+                    '.'
+                };
+                if closest
+                    .map(|(closest_distance, _)| distance < closest_distance)
+                    .unwrap_or(true)
+                {
+                    closest = Some((distance, glyph));
+                }
+            }
+        }
+    }
+
+    closest.map(|(_, glyph)| glyph).unwrap_or(' ')
+}
+
+fn sky_angles(direction: Vec3) -> (f32, f32) {
+    let direction = direction.normalized();
+    let yaw = direction.x.atan2(direction.z);
+    let pitch = direction.y.clamp(-1.0, 1.0).asin();
+    (yaw, pitch)
+}
+
+#[cfg(test)]
+fn sky_cell_for_direction(direction: Vec3) -> (i32, i32) {
+    let (yaw, pitch) = sky_angles(direction);
+    sky_cell_for_angles(yaw, pitch)
+}
+
+fn sky_cell_for_angles(yaw: f32, pitch: f32) -> (i32, i32) {
+    let wrapped_yaw = (yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU);
+    let clamped_pitch = (pitch + std::f32::consts::FRAC_PI_2).clamp(0.0, std::f32::consts::PI);
+    (
+        (wrapped_yaw / SKY_CELL_RADIANS).floor() as i32,
+        (clamped_pitch / SKY_CELL_RADIANS).floor() as i32,
+    )
+}
+
+fn hash_unit(hash: u64, shift: u32) -> f32 {
+    (((hash >> shift) & 0xffff) as f32) / 65_535.0
+}
+
+fn short_angle_delta(a: f32, b: f32) -> f32 {
+    (a - b + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+fn bright_star_glyph(hash: u64) -> char {
+    if hash % 23 == 0 {
         '*'
-    } else if hash % 431 == 0 {
+    } else if hash % 11 == 0 {
         '+'
-    } else if hash % 149 == 0 {
-        '.'
     } else {
-        ' '
+        '.'
     }
 }
 
@@ -510,6 +578,20 @@ mod tests {
         assert_eq!(
             star_for_direction(Vec3::new(0.1, 0.2, 1.0)),
             star_for_direction(Vec3::new(0.1, 0.2, 1.0))
+        );
+    }
+
+    #[test]
+    fn starfield_uses_coarse_far_distance_cells() {
+        let direction_at_yaw = |yaw: f32| Vec3::new(yaw.sin(), 0.0, yaw.cos());
+
+        assert_eq!(
+            sky_cell_for_direction(direction_at_yaw(0.2)),
+            sky_cell_for_direction(direction_at_yaw(0.21))
+        );
+        assert_ne!(
+            sky_cell_for_direction(direction_at_yaw(0.2)),
+            sky_cell_for_direction(direction_at_yaw(0.35))
         );
     }
 
