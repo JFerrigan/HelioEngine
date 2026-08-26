@@ -53,9 +53,9 @@ const WEAPON_DAMAGE: i32 = 55;
 const SHOT_FLASH_TIME: f32 = 0.12;
 const BULLET_TRACE_TIME: f32 = 0.18;
 const ZOMBIE_WALK_SPEED: f32 = 13.0;
-const ZOMBIE_SPRINT_MULTIPLIER: f32 = 1.65;
-const ZOMBIE_SPRINT_DRAIN: f32 = 0.42;
-const ZOMBIE_SPRINT_RECHARGE: f32 = 0.28;
+const ZOMBIE_SPRINT_MULTIPLIER: f32 = 1.25;
+const ZOMBIE_SPRINT_DRAIN: f32 = 0.34;
+const ZOMBIE_SPRINT_RECHARGE: f32 = 0.20;
 const ZOMBIE_ATTACK_RANGE: f32 = 2.1;
 const ZOMBIE_ATTACK_COOLDOWN: f32 = 1.05;
 const ZOMBIE_MAX_HITS: i32 = 3;
@@ -1385,6 +1385,7 @@ struct ZombiesState {
     weapon: ZombiesWeaponKind,
     shot_flash_timer: f32,
     sprint: f32,
+    sprint_locked: bool,
     doors: Vec<ZombiesDoor>,
     wall_weapon: WallWeapon,
     game_over: bool,
@@ -1409,6 +1410,7 @@ impl ZombiesState {
             weapon: ZombiesWeaponKind::M1911,
             shot_flash_timer: 0.0,
             sprint: 1.0,
+            sprint_locked: false,
             doors: vec![
                 ZombiesDoor {
                     kind: ZombiesDoorKind::Building,
@@ -1442,7 +1444,14 @@ impl ZombiesState {
             return;
         }
 
-        let sprinting = input.boost && self.sprint > 0.05 && moving_on_ground(input);
+        if self.sprint_locked && self.sprint >= 1.0 {
+            self.sprint_locked = false;
+        }
+
+        let sprinting = input.boost
+            && !self.sprint_locked
+            && self.sprint > f32::EPSILON
+            && moving_on_ground(input);
         let speed = if sprinting {
             ZOMBIE_WALK_SPEED * ZOMBIE_SPRINT_MULTIPLIER
         } else {
@@ -1450,13 +1459,22 @@ impl ZombiesState {
         };
         if sprinting {
             self.sprint = (self.sprint - ZOMBIE_SPRINT_DRAIN * dt).max(0.0);
+            if self.sprint <= f32::EPSILON {
+                self.sprint = 0.0;
+                self.sprint_locked = true;
+            }
         } else {
             self.sprint = (self.sprint + ZOMBIE_SPRINT_RECHARGE * dt).min(1.0);
+            if self.sprint >= 1.0 {
+                self.sprint_locked = false;
+            }
         }
 
+        let mut walking_input = *input;
+        walking_input.boost = false;
         update_walking_camera_with_profile(
             camera,
-            input,
+            &walking_input,
             world,
             WalkProfile {
                 eye_height: WALK_EYE_HEIGHT,
@@ -3911,9 +3929,10 @@ fn render_zombies_scene(
         y: 5,
         z: 120,
         text: format!(
-            "HITS LEFT {}  SPRINT {:>3}%  MOUSE {}",
+            "HITS LEFT {}  SPRINT {:>3}%{}  MOUSE {}",
             zombies.health_left(),
             (zombies.sprint * 100.0).round() as i32,
+            if zombies.sprint_locked { " LOCKED" } else { "" },
             if mouse_captured { "locked" } else { "free" }
         ),
         style: hud.clone(),
@@ -5247,6 +5266,53 @@ mod tests {
 
         assert_eq!(zombies.health_left(), 0);
         assert!(zombies.game_over);
+    }
+
+    #[test]
+    fn zombies_sprint_drops_to_walk_speed_when_exhausted() {
+        let mut zombies = ZombiesState::new();
+        zombies.sprint = 0.0;
+        zombies.sprint_locked = true;
+        let world = VoxelWorld::new();
+        let mut camera = zombies_start_camera();
+        let start = camera.position;
+        let input = PlayerInput {
+            forward: true,
+            boost: true,
+            ..Default::default()
+        };
+
+        zombies.update_player(&mut camera, &input, &world, 1.0);
+
+        assert!(zombies.sprint_locked);
+        assert!(zombies.sprint > 0.0);
+        assert!(zombies.sprint < 1.0);
+        let traveled = (camera.position - start).length();
+        assert!(traveled > ZOMBIE_WALK_SPEED * 0.95);
+        assert!(traveled < ZOMBIE_WALK_SPEED * 1.05);
+    }
+
+    #[test]
+    fn zombies_sprint_unlocks_only_after_full_recharge() {
+        let mut zombies = ZombiesState::new();
+        zombies.sprint = 0.0;
+        zombies.sprint_locked = true;
+        let world = VoxelWorld::new();
+        let mut camera = zombies_start_camera();
+        let input = PlayerInput {
+            forward: true,
+            boost: true,
+            ..Default::default()
+        };
+
+        zombies.update_player(&mut camera, &input, &world, 4.0);
+        assert!(zombies.sprint_locked);
+        assert!(zombies.sprint < 1.0);
+
+        zombies.update_player(&mut camera, &input, &world, 1.0);
+
+        assert!(!zombies.sprint_locked);
+        assert_eq!(zombies.sprint, 1.0);
     }
 
     #[test]
