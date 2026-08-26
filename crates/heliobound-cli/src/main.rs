@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
@@ -111,6 +111,15 @@ const SANDBOX_EYE_HEIGHT: f32 = 2.7;
 const SANDBOX_SPEED: f32 = 9.0;
 const SANDBOX_COLLISION_RADIUS: f32 = 0.32;
 const SANDBOX_REACH: f32 = 8.0;
+const LIMINAL_SEED: u64 = 0xA551_011C_E0FF_1CE5;
+const LIMINAL_ROOM_HEIGHT: i32 = 8;
+const LIMINAL_HALL_HALF_WIDTH: i32 = 5;
+const LIMINAL_INTERACTION_RANGE: f32 = 5.0;
+const LIMINAL_WALK_PROFILE: WalkProfile = WalkProfile {
+    eye_height: WALK_EYE_HEIGHT,
+    speed: 12.0,
+    collision_radius: WALK_COLLISION_RADIUS,
+};
 const STANDARD_WALK_PROFILE: WalkProfile = WalkProfile {
     eye_height: WALK_EYE_HEIGHT,
     speed: WALK_SPEED,
@@ -300,6 +309,7 @@ enum AppMode {
     AssetViewer,
     VoxelSandbox,
     Zombies,
+    Liminal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -323,6 +333,7 @@ struct AppState {
     sandbox: VoxelSandboxState,
     zombies_map: VoxelWorld,
     zombies: ZombiesState,
+    liminal: LiminalState,
     weapon_asset: PreviewAsset,
     planet_builder: SceneBuilder,
     city_builder: SceneBuilder,
@@ -348,6 +359,7 @@ impl AppState {
             sandbox: VoxelSandboxState::new(),
             zombies_map: build_zombies_map(&ZombiesState::new()),
             zombies: ZombiesState::new(),
+            liminal: LiminalState::new_seeded(LIMINAL_SEED),
             weapon_asset: PreviewAsset::new("gun", build_weapon_asset()),
             planet_builder: SceneBuilder::new(
                 GraphicsConfig {
@@ -410,6 +422,10 @@ impl AppState {
                     self.start_zombies();
                     return KeyboardAction::StartScene;
                 }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit9)) => {
+                    self.start_liminal();
+                    return KeyboardAction::StartScene;
+                }
                 (AppMode::AssetViewer, PhysicalKey::Code(KeyCode::KeyM)) => {
                     return KeyboardAction::EnterMenu;
                 }
@@ -455,6 +471,14 @@ impl AppState {
                 (AppMode::Zombies, PhysicalKey::Code(KeyCode::KeyF)) => {
                     self.zombies
                         .interact(&mut self.zombies_map, self.camera.position);
+                    return KeyboardAction::None;
+                }
+                (AppMode::Liminal, PhysicalKey::Code(KeyCode::KeyF)) => {
+                    self.liminal.interact(self.camera.position);
+                    return KeyboardAction::None;
+                }
+                (AppMode::Liminal, PhysicalKey::Code(KeyCode::KeyT)) => {
+                    self.liminal.force_next_anomaly();
                     return KeyboardAction::None;
                 }
                 (_, PhysicalKey::Code(KeyCode::Escape)) => {
@@ -534,6 +558,13 @@ impl AppState {
         self.camera = zombies_start_camera();
         self.input = PlayerInput::default();
         self.viewmodel_bob = ViewmodelBob::default();
+    }
+
+    fn start_liminal(&mut self) {
+        self.mode = AppMode::Liminal;
+        self.liminal = LiminalState::new_seeded(LIMINAL_SEED);
+        self.camera = liminal_start_camera(&self.liminal);
+        self.input = PlayerInput::default();
     }
 
     fn frame(&mut self, dt: f32, mouse_captured: bool) -> Scene {
@@ -663,6 +694,21 @@ impl AppState {
                 );
                 scene
             }
+            AppMode::Liminal => {
+                update_walking_camera_with_profile(
+                    &mut self.camera,
+                    &self.input,
+                    &self.liminal.world,
+                    LIMINAL_WALK_PROFILE,
+                    dt,
+                );
+                self.liminal.update_player_room(&mut self.camera);
+                let mut scene =
+                    self.city_builder
+                        .build(&self.liminal.world, &self.camera, self.tick);
+                render_liminal_scene(&mut scene, &self.liminal, mouse_captured);
+                scene
+            }
         }
     }
 
@@ -677,7 +723,8 @@ impl AppState {
             | AppMode::CornMaze
             | AppMode::BarScene
             | AppMode::VoxelSandbox
-            | AppMode::Zombies => {
+            | AppMode::Zombies
+            | AppMode::Liminal => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped)
             }
             AppMode::AssetViewer => self.asset_viewer.rotate_with_mouse(delta_x, delta_y),
@@ -715,9 +762,11 @@ fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
         AppMode::CornMaze => audio.enter_corn_maze_mode(),
         AppMode::BarScene => audio.enter_bar_mode(),
         AppMode::CityShooter | AppMode::Zombies => audio.enter_doom_mode(),
-        AppMode::Menu | AppMode::PlanetFlight | AppMode::AssetViewer | AppMode::VoxelSandbox => {
-            audio.leave_ambience()
-        }
+        AppMode::Menu
+        | AppMode::PlanetFlight
+        | AppMode::AssetViewer
+        | AppMode::VoxelSandbox
+        | AppMode::Liminal => audio.leave_ambience(),
     }
 }
 
@@ -803,6 +852,13 @@ fn zombies_start_camera() -> Camera {
         .looking_at(0.0, 0.0)
         .with_fov_y(68.0_f32.to_radians())
         .with_max_distance(150.0)
+}
+
+fn liminal_start_camera(liminal: &LiminalState) -> Camera {
+    Camera::new(liminal.start_position)
+        .looking_at(0.0, 0.0)
+        .with_fov_y(66.0_f32.to_radians())
+        .with_max_distance(120.0)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1009,6 +1065,468 @@ impl CornMazeState {
     fn update(&mut self, player_position: Vec3) {
         if horizontal_distance(player_position, self.exit_position) < 3.2 {
             self.escaped = true;
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum LiminalRoomType {
+    Hallway,
+    Office,
+    ConferenceRoom,
+    Bathroom,
+    BreakRoom,
+    UtilityRoom,
+}
+
+impl LiminalRoomType {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Hallway => "hallway",
+            Self::Office => "office",
+            Self::ConferenceRoom => "conference",
+            Self::Bathroom => "bathroom",
+            Self::BreakRoom => "break room",
+            Self::UtilityRoom => "utility",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LiminalConnectionType {
+    Door,
+    Hallway,
+    Loop,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LiminalBounds {
+    min_x: i32,
+    max_x: i32,
+    min_z: i32,
+    max_z: i32,
+}
+
+impl LiminalBounds {
+    fn contains(self, position: Vec3) -> bool {
+        let x = position.x.floor() as i32;
+        let z = position.z.floor() as i32;
+        x >= self.min_x && x <= self.max_x && z >= self.min_z && z <= self.max_z
+    }
+
+    fn center(self) -> Vec3 {
+        Vec3::new(
+            (self.min_x + self.max_x + 1) as f32 * 0.5,
+            WALK_EYE_HEIGHT,
+            (self.min_z + self.max_z + 1) as f32 * 0.5,
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LiminalChair {
+    position: Vec3,
+    facing: BarFacing,
+    observed: bool,
+    rotated: bool,
+}
+
+#[derive(Clone, Debug)]
+struct LiminalLight {
+    position: Vec3,
+    repaired: bool,
+}
+
+#[derive(Clone, Debug)]
+struct LiminalRoom {
+    id: usize,
+    room_type: LiminalRoomType,
+    bounds: LiminalBounds,
+    sign_text: String,
+    original_sign_text: String,
+    visited: bool,
+    visit_count: u32,
+    chair: Option<LiminalChair>,
+    light: Option<LiminalLight>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LiminalConnection {
+    a: usize,
+    b: usize,
+    connection_type: LiminalConnectionType,
+}
+
+#[derive(Clone, Debug)]
+struct LiminalWorldGraph {
+    rooms: Vec<LiminalRoom>,
+    connections: Vec<LiminalConnection>,
+}
+
+impl LiminalWorldGraph {
+    fn room_at(&self, position: Vec3) -> Option<usize> {
+        self.rooms
+            .iter()
+            .find(|room| room.bounds.contains(position))
+            .map(|room| room.id)
+    }
+
+    fn room(&self, id: usize) -> Option<&LiminalRoom> {
+        self.rooms.iter().find(|room| room.id == id)
+    }
+
+    fn room_mut(&mut self, id: usize) -> Option<&mut LiminalRoom> {
+        self.rooms.iter_mut().find(|room| room.id == id)
+    }
+
+    fn connection_count(&self) -> usize {
+        self.connections.len()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LiminalAnomalyKind {
+    RoomSignChange,
+    ObservedChairRotation,
+    HallwayLoop,
+}
+
+impl LiminalAnomalyKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::RoomSignChange => "sign change",
+            Self::ObservedChairRotation => "chair rotation",
+            Self::HallwayLoop => "hallway loop",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LiminalAnomalyManager {
+    forced_cursor: usize,
+    triggered: Vec<LiminalAnomalyKind>,
+}
+
+impl LiminalAnomalyManager {
+    fn new() -> Self {
+        Self {
+            forced_cursor: 0,
+            triggered: Vec::new(),
+        }
+    }
+
+    fn trigger(
+        &mut self,
+        kind: LiminalAnomalyKind,
+        graph: &mut LiminalWorldGraph,
+        wrongness: &mut f32,
+        debug_message: &mut String,
+    ) -> bool {
+        match kind {
+            LiminalAnomalyKind::RoomSignChange => {
+                if self.trigger_room_sign_change(graph, None).is_none() {
+                    return false;
+                }
+            }
+            LiminalAnomalyKind::ObservedChairRotation => {
+                if self
+                    .triggered
+                    .contains(&LiminalAnomalyKind::ObservedChairRotation)
+                {
+                    return false;
+                }
+                let Some(chair) = graph
+                    .rooms
+                    .iter_mut()
+                    .filter_map(|room| room.chair.as_mut())
+                    .find(|chair| chair.observed && !chair.rotated)
+                else {
+                    return false;
+                };
+                chair.facing = rotate_facing_clockwise(chair.facing);
+                chair.rotated = true;
+            }
+            LiminalAnomalyKind::HallwayLoop => {
+                if self.triggered.contains(&LiminalAnomalyKind::HallwayLoop) {
+                    return false;
+                }
+            }
+        }
+
+        if !self.triggered.contains(&kind) {
+            self.triggered.push(kind);
+        }
+        *wrongness = (*wrongness + 6.0).min(100.0);
+        *debug_message = format!("forced anomaly: {}", kind.label());
+        true
+    }
+
+    fn trigger_room_sign_change(
+        &self,
+        graph: &mut LiminalWorldGraph,
+        preferred_room: Option<usize>,
+    ) -> Option<()> {
+        if self.triggered.contains(&LiminalAnomalyKind::RoomSignChange) {
+            return None;
+        }
+        let room = if let Some(room_id) = preferred_room {
+            graph.room_mut(room_id)?
+        } else {
+            graph.rooms.iter_mut().find(|room| {
+                room.room_type != LiminalRoomType::Hallway && !room.sign_text.ends_with('?')
+            })?
+        };
+        if room.room_type == LiminalRoomType::Hallway || room.sign_text.ends_with('?') {
+            return None;
+        }
+        room.sign_text = format!("{}?", room.original_sign_text.replace('-', " "));
+        Some(())
+    }
+
+    fn force_next(
+        &mut self,
+        graph: &mut LiminalWorldGraph,
+        wrongness: &mut f32,
+        debug_message: &mut String,
+    ) -> bool {
+        let sequence = [
+            LiminalAnomalyKind::RoomSignChange,
+            LiminalAnomalyKind::ObservedChairRotation,
+            LiminalAnomalyKind::HallwayLoop,
+        ];
+        for _ in 0..sequence.len() {
+            let kind = sequence[self.forced_cursor % sequence.len()];
+            self.forced_cursor += 1;
+            if self.trigger(kind, graph, wrongness, debug_message) {
+                return true;
+            }
+        }
+        *debug_message = "no anomaly candidate ready".to_string();
+        false
+    }
+
+    fn maybe_trigger_on_room_exit(
+        &mut self,
+        exited_room: usize,
+        current_room: Option<usize>,
+        graph: &mut LiminalWorldGraph,
+        wrongness: &mut f32,
+        debug_message: &mut String,
+    ) -> bool {
+        if !self.triggered.contains(&LiminalAnomalyKind::RoomSignChange)
+            && graph
+                .room(exited_room)
+                .is_some_and(|room| room.room_type != LiminalRoomType::Hallway && room.visited)
+        {
+            if self
+                .trigger_room_sign_change(graph, Some(exited_room))
+                .is_some()
+            {
+                self.triggered.push(LiminalAnomalyKind::RoomSignChange);
+                *wrongness = (*wrongness + 6.0).min(100.0);
+                *debug_message = format!("anomaly: {}", LiminalAnomalyKind::RoomSignChange.label());
+                return true;
+            }
+        }
+
+        if !self
+            .triggered
+            .contains(&LiminalAnomalyKind::ObservedChairRotation)
+            && current_room != Some(exited_room)
+            && graph
+                .room(exited_room)
+                .and_then(|room| room.chair.as_ref())
+                .is_some_and(|chair| chair.observed && !chair.rotated)
+        {
+            return self.trigger(
+                LiminalAnomalyKind::ObservedChairRotation,
+                graph,
+                wrongness,
+                debug_message,
+            );
+        }
+
+        if *wrongness >= 12.0 && !self.triggered.contains(&LiminalAnomalyKind::HallwayLoop) {
+            return self.trigger(
+                LiminalAnomalyKind::HallwayLoop,
+                graph,
+                wrongness,
+                debug_message,
+            );
+        }
+
+        false
+    }
+
+    fn hallway_loop_active(&self) -> bool {
+        self.triggered.contains(&LiminalAnomalyKind::HallwayLoop)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LiminalObjective {
+    target_room: usize,
+    completed: bool,
+}
+
+impl LiminalObjective {
+    fn description(&self, graph: &LiminalWorldGraph) -> String {
+        let room = graph
+            .room(self.target_room)
+            .map(|room| room.sign_text.as_str())
+            .unwrap_or("unknown room");
+        if self.completed {
+            format!("complete: repaired light in {}", room)
+        } else {
+            format!("repair flickering light in {}", room)
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LiminalState {
+    seed: u64,
+    world: VoxelWorld,
+    graph: LiminalWorldGraph,
+    start_position: Vec3,
+    current_room: Option<usize>,
+    previous_room: Option<usize>,
+    wrongness: f32,
+    anomaly_manager: LiminalAnomalyManager,
+    objective: LiminalObjective,
+    debug_message: String,
+}
+
+impl LiminalState {
+    fn new_seeded(seed: u64) -> Self {
+        let (graph, start_position, objective) = generate_liminal_office_zone(seed);
+        let mut state = Self {
+            seed,
+            world: VoxelWorld::new(),
+            graph,
+            start_position,
+            current_room: None,
+            previous_room: None,
+            wrongness: 4.0,
+            anomaly_manager: LiminalAnomalyManager::new(),
+            objective,
+            debug_message: "debug: T force anomaly  F repair light".to_string(),
+        };
+        state.rebuild_world();
+        state.current_room = state.graph.room_at(start_position);
+        state
+    }
+
+    fn update_player_room(&mut self, camera: &mut Camera) {
+        self.apply_hallway_loop(camera);
+        let next_room = self.graph.room_at(camera.position);
+        if next_room == self.current_room {
+            return;
+        }
+
+        let exited_room = self.current_room;
+        self.previous_room = exited_room;
+        self.current_room = next_room;
+
+        if let Some(room_id) = next_room {
+            if let Some(room) = self.graph.room_mut(room_id) {
+                room.visited = true;
+                room.visit_count += 1;
+                if let Some(chair) = &mut room.chair {
+                    chair.observed = true;
+                }
+            }
+            self.wrongness = (self.wrongness + 0.5).min(100.0);
+        }
+
+        let mutated = exited_room.is_some_and(|room_id| {
+            self.anomaly_manager.maybe_trigger_on_room_exit(
+                room_id,
+                next_room,
+                &mut self.graph,
+                &mut self.wrongness,
+                &mut self.debug_message,
+            )
+        });
+
+        if mutated {
+            self.rebuild_world();
+        }
+    }
+
+    fn interact(&mut self, player_position: Vec3) {
+        let Some(room_id) = self.current_room else {
+            self.debug_message = "no room target".to_string();
+            return;
+        };
+        if room_id != self.objective.target_room {
+            self.debug_message = "nothing to repair here".to_string();
+            return;
+        }
+
+        let Some(room) = self.graph.room_mut(room_id) else {
+            return;
+        };
+        let Some(light) = &mut room.light else {
+            self.debug_message = "no light fixture found".to_string();
+            return;
+        };
+        if light.repaired {
+            self.debug_message = "light already repaired".to_string();
+            return;
+        }
+        if horizontal_distance(player_position, light.position) > LIMINAL_INTERACTION_RANGE {
+            self.debug_message = "move closer to the light".to_string();
+            return;
+        }
+
+        light.repaired = true;
+        self.objective.completed = true;
+        self.wrongness = (self.wrongness + 3.0).min(100.0);
+        self.debug_message = "objective complete: light repaired".to_string();
+        self.rebuild_world();
+    }
+
+    fn force_next_anomaly(&mut self) {
+        if self.anomaly_manager.force_next(
+            &mut self.graph,
+            &mut self.wrongness,
+            &mut self.debug_message,
+        ) {
+            self.rebuild_world();
+        }
+    }
+
+    fn current_room_label(&self) -> String {
+        self.current_room
+            .and_then(|id| self.graph.room(id))
+            .map(|room| format!("{} {}", room.id, room.sign_text))
+            .unwrap_or_else(|| "none".to_string())
+    }
+
+    fn current_room_type_label(&self) -> &'static str {
+        self.current_room
+            .and_then(|id| self.graph.room(id))
+            .map(|room| room.room_type.label())
+            .unwrap_or("unknown")
+    }
+
+    fn rebuild_world(&mut self) {
+        self.world = build_liminal_world(&self.graph);
+    }
+
+    fn apply_hallway_loop(&self, camera: &mut Camera) {
+        if !self.anomaly_manager.hallway_loop_active() || self.current_room != Some(0) {
+            return;
+        }
+
+        let Some(hallway) = self.graph.room(0) else {
+            return;
+        };
+        if camera.position.x > hallway.bounds.max_x as f32 - 1.5 {
+            camera.position.x = hallway.bounds.min_x as f32 + 2.5;
+        } else if camera.position.x < hallway.bounds.min_x as f32 + 1.5 {
+            camera.position.x = hallway.bounds.max_x as f32 - 2.5;
         }
     }
 }
@@ -2372,6 +2890,380 @@ fn build_demo_city() -> VoxelWorld {
 
 fn build_doom_map() -> VoxelWorld {
     DoomMapGenerator::new(DoomMapConfig::default()).generate()
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LiminalRng {
+    state: u64,
+}
+
+impl LiminalRng {
+    fn new(seed: u64) -> Self {
+        Self {
+            state: seed ^ 0x9E37_79B9_7F4A_7C15,
+        }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        self.state = self
+            .state
+            .wrapping_mul(0x5851_F42D_4C95_7F2D)
+            .wrapping_add(0x1405_7B7E_F767_814F);
+        (self.state >> 32) as u32
+    }
+
+    fn range_i32(&mut self, min: i32, max: i32) -> i32 {
+        min + (self.next_u32() % (max - min + 1) as u32) as i32
+    }
+}
+
+fn generate_liminal_office_zone(seed: u64) -> (LiminalWorldGraph, Vec3, LiminalObjective) {
+    let mut rng = LiminalRng::new(seed);
+    let mut rooms = Vec::new();
+    let hallway_bounds = LiminalBounds {
+        min_x: -76,
+        max_x: 76,
+        min_z: -LIMINAL_HALL_HALF_WIDTH,
+        max_z: LIMINAL_HALL_HALF_WIDTH,
+    };
+    rooms.push(LiminalRoom {
+        id: 0,
+        room_type: LiminalRoomType::Hallway,
+        bounds: hallway_bounds,
+        sign_text: "MAIN HALL".to_string(),
+        original_sign_text: "MAIN HALL".to_string(),
+        visited: false,
+        visit_count: 0,
+        chair: None,
+        light: None,
+    });
+
+    let room_types = [
+        LiminalRoomType::Office,
+        LiminalRoomType::ConferenceRoom,
+        LiminalRoomType::Bathroom,
+        LiminalRoomType::BreakRoom,
+        LiminalRoomType::UtilityRoom,
+        LiminalRoomType::Office,
+        LiminalRoomType::ConferenceRoom,
+    ];
+    let slots = [-60, -38, -16, 6, 28, 50, 70];
+    let mut type_counts: HashMap<LiminalRoomType, usize> = HashMap::new();
+    for (index, room_type) in room_types.into_iter().enumerate() {
+        let width = rng.range_i32(14, 20);
+        let depth = rng.range_i32(13, 19);
+        let center_x = slots[index];
+        let north = index % 2 == 0;
+        let bounds = if north {
+            LiminalBounds {
+                min_x: center_x - width / 2,
+                max_x: center_x + width / 2,
+                min_z: -LIMINAL_HALL_HALF_WIDTH - depth - 1,
+                max_z: -LIMINAL_HALL_HALF_WIDTH - 1,
+            }
+        } else {
+            LiminalBounds {
+                min_x: center_x - width / 2,
+                max_x: center_x + width / 2,
+                min_z: LIMINAL_HALL_HALF_WIDTH + 1,
+                max_z: LIMINAL_HALL_HALF_WIDTH + depth + 1,
+            }
+        };
+        let count = type_counts.entry(room_type).or_insert(0);
+        *count += 1;
+        let room_id = rooms.len();
+        let center = bounds.center();
+        let chair = matches!(
+            room_type,
+            LiminalRoomType::Office | LiminalRoomType::ConferenceRoom | LiminalRoomType::BreakRoom
+        )
+        .then_some(LiminalChair {
+            position: Vec3::new(center.x + rng.range_i32(-3, 3) as f32, 0.0, center.z),
+            facing: if north {
+                BarFacing::South
+            } else {
+                BarFacing::North
+            },
+            observed: false,
+            rotated: false,
+        });
+        let light = Some(LiminalLight {
+            position: Vec3::new(center.x, WALK_EYE_HEIGHT, center.z),
+            repaired: false,
+        });
+        let label = match room_type {
+            LiminalRoomType::Office => format!("OFFICE {}", 100 + room_id),
+            LiminalRoomType::ConferenceRoom => {
+                format!("CONFERENCE {}", ('A' as u8 + *count as u8 - 1) as char)
+            }
+            LiminalRoomType::Bathroom => "RESTROOM".to_string(),
+            LiminalRoomType::BreakRoom => "BREAK ROOM".to_string(),
+            LiminalRoomType::UtilityRoom => "UTILITY".to_string(),
+            LiminalRoomType::Hallway => "HALLWAY".to_string(),
+        };
+        rooms.push(LiminalRoom {
+            id: room_id,
+            room_type,
+            bounds,
+            sign_text: label.clone(),
+            original_sign_text: label,
+            visited: false,
+            visit_count: 0,
+            chair,
+            light,
+        });
+    }
+
+    let mut connections = Vec::new();
+    for room_id in 1..rooms.len() {
+        connections.push(LiminalConnection {
+            a: 0,
+            b: room_id,
+            connection_type: LiminalConnectionType::Door,
+        });
+    }
+    connections.push(LiminalConnection {
+        a: 0,
+        b: 0,
+        connection_type: LiminalConnectionType::Hallway,
+    });
+    connections.push(LiminalConnection {
+        a: 0,
+        b: 0,
+        connection_type: LiminalConnectionType::Loop,
+    });
+
+    let objective = LiminalObjective {
+        target_room: rooms
+            .iter()
+            .find(|room| room.room_type == LiminalRoomType::UtilityRoom)
+            .map(|room| room.id)
+            .unwrap_or(1),
+        completed: false,
+    };
+    let start_position = Vec3::new(hallway_bounds.min_x as f32 + 8.5, WALK_EYE_HEIGHT, 0.5);
+    (
+        LiminalWorldGraph { rooms, connections },
+        start_position,
+        objective,
+    )
+}
+
+fn build_liminal_world(graph: &LiminalWorldGraph) -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+    for room in &graph.rooms {
+        stamp_liminal_room_shell(&mut world, room);
+    }
+    for room in &graph.rooms {
+        if room.room_type != LiminalRoomType::Hallway {
+            clear_liminal_door(&mut world, room);
+            stamp_liminal_sign(&mut world, room);
+            stamp_liminal_room_props(&mut world, room);
+        }
+        if let Some(light) = &room.light {
+            stamp_liminal_light(&mut world, light);
+        }
+    }
+    world
+}
+
+fn stamp_liminal_room_shell(world: &mut VoxelWorld, room: &LiminalRoom) {
+    let floor = match room.room_type {
+        LiminalRoomType::Bathroom | LiminalRoomType::UtilityRoom => VoxelMaterial::Stone,
+        LiminalRoomType::BreakRoom => VoxelMaterial::Wood,
+        _ => VoxelMaterial::Habitat,
+    };
+    fill_cuboid(
+        world,
+        VoxelCoord::new(room.bounds.min_x, 0, room.bounds.min_z),
+        VoxelCoord::new(room.bounds.max_x, 0, room.bounds.max_z),
+        floor,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(room.bounds.min_x, 1, room.bounds.min_z),
+        VoxelCoord::new(room.bounds.max_x, LIMINAL_ROOM_HEIGHT, room.bounds.min_z),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(room.bounds.min_x, 1, room.bounds.max_z),
+        VoxelCoord::new(room.bounds.max_x, LIMINAL_ROOM_HEIGHT, room.bounds.max_z),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(room.bounds.min_x, 1, room.bounds.min_z),
+        VoxelCoord::new(room.bounds.min_x, LIMINAL_ROOM_HEIGHT, room.bounds.max_z),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(room.bounds.max_x, 1, room.bounds.min_z),
+        VoxelCoord::new(room.bounds.max_x, LIMINAL_ROOM_HEIGHT, room.bounds.max_z),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(
+            room.bounds.min_x,
+            LIMINAL_ROOM_HEIGHT + 1,
+            room.bounds.min_z,
+        ),
+        VoxelCoord::new(
+            room.bounds.max_x,
+            LIMINAL_ROOM_HEIGHT + 1,
+            room.bounds.max_z,
+        ),
+        VoxelMaterial::ShipHull,
+    );
+}
+
+fn clear_liminal_door(world: &mut VoxelWorld, room: &LiminalRoom) {
+    let center_x = ((room.bounds.min_x + room.bounds.max_x) / 2).clamp(-74, 74);
+    let door_z = if room.bounds.max_z < 0 {
+        room.bounds.max_z
+    } else {
+        room.bounds.min_z
+    };
+    clear_cuboid(
+        world,
+        VoxelCoord::new(center_x - 2, 1, door_z),
+        VoxelCoord::new(center_x + 2, 5, door_z),
+    );
+    clear_cuboid(
+        world,
+        VoxelCoord::new(
+            center_x - 2,
+            1,
+            if door_z < 0 { door_z + 1 } else { door_z - 1 },
+        ),
+        VoxelCoord::new(
+            center_x + 2,
+            5,
+            if door_z < 0 { door_z + 1 } else { door_z - 1 },
+        ),
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(center_x - 2, 6, door_z),
+        VoxelCoord::new(center_x + 2, 6, door_z),
+        VoxelMaterial::Wood,
+    );
+}
+
+fn stamp_liminal_sign(world: &mut VoxelWorld, room: &LiminalRoom) {
+    let center_x = (room.bounds.min_x + room.bounds.max_x) / 2;
+    let sign_z = if room.bounds.max_z < 0 {
+        room.bounds.max_z + 1
+    } else {
+        room.bounds.min_z - 1
+    };
+    let material = if room.sign_text == room.original_sign_text {
+        VoxelMaterial::Beacon
+    } else {
+        VoxelMaterial::Glass
+    };
+    fill_cuboid(
+        world,
+        VoxelCoord::new(center_x - 3, 6, sign_z),
+        VoxelCoord::new(center_x + 3, 6, sign_z),
+        material,
+    );
+}
+
+fn stamp_liminal_room_props(world: &mut VoxelWorld, room: &LiminalRoom) {
+    let center = room.bounds.center();
+    match room.room_type {
+        LiminalRoomType::Office => {
+            fill_cuboid(
+                world,
+                VoxelCoord::new(center.x as i32 - 4, 2, center.z as i32 - 3),
+                VoxelCoord::new(center.x as i32 + 4, 3, center.z as i32 + 1),
+                VoxelMaterial::Wood,
+            );
+        }
+        LiminalRoomType::ConferenceRoom => {
+            fill_cuboid(
+                world,
+                VoxelCoord::new(center.x as i32 - 7, 2, center.z as i32 - 2),
+                VoxelCoord::new(center.x as i32 + 7, 3, center.z as i32 + 2),
+                VoxelMaterial::Wood,
+            );
+        }
+        LiminalRoomType::Bathroom => {
+            for x in [
+                room.bounds.min_x + 4,
+                room.bounds.min_x + 8,
+                room.bounds.min_x + 12,
+            ] {
+                fill_cuboid(
+                    world,
+                    VoxelCoord::new(x, 1, room.bounds.min_z + 2),
+                    VoxelCoord::new(x + 1, 5, room.bounds.min_z + 7),
+                    VoxelMaterial::Glass,
+                );
+            }
+        }
+        LiminalRoomType::BreakRoom => {
+            fill_cuboid(
+                world,
+                VoxelCoord::new(room.bounds.max_x - 5, 1, room.bounds.min_z + 2),
+                VoxelCoord::new(room.bounds.max_x - 2, 4, room.bounds.max_z - 2),
+                VoxelMaterial::Habitat,
+            );
+            stamp_bottle(world, center.x as i32 - 3, 4, center.z as i32);
+        }
+        LiminalRoomType::UtilityRoom => {
+            fill_cuboid(
+                world,
+                VoxelCoord::new(room.bounds.min_x + 2, 1, room.bounds.min_z + 2),
+                VoxelCoord::new(room.bounds.min_x + 5, 6, room.bounds.max_z - 2),
+                VoxelMaterial::ShipHull,
+            );
+        }
+        LiminalRoomType::Hallway => {}
+    }
+
+    if let Some(chair) = &room.chair {
+        stamp_chair(
+            world,
+            chair.position.x.floor() as i32,
+            chair.position.z.floor() as i32,
+            chair.facing,
+        );
+    }
+}
+
+fn stamp_liminal_light(world: &mut VoxelWorld, light: &LiminalLight) {
+    let material = if light.repaired {
+        VoxelMaterial::Beacon
+    } else {
+        VoxelMaterial::Glass
+    };
+    fill_cuboid(
+        world,
+        VoxelCoord::new(
+            light.position.x.floor() as i32 - 1,
+            LIMINAL_ROOM_HEIGHT,
+            light.position.z.floor() as i32,
+        ),
+        VoxelCoord::new(
+            light.position.x.floor() as i32 + 1,
+            LIMINAL_ROOM_HEIGHT,
+            light.position.z.floor() as i32,
+        ),
+        material,
+    );
+}
+
+fn rotate_facing_clockwise(facing: BarFacing) -> BarFacing {
+    match facing {
+        BarFacing::North => BarFacing::East,
+        BarFacing::East => BarFacing::South,
+        BarFacing::South => BarFacing::West,
+        BarFacing::West => BarFacing::North,
+    }
 }
 
 fn build_zombies_map(state: &ZombiesState) -> VoxelWorld {
@@ -3975,9 +4867,16 @@ fn build_menu_scene(tick: u64) -> Scene {
     });
     scene.overlays.push(Overlay {
         x: 48,
-        y: 72,
+        y: 69,
         z: 10,
-        text: "WASD MOVE   CLICK/SPACE USE   M MENU".to_string(),
+        text: "9  LIMINAL OFFICE".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 48,
+        y: 76,
+        z: 10,
+        text: "WASD MOVE   F USE   T DEBUG ANOMALY   M MENU".to_string(),
         style: TextStyle::default(),
     });
     scene
@@ -4150,6 +5049,62 @@ fn render_corn_maze_scene(
             if mouse_captured { "locked" } else { "free" }
         ),
         style: TextStyle::default(),
+    });
+}
+
+fn render_liminal_scene(scene: &mut Scene, liminal: &LiminalState, mouse_captured: bool) {
+    let hud = hud_style();
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "LIMINAL OFFICE  room {}  type {}  mouse {}",
+            liminal.current_room_label(),
+            liminal.current_room_type_label(),
+            if mouse_captured { "locked" } else { "free" }
+        ),
+        style: hud.clone(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 5,
+        z: 120,
+        text: format!(
+            "seed {:016x}  wrongness {:04.1}  graph {}r/{}c  anomalies {}",
+            liminal.seed,
+            liminal.wrongness,
+            liminal.graph.rooms.len(),
+            liminal.graph.connection_count(),
+            liminal
+                .anomaly_manager
+                .triggered
+                .iter()
+                .map(|kind| kind.label())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        style: hud.clone(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 8,
+        z: 120,
+        text: format!(
+            "objective: {}",
+            liminal.objective.description(&liminal.graph)
+        ),
+        style: hud.clone(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 11,
+        z: 120,
+        text: format!(
+            "F repair near target light  T force anomaly  {}",
+            liminal.debug_message
+        ),
+        style: hud,
     });
 }
 
@@ -5051,6 +6006,162 @@ mod tests {
         assert_eq!(app.mode, AppMode::Zombies);
         assert_eq!(app.zombies.round, 1);
         assert!(app.zombies_map.voxel_count() > 10_000);
+    }
+
+    #[test]
+    fn menu_can_start_liminal_mode() {
+        let mut app = AppState::new();
+
+        let action =
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit9), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::StartScene);
+        assert_eq!(app.mode, AppMode::Liminal);
+        assert_eq!(app.liminal.seed, LIMINAL_SEED);
+        assert!(app.liminal.world.voxel_count() > 8_000);
+    }
+
+    #[test]
+    fn liminal_generation_is_seeded_and_has_required_room_types() {
+        let a = LiminalState::new_seeded(1234);
+        let b = LiminalState::new_seeded(1234);
+        let c = LiminalState::new_seeded(5678);
+
+        assert_eq!(a.graph.rooms.len(), b.graph.rooms.len());
+        assert_eq!(a.graph.rooms[1].bounds, b.graph.rooms[1].bounds);
+        assert_ne!(a.graph.rooms[1].bounds, c.graph.rooms[1].bounds);
+        for room_type in [
+            LiminalRoomType::Hallway,
+            LiminalRoomType::Office,
+            LiminalRoomType::ConferenceRoom,
+            LiminalRoomType::Bathroom,
+            LiminalRoomType::BreakRoom,
+            LiminalRoomType::UtilityRoom,
+        ] {
+            assert!(a.graph.rooms.iter().any(|room| room.room_type == room_type));
+        }
+        assert!(a
+            .graph
+            .connections
+            .iter()
+            .any(|connection| connection.connection_type == LiminalConnectionType::Door));
+    }
+
+    #[test]
+    fn liminal_detects_room_entry_by_room_id() {
+        let mut liminal = LiminalState::new_seeded(LIMINAL_SEED);
+        let office_center = liminal
+            .graph
+            .rooms
+            .iter()
+            .find(|room| room.room_type == LiminalRoomType::Office)
+            .unwrap()
+            .bounds
+            .center();
+        let mut camera = Camera::new(office_center);
+
+        liminal.update_player_room(&mut camera);
+
+        let current = liminal.current_room.unwrap();
+        assert_eq!(
+            liminal.graph.room(current).unwrap().room_type,
+            LiminalRoomType::Office
+        );
+        assert!(liminal.graph.room(current).unwrap().visited);
+    }
+
+    #[test]
+    fn liminal_sign_changes_after_player_leaves_room() {
+        let mut liminal = LiminalState::new_seeded(LIMINAL_SEED);
+        let room_id = 1;
+        let room_center = liminal.graph.room(room_id).unwrap().bounds.center();
+        let original_sign = liminal.graph.room(room_id).unwrap().sign_text.clone();
+        let mut camera = Camera::new(room_center);
+        liminal.update_player_room(&mut camera);
+
+        camera.position = liminal.graph.room(0).unwrap().bounds.center();
+        liminal.update_player_room(&mut camera);
+
+        let changed_sign = &liminal.graph.room(room_id).unwrap().sign_text;
+        assert_ne!(changed_sign, &original_sign);
+        assert!(liminal
+            .anomaly_manager
+            .triggered
+            .contains(&LiminalAnomalyKind::RoomSignChange));
+    }
+
+    #[test]
+    fn liminal_observed_chair_can_rotate_while_outside_room() {
+        let mut liminal = LiminalState::new_seeded(LIMINAL_SEED);
+        let room_id = liminal
+            .graph
+            .rooms
+            .iter()
+            .find(|room| room.chair.is_some())
+            .unwrap()
+            .id;
+        let room_center = liminal.graph.room(room_id).unwrap().bounds.center();
+        let mut camera = Camera::new(room_center);
+        liminal.update_player_room(&mut camera);
+        let before = liminal
+            .graph
+            .room(room_id)
+            .unwrap()
+            .chair
+            .as_ref()
+            .unwrap()
+            .facing as u8;
+
+        camera.position = liminal.graph.room(0).unwrap().bounds.center();
+        liminal.update_player_room(&mut camera);
+        liminal.force_next_anomaly();
+
+        let chair = liminal.graph.room(room_id).unwrap().chair.as_ref().unwrap();
+        assert_ne!(chair.facing as u8, before);
+        assert!(chair.rotated);
+    }
+
+    #[test]
+    fn liminal_hallway_loop_wraps_player_at_hall_end() {
+        let mut liminal = LiminalState::new_seeded(LIMINAL_SEED);
+        liminal.force_next_anomaly();
+        liminal.force_next_anomaly();
+        liminal.force_next_anomaly();
+        let hallway = liminal.graph.room(0).unwrap().bounds;
+        let mut camera = Camera::new(Vec3::new(
+            hallway.max_x as f32,
+            WALK_EYE_HEIGHT,
+            hallway.center().z,
+        ));
+        liminal.current_room = Some(0);
+
+        liminal.update_player_room(&mut camera);
+
+        assert!(camera.position.x < hallway.min_x as f32 + 4.0);
+    }
+
+    #[test]
+    fn liminal_repairs_target_light_objective() {
+        let mut liminal = LiminalState::new_seeded(LIMINAL_SEED);
+        let target = liminal.objective.target_room;
+        let target_center = liminal.graph.room(target).unwrap().bounds.center();
+        let mut camera = Camera::new(target_center);
+        liminal.update_player_room(&mut camera);
+
+        liminal.interact(camera.position);
+
+        assert!(liminal.objective.completed);
+        assert!(
+            liminal
+                .graph
+                .room(target)
+                .unwrap()
+                .light
+                .as_ref()
+                .unwrap()
+                .repaired
+        );
+        assert!(liminal.wrongness > 4.0);
     }
 
     #[test]
