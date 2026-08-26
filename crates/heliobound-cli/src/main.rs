@@ -834,7 +834,7 @@ struct ViewmodelBob {
 impl ViewmodelBob {
     fn update(&mut self, movement_distance: f32, moving: bool, dt: f32) {
         if moving && movement_distance > f32::EPSILON {
-            self.phase += movement_distance * 1.15;
+            self.phase += movement_distance * 0.575;
             self.intensity = (self.intensity + dt * 6.0).min(1.0);
         } else {
             self.intensity = (self.intensity - dt * 10.0).max(0.0);
