@@ -402,6 +402,12 @@ impl AppState {
                     self.start_zombies();
                     return KeyboardAction::StartScene;
                 }
+                (AppMode::AssetViewer, PhysicalKey::Code(KeyCode::KeyM)) => {
+                    return KeyboardAction::EnterMenu;
+                }
+                (AppMode::AssetViewer, PhysicalKey::Code(KeyCode::Escape)) => {
+                    return KeyboardAction::ReleaseMouse;
+                }
                 (AppMode::AssetViewer, key) => {
                     if let Some(index) = asset_digit_index(key) {
                         self.asset_viewer.select(index);
@@ -5169,6 +5175,16 @@ mod tests {
             .overlays
             .iter()
             .any(|overlay| overlay.text.contains("ASSET VIEWER")));
+    }
+
+    #[test]
+    fn asset_viewer_m_returns_to_menu() {
+        let mut app = AppState::new();
+        app.start_asset_viewer();
+
+        let action = app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyM), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::EnterMenu);
     }
 
     #[test]
