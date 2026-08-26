@@ -92,6 +92,12 @@ const ASSET_VIEWER_DEFAULT_DISTANCE: f32 = 28.0;
 const ASSET_VIEWER_MIN_DISTANCE: f32 = 8.0;
 const ASSET_VIEWER_MAX_DISTANCE: f32 = 80.0;
 const ASSET_VIEWER_MOUSE_SENSITIVITY: f32 = 0.006;
+const VIEWMODEL_RENDER_WIDTH: usize = 50;
+const VIEWMODEL_RENDER_HEIGHT: usize = 28;
+const VIEWMODEL_OFFSET_X: i32 = 5;
+const VIEWMODEL_OFFSET_Y: i32 = 4;
+const VIEWMODEL_CAMERA_FOV: f32 = 34.0;
+const VIEWMODEL_CAMERA_DISTANCE_SCALE: f32 = 2.2;
 const SANDBOX_HALF_EXTENT: i32 = 72;
 const SANDBOX_EYE_HEIGHT: f32 = 2.7;
 const SANDBOX_SPEED: f32 = 9.0;
@@ -309,6 +315,7 @@ struct AppState {
     sandbox: VoxelSandboxState,
     zombies_map: VoxelWorld,
     zombies: ZombiesState,
+    weapon_asset: PreviewAsset,
     planet_builder: SceneBuilder,
     city_builder: SceneBuilder,
     camera: Camera,
@@ -333,6 +340,7 @@ impl AppState {
             sandbox: VoxelSandboxState::new(),
             zombies_map: build_zombies_map(&ZombiesState::new()),
             zombies: ZombiesState::new(),
+            weapon_asset: PreviewAsset::new("gun", build_weapon_asset()),
             planet_builder: SceneBuilder::new(
                 GraphicsConfig {
                     viewport: VIEWPORT,
@@ -556,6 +564,7 @@ impl AppState {
                     &mut scene,
                     &self.camera,
                     &self.shooter,
+                    &self.weapon_asset,
                     self.viewmodel_bob.offset(),
                     mouse_captured,
                 );
@@ -634,6 +643,7 @@ impl AppState {
                     &mut scene,
                     &self.camera,
                     &self.zombies,
+                    &self.weapon_asset,
                     self.viewmodel_bob.offset(),
                     mouse_captured,
                 );
@@ -2742,6 +2752,8 @@ fn build_asset_catalog() -> Vec<PreviewAsset> {
         assets.push(PreviewAsset::new(name, build_block_asset(material)));
     }
 
+    assets.push(PreviewAsset::new("gun", build_weapon_asset()));
+
     assets
 }
 
@@ -2875,6 +2887,83 @@ fn build_ash_tray_asset() -> VoxelWorld {
 fn build_zombie_asset() -> VoxelWorld {
     let mut world = VoxelWorld::new();
     stamp_zombie_body(&mut world, Vec3::ZERO, VoxelMaterial::CarbonLife);
+    world
+}
+
+fn build_weapon_asset() -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-8, 1, 0),
+        VoxelCoord::new(-4, 5, 2),
+        VoxelMaterial::CarbonLife,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-4, 2, 0),
+        VoxelCoord::new(1, 3, 3),
+        VoxelMaterial::CarbonLife,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-1, 1, 0),
+        VoxelCoord::new(3, 5, 2),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(1, 3, 0),
+        VoxelCoord::new(12, 5, 1),
+        VoxelMaterial::ShipHull,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(4, 5, 0),
+        VoxelCoord::new(10, 7, 2),
+        VoxelMaterial::ShipHull,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(5, 4, -1),
+        VoxelCoord::new(8, 5, 0),
+        VoxelMaterial::Glass,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(9, 4, 0),
+        VoxelCoord::new(12, 4, 2),
+        VoxelMaterial::Beacon,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-1, 4, 0),
+        VoxelCoord::new(1, 5, 1),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-2, 1, 1),
+        VoxelCoord::new(-1, 4, 2),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-5, 0, 1),
+        VoxelCoord::new(-2, 2, 2),
+        VoxelMaterial::CarbonLife,
+    );
+    clear_cuboid(
+        &mut world,
+        VoxelCoord::new(-1, 2, 1),
+        VoxelCoord::new(0, 3, 1),
+    );
+    clear_cuboid(
+        &mut world,
+        VoxelCoord::new(2, 4, 0),
+        VoxelCoord::new(3, 4, 1),
+    );
+
     world
 }
 
@@ -4093,6 +4182,7 @@ fn render_shooter_scene(
     scene: &mut Scene,
     camera: &Camera,
     shooter: &ShooterState,
+    weapon_asset: &PreviewAsset,
     bob_offset: (i32, i32),
     mouse_captured: bool,
 ) {
@@ -4104,7 +4194,12 @@ fn render_shooter_scene(
     scene.layers.push(Layer {
         name: "weapon".to_string(),
         z: 40,
-        cells: shooter_viewmodel_cells(scene.viewport, shooter.shot_flash_timer > 0.0, bob_offset),
+        cells: weapon_viewmodel_cells(
+            scene.viewport,
+            weapon_asset,
+            shooter.shot_flash_timer > 0.0,
+            bob_offset,
+        ),
     });
     scene.layers.push(Layer {
         name: "reticle".to_string(),
@@ -4130,6 +4225,7 @@ fn render_zombies_scene(
     scene: &mut Scene,
     camera: &Camera,
     zombies: &ZombiesState,
+    weapon_asset: &PreviewAsset,
     bob_offset: (i32, i32),
     mouse_captured: bool,
 ) {
@@ -4141,7 +4237,12 @@ fn render_zombies_scene(
     scene.layers.push(Layer {
         name: "weapon".to_string(),
         z: 40,
-        cells: zombies_viewmodel_cells(scene.viewport, zombies.shot_flash_timer > 0.0, bob_offset),
+        cells: weapon_viewmodel_cells(
+            scene.viewport,
+            weapon_asset,
+            zombies.shot_flash_timer > 0.0,
+            bob_offset,
+        ),
     });
     scene.layers.push(Layer {
         name: "reticle".to_string(),
@@ -4330,130 +4431,75 @@ fn reticle_cells(viewport: Viewport) -> Vec<SceneCell> {
     .collect()
 }
 
-fn shooter_viewmodel_cells(
+fn weapon_viewmodel_cells(
     viewport: Viewport,
+    weapon_asset: &PreviewAsset,
     flash: bool,
     bob_offset: (i32, i32),
-) -> Vec<SceneCell> {
-    let body_art = [
-        "      ##      ",
-        "     ####     ",
-        "    ######    ",
-        "    ##@@##    ",
-        "   ###@@###   ",
-        "   ###@@###   ",
-        "    ##@@##    ",
-        "     ####     ",
-    ];
-    let weapon_art = [
-        "              ____",
-        "         ____/###/",
-        "    ____/#######/",
-        " __/##########/  ",
-        " ###/====###/    ",
-        "   \\___####/     ",
-    ];
-    composite_viewmodel_cells(viewport, flash, bob_offset, &body_art, &weapon_art, false)
-}
-
-fn zombies_viewmodel_cells(
-    viewport: Viewport,
-    flash: bool,
-    bob_offset: (i32, i32),
-) -> Vec<SceneCell> {
-    let body_art = [
-        "     ####     ",
-        "    ######    ",
-        "   ##@@@@##   ",
-        "   ##@@@@##   ",
-        "   ###@@###   ",
-        "    ##@@##    ",
-        "     ####     ",
-        "     #  #     ",
-    ];
-    let weapon_art = [
-        "             __",
-        "         ___/ /",
-        "    ____/####/",
-        " __/########/",
-        " ##/===###/   ",
-        "  \\___###/    ",
-    ];
-    composite_viewmodel_cells(viewport, flash, bob_offset, &body_art, &weapon_art, true)
-}
-
-fn composite_viewmodel_cells(
-    viewport: Viewport,
-    flash: bool,
-    bob_offset: (i32, i32),
-    body_art: &[&str],
-    weapon_art: &[&str],
-    emphasize_flash: bool,
 ) -> Vec<SceneCell> {
     let (bob_x, bob_y) = bob_offset;
-    let body_width = body_art.iter().map(|line| line.len()).max().unwrap_or(0) as i32;
-    let weapon_width = weapon_art.iter().map(|line| line.len()).max().unwrap_or(0) as i32;
-    let body_height = body_art.len() as i32;
-    let weapon_height = weapon_art.len() as i32;
-    let base_x = viewport.width as i32 - (weapon_width + body_width / 2) - 8 + bob_x;
-    let base_y = viewport.height as i32 - body_height.max(weapon_height) - 4 + bob_y;
-    let body_x = base_x;
-    let body_y = base_y + 1;
-    let weapon_x = base_x + 7;
-    let weapon_y = base_y - 1;
+    let render_width = VIEWMODEL_RENDER_WIDTH;
+    let render_height = VIEWMODEL_RENDER_HEIGHT;
+    let start_x = viewport.width as i32 - render_width as i32 - VIEWMODEL_OFFSET_X + bob_x;
+    let start_y = viewport.height as i32 - render_height as i32 - VIEWMODEL_OFFSET_Y + bob_y;
+    let camera = weapon_viewmodel_camera(weapon_asset);
+    let material_map = MaterialGlyphMap;
     let mut cells = Vec::new();
 
-    if flash {
-        let flash_color = if emphasize_flash {
-            TextStyle {
-                fg: Some("#ffda63".to_string()),
-                bg: None,
-                bold: true,
+    for y in 0..render_height {
+        for x in 0..render_width {
+            let ray = camera.ray_for_cell(x, y, render_width, render_height);
+            if let Some(hit) = raycast(
+                &weapon_asset.world,
+                ray,
+                (weapon_asset.radius * VIEWMODEL_CAMERA_DISTANCE_SCALE).max(24.0),
+            ) {
+                cells.push(SceneCell {
+                    x: start_x + x as i32,
+                    y: start_y + y as i32,
+                    glyph: material_map.glyph_for(hit),
+                    style: material_map.style_for(hit),
+                });
             }
-        } else {
-            TextStyle::default()
-        };
-        for (x, y, glyph) in [(0, -3, '*'), (-1, -2, '+'), (1, -2, '+'), (0, -1, '*')] {
-            cells.push(SceneCell {
-                x: weapon_x + weapon_width / 2 + x,
-                y: weapon_y + y,
-                glyph,
-                style: flash_color.clone(),
-            });
         }
     }
 
-    push_art(&mut cells, body_x, body_y, body_art, TextStyle::default());
-    push_art(
-        &mut cells,
-        weapon_x,
-        weapon_y,
-        weapon_art,
-        TextStyle::default(),
-    );
+    if flash {
+        add_weapon_muzzle_flash(&mut cells, start_x, start_y, render_width, render_height);
+    }
 
     cells
 }
 
-fn push_art(
+fn weapon_viewmodel_camera(asset: &PreviewAsset) -> Camera {
+    let radius = asset.radius.max(8.0);
+    let eye = asset.center + Vec3::new(radius * 1.85, radius * 0.55, -radius * 1.95);
+    let target = asset.center + Vec3::new(-radius * 0.55, radius * 0.10, radius * 0.35);
+    look_at(eye, target)
+        .with_fov_y(VIEWMODEL_CAMERA_FOV.to_radians())
+        .with_max_distance((radius * 4.5).max(60.0))
+}
+
+fn add_weapon_muzzle_flash(
     cells: &mut Vec<SceneCell>,
     start_x: i32,
     start_y: i32,
-    art: &[&str],
-    style: TextStyle,
+    width: usize,
+    height: usize,
 ) {
-    for (row, line) in art.iter().enumerate() {
-        for (col, glyph) in line.chars().enumerate() {
-            if glyph == ' ' {
-                continue;
-            }
-            cells.push(SceneCell {
-                x: start_x + col as i32,
-                y: start_y + row as i32,
-                glyph,
-                style: style.clone(),
-            });
-        }
+    let tip_x = start_x + width as i32 - 6;
+    let tip_y = start_y + height as i32 / 2 - 1;
+    for (dx, dy, glyph) in [(0, 0, '*'), (1, 0, '+'), (0, 1, '+'), (2, -1, '*')] {
+        cells.push(SceneCell {
+            x: tip_x + dx,
+            y: tip_y + dy,
+            glyph,
+            style: TextStyle {
+                fg: Some("#ffda63".to_string()),
+                bg: None,
+                bold: true,
+            },
+        });
     }
 }
 
