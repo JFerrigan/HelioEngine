@@ -68,6 +68,7 @@ const BAR_COLLISION_RADIUS: f32 = 0.85;
 const ASSET_VIEWER_ROTATE_SPEED: f32 = 1.8;
 const ASSET_VIEWER_ROLL_SPEED: f32 = 1.4;
 const ASSET_VIEWER_ZOOM_SPEED: f32 = 22.0;
+const ASSET_VIEWER_DEFAULT_DISTANCE: f32 = 28.0;
 const ASSET_VIEWER_MIN_DISTANCE: f32 = 8.0;
 const ASSET_VIEWER_MAX_DISTANCE: f32 = 80.0;
 const ASSET_VIEWER_MOUSE_SENSITIVITY: f32 = 0.006;
@@ -807,7 +808,7 @@ impl AssetViewerState {
             yaw: 0.0,
             pitch: 0.2,
             roll: 0.0,
-            distance: 28.0,
+            distance: ASSET_VIEWER_DEFAULT_DISTANCE,
         };
         viewer.reset_distance();
         viewer
@@ -884,9 +885,8 @@ impl AssetViewerState {
     }
 
     fn reset_distance(&mut self) {
-        let asset = self.selected_asset();
-        self.distance =
-            (asset.radius * 2.6).clamp(ASSET_VIEWER_MIN_DISTANCE, ASSET_VIEWER_MAX_DISTANCE);
+        self.distance = ASSET_VIEWER_DEFAULT_DISTANCE;
+        self.clamp_view();
     }
 
     fn clamp_view(&mut self) {
@@ -3105,6 +3105,21 @@ mod tests {
         assert_eq!(action, KeyboardAction::None);
         assert_eq!(app.asset_viewer.selected, 2);
         assert_eq!(app.asset_viewer.selected_asset().name, "corn stalk");
+    }
+
+    #[test]
+    fn asset_viewer_starts_at_same_zoom_for_each_asset() {
+        let mut viewer = AssetViewerState::new();
+        let initial_distance = viewer.distance;
+
+        viewer.select(4);
+        let jukebox_distance = viewer.distance;
+        viewer.select(0);
+        let patron_distance = viewer.distance;
+
+        assert_eq!(initial_distance, ASSET_VIEWER_DEFAULT_DISTANCE);
+        assert_eq!(jukebox_distance, ASSET_VIEWER_DEFAULT_DISTANCE);
+        assert_eq!(patron_distance, ASSET_VIEWER_DEFAULT_DISTANCE);
     }
 
     #[test]
