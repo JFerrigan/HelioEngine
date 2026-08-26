@@ -793,21 +793,18 @@ impl PreviewAsset {
 struct AssetViewerState {
     assets: Vec<PreviewAsset>,
     selected: usize,
-    yaw: f32,
-    pitch: f32,
-    roll: f32,
+    camera: Camera,
     distance: f32,
 }
 
 impl AssetViewerState {
     fn new() -> Self {
         let assets = build_asset_catalog();
+        let camera = asset_viewer_start_camera(&assets[0], ASSET_VIEWER_DEFAULT_DISTANCE);
         let mut viewer = Self {
             assets,
             selected: 0,
-            yaw: 0.0,
-            pitch: 0.2,
-            roll: 0.0,
+            camera,
             distance: ASSET_VIEWER_DEFAULT_DISTANCE,
         };
         viewer.reset_distance();
@@ -823,9 +820,8 @@ impl AssetViewerState {
             return;
         }
         self.selected = index;
-        self.yaw = 0.0;
-        self.pitch = 0.2;
-        self.roll = 0.0;
+        self.camera =
+            asset_viewer_start_camera(self.selected_asset(), ASSET_VIEWER_DEFAULT_DISTANCE);
         self.reset_distance();
     }
 
@@ -833,23 +829,26 @@ impl AssetViewerState {
         let speed = if input.boost { BOOST_MULTIPLIER } else { 1.0 };
         let rotation_step = ASSET_VIEWER_ROTATE_SPEED * speed * dt;
 
+        let mut yaw_delta = 0.0;
+        let mut pitch_delta = 0.0;
         if input.right {
-            self.yaw += rotation_step;
+            yaw_delta += rotation_step;
         }
         if input.left {
-            self.yaw -= rotation_step;
+            yaw_delta -= rotation_step;
         }
         if input.forward {
-            self.pitch += rotation_step;
+            pitch_delta += rotation_step;
         }
         if input.backward {
-            self.pitch -= rotation_step;
+            pitch_delta -= rotation_step;
         }
+        self.camera.rotate_local_yaw_pitch(yaw_delta, pitch_delta);
         if input.roll_left {
-            self.roll += ASSET_VIEWER_ROLL_SPEED * speed * dt;
+            self.camera.roll_by(ASSET_VIEWER_ROLL_SPEED * speed * dt);
         }
         if input.roll_right {
-            self.roll -= ASSET_VIEWER_ROLL_SPEED * speed * dt;
+            self.camera.roll_by(-ASSET_VIEWER_ROLL_SPEED * speed * dt);
         }
         if input.up {
             self.distance -= ASSET_VIEWER_ZOOM_SPEED * speed * dt;
@@ -859,41 +858,36 @@ impl AssetViewerState {
         }
 
         self.clamp_view();
+        self.sync_camera_position();
     }
 
     fn rotate_with_mouse(&mut self, delta_x: f32, delta_y: f32) {
-        self.yaw += delta_x * ASSET_VIEWER_MOUSE_SENSITIVITY;
-        self.pitch += delta_y * ASSET_VIEWER_MOUSE_SENSITIVITY;
+        self.camera.rotate_local_yaw_pitch(
+            delta_x * ASSET_VIEWER_MOUSE_SENSITIVITY,
+            delta_y * ASSET_VIEWER_MOUSE_SENSITIVITY,
+        );
         self.clamp_view();
+        self.sync_camera_position();
     }
 
     fn camera(&self) -> Camera {
-        let asset = self.selected_asset();
-        let yaw_sin = self.yaw.sin();
-        let yaw_cos = self.yaw.cos();
-        let pitch_sin = self.pitch.sin();
-        let pitch_cos = self.pitch.cos();
-        let offset = Vec3::new(
-            yaw_sin * pitch_cos * self.distance,
-            pitch_sin * self.distance,
-            -yaw_cos * pitch_cos * self.distance,
-        );
-        look_at(asset.center + offset, asset.center)
-            .with_roll(self.roll)
-            .with_fov_y(48.0_f32.to_radians())
-            .with_max_distance((self.distance + asset.radius * 3.0).max(60.0))
+        self.camera
     }
 
     fn reset_distance(&mut self) {
         self.distance = ASSET_VIEWER_DEFAULT_DISTANCE;
         self.clamp_view();
+        self.sync_camera_position();
     }
 
     fn clamp_view(&mut self) {
         let min_distance = ASSET_VIEWER_MIN_DISTANCE.max(self.selected_asset().radius * 1.15);
         self.distance = self.distance.clamp(min_distance, ASSET_VIEWER_MAX_DISTANCE);
-        self.yaw = wrap_angle(self.yaw);
-        self.roll = wrap_angle(self.roll);
+        self.camera.max_distance = (self.distance + self.selected_asset().radius * 3.0).max(60.0);
+    }
+
+    fn sync_camera_position(&mut self) {
+        self.camera.position = self.selected_asset().center - self.camera.forward() * self.distance;
     }
 }
 
@@ -1394,6 +1388,15 @@ fn asset_bounds(world: &VoxelWorld) -> (Vec3, f32) {
         (bounds.max.z - bounds.min.z + 1) as f32,
     );
     (center, extents.length() * 0.5)
+}
+
+fn asset_viewer_start_camera(asset: &PreviewAsset, distance: f32) -> Camera {
+    look_at(
+        asset.center + Vec3::new(0.0, 0.2_f32.sin() * distance, -0.2_f32.cos() * distance),
+        asset.center,
+    )
+    .with_fov_y(48.0_f32.to_radians())
+    .with_max_distance((distance + asset.radius * 3.0).max(60.0))
 }
 
 fn build_person_asset(pose: BarPose, accent: VoxelMaterial) -> VoxelWorld {
@@ -3148,11 +3151,24 @@ mod tests {
     #[test]
     fn asset_viewer_allows_full_pitch_rotation() {
         let mut viewer = AssetViewerState::new();
+        let center = viewer.selected_asset().center;
         viewer.rotate_with_mouse(0.0, -2_000.0);
         let camera = viewer.camera();
 
-        assert!(viewer.pitch.abs() > 1.35);
         assert!(camera.forward().y.abs() > 0.1);
+        assert!((center - (camera.position + camera.forward() * viewer.distance)).length() < 0.001);
+    }
+
+    #[test]
+    fn asset_viewer_keeps_local_right_after_overhead_flip() {
+        let mut viewer = AssetViewerState::new();
+
+        viewer.rotate_with_mouse(0.0, -800.0);
+        let right_before = viewer.camera().right();
+        viewer.rotate_with_mouse(20.0, 0.0);
+        let right_after = viewer.camera().right();
+
+        assert!(right_before.dot(right_after) > 0.99);
     }
 
     #[test]
