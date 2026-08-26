@@ -65,6 +65,12 @@ const CORN_MINIMAP_RADIUS: i32 = 6;
 const BAR_EYE_HEIGHT: f32 = 10.5;
 const BAR_WALK_SPEED: f32 = 18.0;
 const BAR_COLLISION_RADIUS: f32 = 0.85;
+const ASSET_VIEWER_ROTATE_SPEED: f32 = 1.8;
+const ASSET_VIEWER_ROLL_SPEED: f32 = 1.4;
+const ASSET_VIEWER_ZOOM_SPEED: f32 = 22.0;
+const ASSET_VIEWER_MIN_DISTANCE: f32 = 8.0;
+const ASSET_VIEWER_MAX_DISTANCE: f32 = 80.0;
+const ASSET_VIEWER_MOUSE_SENSITIVITY: f32 = 0.006;
 const STANDARD_WALK_PROFILE: WalkProfile = WalkProfile {
     eye_height: WALK_EYE_HEIGHT,
     speed: WALK_SPEED,
@@ -231,6 +237,7 @@ enum AppMode {
     CityShooter,
     CornMaze,
     BarScene,
+    AssetViewer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,6 +257,7 @@ struct AppState {
     doom_map: VoxelWorld,
     bar_scene: VoxelWorld,
     corn_maze: CornMazeState,
+    asset_viewer: AssetViewerState,
     planet_builder: SceneBuilder,
     city_builder: SceneBuilder,
     camera: Camera,
@@ -269,6 +277,7 @@ impl AppState {
             doom_map: build_doom_map(),
             bar_scene: build_bar_scene(),
             corn_maze: CornMazeState::new(),
+            asset_viewer: AssetViewerState::new(),
             planet_builder: SceneBuilder::new(
                 GraphicsConfig {
                     viewport: VIEWPORT,
@@ -316,6 +325,16 @@ impl AppState {
                 (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit5)) => {
                     self.start_bar();
                     return KeyboardAction::StartScene;
+                }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit6)) => {
+                    self.start_asset_viewer();
+                    return KeyboardAction::StartScene;
+                }
+                (AppMode::AssetViewer, key) => {
+                    if let Some(index) = asset_digit_index(key) {
+                        self.asset_viewer.select(index);
+                        return KeyboardAction::None;
+                    }
                 }
                 (AppMode::Menu, PhysicalKey::Code(KeyCode::Escape)) => {
                     return KeyboardAction::Exit;
@@ -375,6 +394,13 @@ impl AppState {
     fn start_bar(&mut self) {
         self.mode = AppMode::BarScene;
         self.camera = bar_start_camera();
+        self.input = PlayerInput::default();
+    }
+
+    fn start_asset_viewer(&mut self) {
+        self.mode = AppMode::AssetViewer;
+        self.asset_viewer = AssetViewerState::new();
+        self.camera = self.asset_viewer.camera();
         self.input = PlayerInput::default();
     }
 
@@ -442,6 +468,16 @@ impl AppState {
                 render_bar_scene(&mut scene, mouse_captured);
                 scene
             }
+            AppMode::AssetViewer => {
+                self.asset_viewer.update(&self.input, dt);
+                self.camera = self.asset_viewer.camera();
+                let asset = self.asset_viewer.selected_asset();
+                let mut scene = self
+                    .city_builder
+                    .build(&asset.world, &self.camera, self.tick);
+                render_asset_viewer_scene(&mut scene, &self.asset_viewer, mouse_captured);
+                scene
+            }
         }
     }
 
@@ -454,6 +490,7 @@ impl AppState {
             AppMode::CityWalk | AppMode::CityShooter | AppMode::CornMaze | AppMode::BarScene => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped)
             }
+            AppMode::AssetViewer => self.asset_viewer.rotate_with_mouse(delta_x, delta_y),
         }
     }
 
@@ -475,7 +512,7 @@ fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
         AppMode::CornMaze => audio.enter_corn_maze_mode(),
         AppMode::BarScene => audio.enter_bar_mode(),
         AppMode::CityShooter => audio.enter_doom_mode(),
-        AppMode::Menu | AppMode::PlanetFlight => audio.leave_ambience(),
+        AppMode::Menu | AppMode::PlanetFlight | AppMode::AssetViewer => audio.leave_ambience(),
     }
 }
 
@@ -732,6 +769,137 @@ impl CornMazeState {
 }
 
 #[derive(Clone, Debug)]
+struct PreviewAsset {
+    name: &'static str,
+    world: VoxelWorld,
+    center: Vec3,
+    radius: f32,
+}
+
+impl PreviewAsset {
+    fn new(name: &'static str, world: VoxelWorld) -> Self {
+        let (center, radius) = asset_bounds(&world);
+        Self {
+            name,
+            world,
+            center,
+            radius,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct AssetViewerState {
+    assets: Vec<PreviewAsset>,
+    selected: usize,
+    yaw: f32,
+    pitch: f32,
+    roll: f32,
+    distance: f32,
+}
+
+impl AssetViewerState {
+    fn new() -> Self {
+        let assets = build_asset_catalog();
+        let mut viewer = Self {
+            assets,
+            selected: 0,
+            yaw: 0.0,
+            pitch: 0.2,
+            roll: 0.0,
+            distance: 28.0,
+        };
+        viewer.reset_distance();
+        viewer
+    }
+
+    fn selected_asset(&self) -> &PreviewAsset {
+        &self.assets[self.selected]
+    }
+
+    fn select(&mut self, index: usize) {
+        if index >= self.assets.len() {
+            return;
+        }
+        self.selected = index;
+        self.yaw = 0.0;
+        self.pitch = 0.2;
+        self.roll = 0.0;
+        self.reset_distance();
+    }
+
+    fn update(&mut self, input: &PlayerInput, dt: f32) {
+        let speed = if input.boost { BOOST_MULTIPLIER } else { 1.0 };
+        let rotation_step = ASSET_VIEWER_ROTATE_SPEED * speed * dt;
+
+        if input.right {
+            self.yaw += rotation_step;
+        }
+        if input.left {
+            self.yaw -= rotation_step;
+        }
+        if input.forward {
+            self.pitch += rotation_step;
+        }
+        if input.backward {
+            self.pitch -= rotation_step;
+        }
+        if input.roll_left {
+            self.roll += ASSET_VIEWER_ROLL_SPEED * speed * dt;
+        }
+        if input.roll_right {
+            self.roll -= ASSET_VIEWER_ROLL_SPEED * speed * dt;
+        }
+        if input.up {
+            self.distance -= ASSET_VIEWER_ZOOM_SPEED * speed * dt;
+        }
+        if input.down {
+            self.distance += ASSET_VIEWER_ZOOM_SPEED * speed * dt;
+        }
+
+        self.clamp_view();
+    }
+
+    fn rotate_with_mouse(&mut self, delta_x: f32, delta_y: f32) {
+        self.yaw += delta_x * ASSET_VIEWER_MOUSE_SENSITIVITY;
+        self.pitch += delta_y * ASSET_VIEWER_MOUSE_SENSITIVITY;
+        self.clamp_view();
+    }
+
+    fn camera(&self) -> Camera {
+        let asset = self.selected_asset();
+        let pitch = self.pitch.clamp(-1.35, 1.35);
+        let yaw_sin = self.yaw.sin();
+        let yaw_cos = self.yaw.cos();
+        let pitch_sin = pitch.sin();
+        let pitch_cos = pitch.cos();
+        let offset = Vec3::new(
+            yaw_sin * pitch_cos * self.distance,
+            pitch_sin * self.distance,
+            -yaw_cos * pitch_cos * self.distance,
+        );
+        look_at(asset.center + offset, asset.center)
+            .with_roll(self.roll)
+            .with_fov_y(48.0_f32.to_radians())
+            .with_max_distance((self.distance + asset.radius * 3.0).max(60.0))
+    }
+
+    fn reset_distance(&mut self) {
+        let asset = self.selected_asset();
+        self.distance =
+            (asset.radius * 2.6).clamp(ASSET_VIEWER_MIN_DISTANCE, ASSET_VIEWER_MAX_DISTANCE);
+    }
+
+    fn clamp_view(&mut self) {
+        let min_distance = ASSET_VIEWER_MIN_DISTANCE.max(self.selected_asset().radius * 1.15);
+        self.distance = self.distance.clamp(min_distance, ASSET_VIEWER_MAX_DISTANCE);
+        self.yaw = wrap_angle(self.yaw);
+        self.pitch = self.pitch.clamp(-1.35, 1.35);
+        self.roll = wrap_angle(self.roll);
+    }
+}
+
+#[derive(Clone, Debug)]
 struct ShooterState {
     enemies: Vec<Enemy>,
     bullet_traces: Vec<BulletTrace>,
@@ -902,6 +1070,21 @@ fn handle_movement_input(input: &mut PlayerInput, key: &PhysicalKey, state: Elem
             input.boost = pressed
         }
         _ => {}
+    }
+}
+
+fn asset_digit_index(key: &PhysicalKey) -> Option<usize> {
+    match key {
+        PhysicalKey::Code(KeyCode::Digit1) => Some(0),
+        PhysicalKey::Code(KeyCode::Digit2) => Some(1),
+        PhysicalKey::Code(KeyCode::Digit3) => Some(2),
+        PhysicalKey::Code(KeyCode::Digit4) => Some(3),
+        PhysicalKey::Code(KeyCode::Digit5) => Some(4),
+        PhysicalKey::Code(KeyCode::Digit6) => Some(5),
+        PhysicalKey::Code(KeyCode::Digit7) => Some(6),
+        PhysicalKey::Code(KeyCode::Digit8) => Some(7),
+        PhysicalKey::Code(KeyCode::Digit9) => Some(8),
+        _ => None,
     }
 }
 
@@ -1176,6 +1359,131 @@ fn build_bar_scene() -> VoxelWorld {
     stamp_dart_boards(&mut world);
     stamp_bar_people(&mut world);
 
+    world
+}
+
+fn build_asset_catalog() -> Vec<PreviewAsset> {
+    vec![
+        PreviewAsset::new(
+            "standing bar patron",
+            build_person_asset(BarPose::Standing, VoxelMaterial::SiliconLife),
+        ),
+        PreviewAsset::new(
+            "seated bar patron",
+            build_person_asset(BarPose::Sitting, VoxelMaterial::Glass),
+        ),
+        PreviewAsset::new("corn stalk", build_corn_stalk_asset()),
+        PreviewAsset::new("table set", build_table_set_asset()),
+        PreviewAsset::new("jukebox", build_jukebox_asset()),
+        PreviewAsset::new("dart board", build_dart_board_asset()),
+        PreviewAsset::new("bottle", build_bottle_asset()),
+        PreviewAsset::new("ash tray", build_ash_tray_asset()),
+    ]
+}
+
+fn asset_bounds(world: &VoxelWorld) -> (Vec3, f32) {
+    let Some(bounds) = world.bounds() else {
+        return (Vec3::ZERO, ASSET_VIEWER_MIN_DISTANCE);
+    };
+    let center = Vec3::new(
+        (bounds.min.x + bounds.max.x + 1) as f32 * 0.5,
+        (bounds.min.y + bounds.max.y + 1) as f32 * 0.5,
+        (bounds.min.z + bounds.max.z + 1) as f32 * 0.5,
+    );
+    let extents = Vec3::new(
+        (bounds.max.x - bounds.min.x + 1) as f32,
+        (bounds.max.y - bounds.min.y + 1) as f32,
+        (bounds.max.z - bounds.min.z + 1) as f32,
+    );
+    (center, extents.length() * 0.5)
+}
+
+fn build_person_asset(pose: BarPose, accent: VoxelMaterial) -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+    let index = match accent {
+        VoxelMaterial::SiliconLife => 0,
+        VoxelMaterial::Glass => 1,
+        _ => 2,
+    };
+    stamp_bar_person(&mut world, 0, 0, BarFacing::South, pose, index);
+    world
+}
+
+fn build_corn_stalk_asset() -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+    stamp_corn_stalk(&mut world, 0, 0, CORN_STALK_BASE_HEIGHT + 4);
+    world
+}
+
+fn build_table_set_asset() -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+    stamp_table(&mut world, 0, 0);
+    stamp_chair(&mut world, -7, 0, BarFacing::East);
+    stamp_chair(&mut world, 7, 0, BarFacing::West);
+    stamp_chair(&mut world, 0, -7, BarFacing::South);
+    world
+}
+
+fn build_jukebox_asset() -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-5, 1, -4),
+        VoxelCoord::new(5, 11, 5),
+        VoxelMaterial::Habitat,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-4, 6, -5),
+        VoxelCoord::new(4, 11, -5),
+        VoxelMaterial::Glass,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-3, 8, -6),
+        VoxelCoord::new(3, 9, -6),
+        VoxelMaterial::Beacon,
+    );
+    for x in [-3, 0, 3] {
+        fill_cuboid(
+            &mut world,
+            VoxelCoord::new(x, 2, -6),
+            VoxelCoord::new(x, 4, -6),
+            VoxelMaterial::ShipHull,
+        );
+    }
+    world
+}
+
+fn build_dart_board_asset() -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+    for y in 1_i32..=9 {
+        for x in -4_i32..=4 {
+            let distance = (y - 5).abs() + x.abs();
+            if distance <= 5 {
+                let material = if distance <= 1 {
+                    VoxelMaterial::Beacon
+                } else if distance == 2 {
+                    VoxelMaterial::Glass
+                } else {
+                    VoxelMaterial::Habitat
+                };
+                world.set(VoxelCoord::new(x, y, 0), VoxelCell::new(material));
+            }
+        }
+    }
+    world
+}
+
+fn build_bottle_asset() -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+    stamp_bottle(&mut world, 0, 1, 0);
+    world
+}
+
+fn build_ash_tray_asset() -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+    stamp_ash_tray(&mut world, 0, 1, 0);
     world
 }
 
@@ -2063,7 +2371,14 @@ fn build_menu_scene(tick: u64) -> Scene {
     });
     scene.overlays.push(Overlay {
         x: 48,
-        y: 60,
+        y: 57,
+        z: 10,
+        text: "6  ASSET VIEWER".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 48,
+        y: 64,
         z: 10,
         text: "WASD MOVE   CLICK/SPACE FIRE   M MENU".to_string(),
         style: TextStyle::default(),
@@ -2097,6 +2412,41 @@ fn render_bar_scene(scene: &mut Scene, mouse_captured: bool) {
         ),
         style: TextStyle::default(),
     });
+}
+
+fn render_asset_viewer_scene(scene: &mut Scene, viewer: &AssetViewerState, mouse_captured: bool) {
+    let asset = viewer.selected_asset();
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "ASSET VIEWER  {} / {}  {}  zoom {:.1}  mouse {}  M menu",
+            viewer.selected + 1,
+            viewer.assets.len(),
+            asset.name,
+            viewer.distance,
+            if mouse_captured { "locked" } else { "free" }
+        ),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 5,
+        z: 120,
+        text: "1-8 select  A/D yaw  W/S pitch  Q/E roll  Space/Ctrl zoom".to_string(),
+        style: TextStyle::default(),
+    });
+    for (index, preview) in viewer.assets.iter().enumerate() {
+        let marker = if index == viewer.selected { '>' } else { ' ' };
+        scene.overlays.push(Overlay {
+            x: 2,
+            y: 9 + index as i32,
+            z: 120,
+            text: format!("{}{} {}", marker, index + 1, preview.name),
+            style: TextStyle::default(),
+        });
+    }
 }
 
 fn render_corn_maze_scene(
@@ -2732,6 +3082,71 @@ mod tests {
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::BarScene);
         assert_eq!(app.camera.position.y, BAR_EYE_HEIGHT);
+    }
+
+    #[test]
+    fn menu_can_start_asset_viewer_mode() {
+        let mut app = AppState::new();
+
+        let action =
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit6), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::StartScene);
+        assert_eq!(app.mode, AppMode::AssetViewer);
+        assert!(!app.asset_viewer.assets.is_empty());
+    }
+
+    #[test]
+    fn asset_viewer_selects_numbered_asset() {
+        let mut app = AppState::new();
+        app.start_asset_viewer();
+
+        let action =
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit3), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::None);
+        assert_eq!(app.asset_viewer.selected, 2);
+        assert_eq!(app.asset_viewer.selected_asset().name, "corn stalk");
+    }
+
+    #[test]
+    fn asset_viewer_zoom_clamps_around_selected_asset() {
+        let mut viewer = AssetViewerState::new();
+        viewer.update(
+            &PlayerInput {
+                up: true,
+                ..PlayerInput::default()
+            },
+            10.0,
+        );
+        let near = viewer.distance;
+        viewer.update(
+            &PlayerInput {
+                down: true,
+                ..PlayerInput::default()
+            },
+            10.0,
+        );
+
+        assert!(near >= viewer.selected_asset().radius * 1.15);
+        assert!(viewer.distance <= ASSET_VIEWER_MAX_DISTANCE);
+    }
+
+    #[test]
+    fn asset_viewer_scene_draws_selected_asset() {
+        let mut app = AppState::new();
+        app.start_asset_viewer();
+
+        let scene = app.frame(0.0, true);
+
+        assert!(scene
+            .layers
+            .iter()
+            .any(|layer| layer.name == "voxels" && !layer.cells.is_empty()));
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("ASSET VIEWER")));
     }
 
     #[test]
