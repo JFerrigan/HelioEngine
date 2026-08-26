@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
@@ -56,6 +57,9 @@ const ZOMBIE_WALK_SPEED: f32 = 13.0;
 const ZOMBIE_SPRINT_MULTIPLIER: f32 = 1.25;
 const ZOMBIE_SPRINT_DRAIN: f32 = 0.34;
 const ZOMBIE_SPRINT_RECHARGE: f32 = 0.20;
+const ZOMBIE_EYE_HEIGHT: f32 = 2.5;
+const ZOMBIE_COLLISION_RADIUS: f32 = 0.24;
+const ZOMBIE_SPAWN_CLEARANCE_RADIUS: i32 = 2;
 const ZOMBIE_ATTACK_RANGE: f32 = 2.1;
 const ZOMBIE_ATTACK_COOLDOWN: f32 = 1.05;
 const ZOMBIE_MAX_HITS: i32 = 3;
@@ -129,8 +133,9 @@ const NPC_BODY_OFFSETS: [(i32, i32, i32, bool); 19] = [
     (0, 4, 0, true),
     (1, 4, 0, true),
 ];
-const ZOMBIE_BODY_OFFSETS: [(i32, i32, i32, VoxelMaterial); 31] = [
+const ZOMBIE_BODY_OFFSETS: [(i32, i32, i32, VoxelMaterial); 18] = [
     (-1, 1, 0, VoxelMaterial::Zombie),
+    (0, 1, 0, VoxelMaterial::Zombie),
     (1, 1, 0, VoxelMaterial::Zombie),
     (-1, 2, 0, VoxelMaterial::Zombie),
     (0, 2, 0, VoxelMaterial::Zombie),
@@ -140,27 +145,13 @@ const ZOMBIE_BODY_OFFSETS: [(i32, i32, i32, VoxelMaterial); 31] = [
     (1, 3, 0, VoxelMaterial::Zombie),
     (-1, 3, -1, VoxelMaterial::Zombie),
     (1, 3, -1, VoxelMaterial::Zombie),
-    (-2, 3, 0, VoxelMaterial::Beacon),
-    (2, 3, 0, VoxelMaterial::Beacon),
-    (-3, 2, 0, VoxelMaterial::Zombie),
-    (3, 2, 0, VoxelMaterial::Zombie),
     (-1, 4, 0, VoxelMaterial::Zombie),
-    (0, 4, 0, VoxelMaterial::Zombie),
+    (0, 4, 0, VoxelMaterial::Beacon),
     (1, 4, 0, VoxelMaterial::Zombie),
-    (-1, 4, -1, VoxelMaterial::Zombie),
     (0, 4, -1, VoxelMaterial::Beacon),
-    (1, 4, -1, VoxelMaterial::Zombie),
-    (-1, 5, 0, VoxelMaterial::Zombie),
-    (0, 5, 0, VoxelMaterial::Zombie),
-    (1, 5, 0, VoxelMaterial::Zombie),
-    (-1, 5, -1, VoxelMaterial::Beacon),
-    (1, 5, -1, VoxelMaterial::Beacon),
-    (-1, 6, 0, VoxelMaterial::Zombie),
-    (0, 6, 0, VoxelMaterial::Zombie),
-    (1, 6, 0, VoxelMaterial::Zombie),
-    (-1, 7, 0, VoxelMaterial::Beacon),
-    (0, 7, 0, VoxelMaterial::Beacon),
-    (1, 7, 0, VoxelMaterial::Beacon),
+    (-1, 2, -1, VoxelMaterial::Beacon),
+    (1, 2, -1, VoxelMaterial::Beacon),
+    (0, 5, 0, VoxelMaterial::Beacon),
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -1477,9 +1468,9 @@ impl ZombiesState {
             &walking_input,
             world,
             WalkProfile {
-                eye_height: WALK_EYE_HEIGHT,
+                eye_height: ZOMBIE_EYE_HEIGHT,
                 speed,
-                collision_radius: WALK_COLLISION_RADIUS,
+                collision_radius: ZOMBIE_COLLISION_RADIUS,
             },
             dt,
         );
@@ -1510,9 +1501,13 @@ impl ZombiesState {
             }
         }
 
+        let navigation =
+            ZombieNavigationField::build(world, player_position, zombie_walk_profile());
         self.spawn_timer -= dt;
         while self.queued_spawns > 0 && self.spawn_timer <= 0.0 {
-            self.spawn_one();
+            if !self.spawn_one(world) {
+                break;
+            }
             self.queued_spawns -= 1;
             self.spawn_timer += ZOMBIE_SPAWN_INTERVAL;
         }
@@ -1538,15 +1533,17 @@ impl ZombiesState {
                 continue;
             }
 
-            let to_player = horizontal(player_position - zombie.position);
-            if to_player.length() <= f32::EPSILON {
-                continue;
-            }
-            let candidate = zombie.position + to_player * ZOMBIE_WALK_SPEED * dt;
-            let candidate = Vec3::new(candidate.x, WALK_EYE_HEIGHT, candidate.z);
-            if can_walk_to(world, candidate) {
-                zombie.position.x = candidate.x;
-                zombie.position.z = candidate.z;
+            if let Some(step) = navigation
+                .as_ref()
+                .and_then(|field| field.next_step(zombie.position))
+            {
+                let candidate =
+                    zombie.position + horizontal(step - zombie.position) * ZOMBIE_WALK_SPEED * dt;
+                let candidate = Vec3::new(candidate.x, ZOMBIE_EYE_HEIGHT, candidate.z);
+                if can_walk_to_on_ground(world, candidate, zombie_walk_profile()) {
+                    zombie.position.x = candidate.x;
+                    zombie.position.z = candidate.z;
+                }
             }
         }
 
@@ -1640,10 +1637,14 @@ impl ZombiesState {
         self.zombies.retain(|zombie| zombie.is_alive());
     }
 
-    fn spawn_one(&mut self) {
-        let spawns = zombie_spawn_points(self);
+    fn spawn_one(&mut self, world: &VoxelWorld) -> bool {
+        let spawns = zombie_spawn_points(self, world);
+        if spawns.is_empty() {
+            return false;
+        }
         let index = (self.zombies.len() + self.round as usize * 3) % spawns.len();
         self.zombies.push(Zombie::new(spawns[index], self.round));
+        true
     }
 
     fn zombie_index_for_voxel(&self, coord: VoxelCoord) -> Option<usize> {
@@ -1678,27 +1679,218 @@ fn moving_on_ground(input: &PlayerInput) -> bool {
     input.forward || input.backward || input.left || input.right
 }
 
-fn zombie_spawn_points(state: &ZombiesState) -> Vec<Vec3> {
-    let mut points = vec![
-        Vec3::new(-42.5, 0.0, -57.5),
-        Vec3::new(43.5, 0.0, -55.5),
-        Vec3::new(-55.5, 0.0, -5.5),
+fn zombie_walk_profile() -> WalkProfile {
+    WalkProfile {
+        eye_height: ZOMBIE_EYE_HEIGHT,
+        speed: ZOMBIE_WALK_SPEED,
+        collision_radius: ZOMBIE_COLLISION_RADIUS,
+    }
+}
+
+fn can_walk_to_on_ground(city: &VoxelWorld, position: Vec3, profile: WalkProfile) -> bool {
+    terrain_surface_y(city, position.x, position.z).is_some()
+        && can_walk_to_with_profile(city, position, profile)
+}
+
+fn zombie_spawn_candidates(state: &ZombiesState, world: &VoxelWorld) -> Vec<Vec3> {
+    let mut points = Vec::new();
+    let zones = [
+        (-74, -48, -74, -40),
+        (48, 74, -74, -40),
+        (-74, -48, 8, 74),
+        (12, 38, 42, 74),
     ];
+
+    for (min_x, max_x, min_z, max_z) in zones {
+        let mut x = min_x;
+        while x <= max_x {
+            let mut z = min_z;
+            while z <= max_z {
+                let position = Vec3::new(x as f32 + 0.5, ZOMBIE_EYE_HEIGHT, z as f32 + 0.5);
+                if zombie_spawn_position_is_valid(world, position) {
+                    points.push(position);
+                }
+                z += 4;
+            }
+            x += 4;
+        }
+    }
+
     if state
         .doors
         .iter()
         .any(|door| door.kind == ZombiesDoorKind::Building && door.open)
     {
-        points.extend([Vec3::new(47.5, 0.0, 19.5), Vec3::new(9.5, 0.0, 45.5)]);
+        for x in 8..=36 {
+            for z in 40..=66 {
+                let position = Vec3::new(x as f32 + 0.5, ZOMBIE_EYE_HEIGHT, z as f32 + 0.5);
+                if zombie_spawn_position_is_valid(world, position) {
+                    points.push(position);
+                }
+            }
+        }
     }
+
     if state
         .doors
         .iter()
         .any(|door| door.kind == ZombiesDoorKind::CornField && door.open)
     {
-        points.extend([Vec3::new(-63.5, 0.0, 45.5), Vec3::new(-31.5, 0.0, 66.5)]);
+        for x in -70..=-40 {
+            for z in 40..=74 {
+                let position = Vec3::new(x as f32 + 0.5, ZOMBIE_EYE_HEIGHT, z as f32 + 0.5);
+                if zombie_spawn_position_is_valid(world, position) {
+                    points.push(position);
+                }
+            }
+        }
     }
+
+    points.sort_by(|a, b| {
+        a.x.partial_cmp(&b.x)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.z.partial_cmp(&b.z).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    points.dedup_by(|a, b| a.x == b.x && a.z == b.z);
     points
+}
+
+fn zombie_spawn_position_is_valid(world: &VoxelWorld, position: Vec3) -> bool {
+    if !can_walk_to_on_ground(world, position, zombie_walk_profile()) {
+        return false;
+    }
+
+    let base_x = position.x.floor() as i32;
+    let base_z = position.z.floor() as i32;
+    for offset_x in -ZOMBIE_SPAWN_CLEARANCE_RADIUS..=ZOMBIE_SPAWN_CLEARANCE_RADIUS {
+        for offset_z in -ZOMBIE_SPAWN_CLEARANCE_RADIUS..=ZOMBIE_SPAWN_CLEARANCE_RADIUS {
+            let sample = Vec3::new(
+                base_x as f32 + 0.5 + offset_x as f32,
+                ZOMBIE_EYE_HEIGHT,
+                base_z as f32 + 0.5 + offset_z as f32,
+            );
+            if !can_walk_to_on_ground(world, sample, zombie_walk_profile()) {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+fn zombie_spawn_points(state: &ZombiesState, world: &VoxelWorld) -> Vec<Vec3> {
+    zombie_spawn_candidates(state, world)
+}
+
+struct ZombieNavigationField {
+    min_x: i32,
+    min_z: i32,
+    width: usize,
+    height: usize,
+    distances: Vec<u16>,
+}
+
+impl ZombieNavigationField {
+    fn build(world: &VoxelWorld, target: Vec3, profile: WalkProfile) -> Option<Self> {
+        let bounds = world.bounds()?;
+        let min_x = bounds.min.x - 2;
+        let max_x = bounds.max.x + 2;
+        let min_z = bounds.min.z - 2;
+        let max_z = bounds.max.z + 2;
+        let width = (max_x - min_x + 1) as usize;
+        let height = (max_z - min_z + 1) as usize;
+        let mut distances = vec![u16::MAX; width * height];
+        let start_x = target.x.floor() as i32;
+        let start_z = target.z.floor() as i32;
+
+        if !zombie_cell_is_walkable(world, start_x, start_z, profile) {
+            return None;
+        }
+
+        let mut queue = VecDeque::new();
+        let start_index = Self::index_raw(min_x, min_z, width, height, start_x, start_z)?;
+        distances[start_index] = 0;
+        queue.push_back((start_x, start_z));
+
+        while let Some((x, z)) = queue.pop_front() {
+            let current_index = Self::index_raw(min_x, min_z, width, height, x, z)?;
+            let current_distance = distances[current_index];
+
+            for (nx, nz) in [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)] {
+                if !zombie_cell_is_walkable(world, nx, nz, profile) {
+                    continue;
+                }
+
+                let Some(index) = Self::index_raw(min_x, min_z, width, height, nx, nz) else {
+                    continue;
+                };
+                let next_distance = current_distance.saturating_add(1);
+                if next_distance < distances[index] {
+                    distances[index] = next_distance;
+                    queue.push_back((nx, nz));
+                }
+            }
+        }
+
+        Some(Self {
+            min_x,
+            min_z,
+            width,
+            height,
+            distances,
+        })
+    }
+
+    fn next_step(&self, position: Vec3) -> Option<Vec3> {
+        let x = position.x.floor() as i32;
+        let z = position.z.floor() as i32;
+        let current = self.distance(x, z)?;
+        if current == 0 {
+            return Some(Vec3::new(x as f32 + 0.5, ZOMBIE_EYE_HEIGHT, z as f32 + 0.5));
+        }
+
+        let mut best: Option<(u16, i32, i32)> = None;
+        for (nx, nz) in [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)] {
+            let Some(distance) = self.distance(nx, nz) else {
+                continue;
+            };
+            if distance < current
+                && best
+                    .map(|(best_distance, _, _)| distance < best_distance)
+                    .unwrap_or(true)
+            {
+                best = Some((distance, nx, nz));
+            }
+        }
+
+        best.map(|(_, nx, nz)| Vec3::new(nx as f32 + 0.5, ZOMBIE_EYE_HEIGHT, nz as f32 + 0.5))
+    }
+
+    fn distance(&self, x: i32, z: i32) -> Option<u16> {
+        let index = Self::index_raw(self.min_x, self.min_z, self.width, self.height, x, z)?;
+        Some(self.distances[index])
+    }
+
+    fn index_raw(
+        min_x: i32,
+        min_z: i32,
+        width: usize,
+        height: usize,
+        x: i32,
+        z: i32,
+    ) -> Option<usize> {
+        let dx = x - min_x;
+        let dz = z - min_z;
+        if dx < 0 || dz < 0 || dx as usize >= width || dz as usize >= height {
+            return None;
+        }
+        Some(dx as usize + dz as usize * width)
+    }
+}
+
+fn zombie_cell_is_walkable(world: &VoxelWorld, x: i32, z: i32, profile: WalkProfile) -> bool {
+    let position = Vec3::new(x as f32 + 0.5, profile.eye_height, z as f32 + 0.5);
+    can_walk_to_on_ground(world, position, profile)
 }
 
 fn handle_movement_input(input: &mut PlayerInput, key: &PhysicalKey, state: ElementState) {
@@ -5269,6 +5461,63 @@ mod tests {
     }
 
     #[test]
+    fn zombies_spawn_candidates_stay_on_walkable_ground() {
+        let zombies = ZombiesState::new();
+        let world = build_zombies_map(&zombies);
+        let spawns = zombie_spawn_candidates(&zombies, &world);
+
+        assert!(!spawns.is_empty());
+        assert!(spawns
+            .iter()
+            .all(|position| zombie_spawn_position_is_valid(&world, *position)));
+    }
+
+    #[test]
+    fn zombies_navigation_routes_around_walls() {
+        let mut world = VoxelWorld::new();
+        fill_cuboid(
+            &mut world,
+            VoxelCoord::new(-8, 0, -8),
+            VoxelCoord::new(8, 0, 8),
+            VoxelMaterial::Regolith,
+        );
+        fill_cuboid(
+            &mut world,
+            VoxelCoord::new(0, 1, -8),
+            VoxelCoord::new(0, 4, -1),
+            VoxelMaterial::Basalt,
+        );
+        fill_cuboid(
+            &mut world,
+            VoxelCoord::new(0, 1, 1),
+            VoxelCoord::new(0, 4, 8),
+            VoxelMaterial::Basalt,
+        );
+
+        let player = Vec3::new(4.5, ZOMBIE_EYE_HEIGHT, 4.5);
+        let nav = ZombieNavigationField::build(&world, player, zombie_walk_profile())
+            .expect("navigation field should exist");
+        let next = nav
+            .next_step(Vec3::new(-1.5, ZOMBIE_EYE_HEIGHT, 4.5))
+            .expect("zombie should have a route");
+
+        assert!(next.x < 0.0);
+        assert!(can_walk_to_on_ground(&world, next, zombie_walk_profile()));
+    }
+
+    #[test]
+    fn zombies_render_smaller_body() {
+        assert!(!zombie_body_contains_voxel(
+            Vec3::ZERO,
+            VoxelCoord::new(3, 2, 0)
+        ));
+        assert!(!zombie_body_contains_voxel(
+            Vec3::ZERO,
+            VoxelCoord::new(0, 7, 0)
+        ));
+    }
+
+    #[test]
     fn zombies_sprint_drops_to_walk_speed_when_exhausted() {
         let mut zombies = ZombiesState::new();
         zombies.sprint = 0.0;
@@ -5345,12 +5594,12 @@ mod tests {
         let world = zombies_world_with_zombies(&app.zombies_map, &app.zombies);
 
         assert_eq!(
-            world.get(VoxelCoord::new(0, 4, -39)),
+            world.get(VoxelCoord::new(0, 3, -39)),
             Some(VoxelCell::new(VoxelMaterial::Zombie))
         );
         assert!(app
             .zombies
-            .zombie_index_for_voxel(VoxelCoord::new(0, 4, -39))
+            .zombie_index_for_voxel(VoxelCoord::new(0, 3, -39))
             .is_some());
     }
 
