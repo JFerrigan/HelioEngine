@@ -72,6 +72,11 @@ const ASSET_VIEWER_DEFAULT_DISTANCE: f32 = 28.0;
 const ASSET_VIEWER_MIN_DISTANCE: f32 = 8.0;
 const ASSET_VIEWER_MAX_DISTANCE: f32 = 80.0;
 const ASSET_VIEWER_MOUSE_SENSITIVITY: f32 = 0.006;
+const SANDBOX_HALF_EXTENT: i32 = 72;
+const SANDBOX_EYE_HEIGHT: f32 = 2.7;
+const SANDBOX_SPEED: f32 = 9.0;
+const SANDBOX_COLLISION_RADIUS: f32 = 0.32;
+const SANDBOX_REACH: f32 = 8.0;
 const STANDARD_WALK_PROFILE: WalkProfile = WalkProfile {
     eye_height: WALK_EYE_HEIGHT,
     speed: WALK_SPEED,
@@ -152,11 +157,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
-                    button: MouseButton::Left,
+                    button,
                     ..
                 } => {
-                    if app.mode == AppMode::CityShooter && mouse_captured {
-                        app.fire_weapon();
+                    if mouse_captured {
+                        app.handle_mouse_button(button);
                         play_audio_events(&mut audio, app.drain_audio_events());
                     } else if app.mode != AppMode::Menu {
                         mouse_captured = set_mouse_captured(&window, true);
@@ -239,6 +244,7 @@ enum AppMode {
     CornMaze,
     BarScene,
     AssetViewer,
+    VoxelSandbox,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -259,6 +265,7 @@ struct AppState {
     bar_scene: VoxelWorld,
     corn_maze: CornMazeState,
     asset_viewer: AssetViewerState,
+    sandbox: VoxelSandboxState,
     planet_builder: SceneBuilder,
     city_builder: SceneBuilder,
     camera: Camera,
@@ -279,6 +286,7 @@ impl AppState {
             bar_scene: build_bar_scene(),
             corn_maze: CornMazeState::new(),
             asset_viewer: AssetViewerState::new(),
+            sandbox: VoxelSandboxState::new(),
             planet_builder: SceneBuilder::new(
                 GraphicsConfig {
                     viewport: VIEWPORT,
@@ -331,9 +339,19 @@ impl AppState {
                     self.start_asset_viewer();
                     return KeyboardAction::StartScene;
                 }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit7)) => {
+                    self.start_voxel_sandbox();
+                    return KeyboardAction::StartScene;
+                }
                 (AppMode::AssetViewer, key) => {
                     if let Some(index) = asset_digit_index(key) {
                         self.asset_viewer.select(index);
+                        return KeyboardAction::None;
+                    }
+                }
+                (AppMode::VoxelSandbox, key) => {
+                    if let Some(index) = asset_digit_index(key) {
+                        self.sandbox.select_block(index);
                         return KeyboardAction::None;
                     }
                 }
@@ -402,6 +420,13 @@ impl AppState {
         self.mode = AppMode::AssetViewer;
         self.asset_viewer = AssetViewerState::new();
         self.camera = self.asset_viewer.camera();
+        self.input = PlayerInput::default();
+    }
+
+    fn start_voxel_sandbox(&mut self) {
+        self.mode = AppMode::VoxelSandbox;
+        self.sandbox = VoxelSandboxState::new();
+        self.camera = sandbox_start_camera(&self.sandbox.world);
         self.input = PlayerInput::default();
     }
 
@@ -479,6 +504,14 @@ impl AppState {
                 render_asset_viewer_scene(&mut scene, &self.asset_viewer, mouse_captured);
                 scene
             }
+            AppMode::VoxelSandbox => {
+                update_sandbox_camera(&mut self.camera, &self.input, &self.sandbox.world, dt);
+                let mut scene =
+                    self.city_builder
+                        .build(&self.sandbox.world, &self.camera, self.tick);
+                render_voxel_sandbox_scene(&mut scene, &self.sandbox, mouse_captured);
+                scene
+            }
         }
     }
 
@@ -488,10 +521,23 @@ impl AppState {
             AppMode::PlanetFlight => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Unrestricted)
             }
-            AppMode::CityWalk | AppMode::CityShooter | AppMode::CornMaze | AppMode::BarScene => {
+            AppMode::CityWalk
+            | AppMode::CityShooter
+            | AppMode::CornMaze
+            | AppMode::BarScene
+            | AppMode::VoxelSandbox => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped)
             }
             AppMode::AssetViewer => self.asset_viewer.rotate_with_mouse(delta_x, delta_y),
+        }
+    }
+
+    fn handle_mouse_button(&mut self, button: MouseButton) {
+        match (self.mode, button) {
+            (AppMode::CityShooter, MouseButton::Left) => self.fire_weapon(),
+            (AppMode::VoxelSandbox, MouseButton::Left) => self.sandbox.remove_block(&self.camera),
+            (AppMode::VoxelSandbox, MouseButton::Right) => self.sandbox.place_block(&self.camera),
+            _ => {}
         }
     }
 
@@ -513,7 +559,9 @@ fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
         AppMode::CornMaze => audio.enter_corn_maze_mode(),
         AppMode::BarScene => audio.enter_bar_mode(),
         AppMode::CityShooter => audio.enter_doom_mode(),
-        AppMode::Menu | AppMode::PlanetFlight | AppMode::AssetViewer => audio.leave_ambience(),
+        AppMode::Menu | AppMode::PlanetFlight | AppMode::AssetViewer | AppMode::VoxelSandbox => {
+            audio.leave_ambience()
+        }
     }
 }
 
@@ -582,6 +630,16 @@ fn bar_start_camera() -> Camera {
     )
     .with_fov_y(66.0_f32.to_radians())
     .with_max_distance(120.0)
+}
+
+fn sandbox_start_camera(world: &VoxelWorld) -> Camera {
+    let x = 0.5;
+    let z = -10.5;
+    let y = terrain_surface_y(world, x, z).unwrap_or(8) as f32 + SANDBOX_EYE_HEIGHT + 1.0;
+    Camera::new(Vec3::new(x, y, z))
+        .looking_at(0.0, -0.12)
+        .with_fov_y(68.0_f32.to_radians())
+        .with_max_distance(120.0)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -775,6 +833,66 @@ struct PreviewAsset {
     world: VoxelWorld,
     center: Vec3,
     radius: f32,
+}
+
+#[derive(Clone, Debug)]
+struct VoxelSandboxState {
+    world: VoxelWorld,
+    selected_block: usize,
+    palette: Vec<VoxelMaterial>,
+}
+
+impl VoxelSandboxState {
+    fn new() -> Self {
+        Self {
+            world: build_voxel_sandbox_world(),
+            selected_block: 0,
+            palette: vec![
+                VoxelMaterial::Grass,
+                VoxelMaterial::Dirt,
+                VoxelMaterial::Stone,
+                VoxelMaterial::Sand,
+                VoxelMaterial::Wood,
+                VoxelMaterial::Leaves,
+                VoxelMaterial::Glass,
+                VoxelMaterial::Beacon,
+            ],
+        }
+    }
+
+    fn selected_material(&self) -> VoxelMaterial {
+        self.palette[self.selected_block]
+    }
+
+    fn select_block(&mut self, index: usize) {
+        if index < self.palette.len() {
+            self.selected_block = index;
+        }
+    }
+
+    fn remove_block(&mut self, camera: &Camera) {
+        if let Some(hit) = raycast(
+            &self.world,
+            Ray::new(camera.position, camera.forward()),
+            SANDBOX_REACH,
+        ) {
+            self.world.clear(hit.coord);
+        }
+    }
+
+    fn place_block(&mut self, camera: &Camera) {
+        if let Some(hit) = raycast(
+            &self.world,
+            Ray::new(camera.position, camera.forward()),
+            SANDBOX_REACH,
+        ) {
+            let coord = offset_coord(hit.coord, placement_normal(hit.normal, camera.forward()));
+            if can_place_sandbox_block(&self.world, coord, camera.position) {
+                self.world
+                    .set(coord, VoxelCell::new(self.selected_material()));
+            }
+        }
+    }
 }
 
 impl PreviewAsset {
@@ -1157,6 +1275,64 @@ fn update_walking_camera_with_profile(
     }
 }
 
+fn update_sandbox_camera(camera: &mut Camera, input: &PlayerInput, world: &VoxelWorld, dt: f32) {
+    let mut movement = Vec3::ZERO;
+    let forward = horizontal(camera.forward());
+    let right = horizontal(camera.right());
+
+    if input.forward {
+        movement = movement + forward;
+    }
+    if input.backward {
+        movement = movement - forward;
+    }
+    if input.right {
+        movement = movement + right;
+    }
+    if input.left {
+        movement = movement - right;
+    }
+    if input.up {
+        movement = movement + Vec3::new(0.0, 1.0, 0.0);
+    }
+    if input.down {
+        movement = movement - Vec3::new(0.0, 1.0, 0.0);
+    }
+
+    if movement.length() <= f32::EPSILON {
+        return;
+    }
+
+    let speed = if input.boost {
+        SANDBOX_SPEED * WALK_BOOST_MULTIPLIER
+    } else {
+        SANDBOX_SPEED
+    };
+    let step = movement.normalized() * speed * dt;
+    camera.position = move_sandbox_with_collision(camera.position, step, world);
+}
+
+fn move_sandbox_with_collision(position: Vec3, step: Vec3, world: &VoxelWorld) -> Vec3 {
+    let full = position + step;
+    if can_fly_to_in_sandbox(world, full) {
+        return full;
+    }
+
+    let mut resolved = position;
+    for axis_step in [
+        Vec3::new(step.x, 0.0, 0.0),
+        Vec3::new(0.0, step.y, 0.0),
+        Vec3::new(0.0, 0.0, step.z),
+    ] {
+        let candidate = resolved + axis_step;
+        if can_fly_to_in_sandbox(world, candidate) {
+            resolved = candidate;
+        }
+    }
+
+    resolved
+}
+
 fn move_walking_with_collision(
     position: Vec3,
     step: Vec3,
@@ -1243,6 +1419,73 @@ fn has_standing_clearance(city: &VoxelWorld, position: Vec3, profile: WalkProfil
     true
 }
 
+fn can_fly_to_in_sandbox(world: &VoxelWorld, position: Vec3) -> bool {
+    let samples = [
+        (0.0, 0.0),
+        (-SANDBOX_COLLISION_RADIUS, -SANDBOX_COLLISION_RADIUS),
+        (-SANDBOX_COLLISION_RADIUS, SANDBOX_COLLISION_RADIUS),
+        (SANDBOX_COLLISION_RADIUS, -SANDBOX_COLLISION_RADIUS),
+        (SANDBOX_COLLISION_RADIUS, SANDBOX_COLLISION_RADIUS),
+    ];
+    samples.iter().all(|(offset_x, offset_z)| {
+        let x = (position.x + offset_x).floor() as i32;
+        let z = (position.z + offset_z).floor() as i32;
+        let min_y = (position.y - SANDBOX_EYE_HEIGHT + 0.25).floor() as i32;
+        let max_y = position.y.floor() as i32;
+        (min_y..=max_y).all(|y| world.get(VoxelCoord::new(x, y, z)).is_none())
+    })
+}
+
+fn can_place_sandbox_block(world: &VoxelWorld, coord: VoxelCoord, camera_position: Vec3) -> bool {
+    world.get(coord).is_none() && !sandbox_player_occupies(camera_position, coord)
+}
+
+fn sandbox_player_occupies(position: Vec3, coord: VoxelCoord) -> bool {
+    let min_y = (position.y - SANDBOX_EYE_HEIGHT + 0.25).floor() as i32;
+    let max_y = position.y.floor() as i32;
+    if coord.y < min_y || coord.y > max_y {
+        return false;
+    }
+
+    let dx = coord.x as f32 + 0.5 - position.x;
+    let dz = coord.z as f32 + 0.5 - position.z;
+    (dx * dx + dz * dz).sqrt() <= SANDBOX_COLLISION_RADIUS + 0.5
+}
+
+fn offset_coord(coord: VoxelCoord, normal: Vec3) -> VoxelCoord {
+    VoxelCoord::new(
+        coord.x + normal.x.round() as i32,
+        coord.y + normal.y.round() as i32,
+        coord.z + normal.z.round() as i32,
+    )
+}
+
+fn placement_normal(hit_normal: Vec3, camera_forward: Vec3) -> Vec3 {
+    if hit_normal.length() > f32::EPSILON {
+        return hit_normal;
+    }
+
+    let direction = camera_forward.normalized();
+    let abs_x = direction.x.abs();
+    let abs_y = direction.y.abs();
+    let abs_z = direction.z.abs();
+    if abs_x >= abs_y && abs_x >= abs_z {
+        Vec3::new(-direction.x.signum(), 0.0, 0.0)
+    } else if abs_y >= abs_z {
+        Vec3::new(0.0, -direction.y.signum(), 0.0)
+    } else {
+        Vec3::new(0.0, 0.0, -direction.z.signum())
+    }
+}
+
+fn terrain_surface_y(world: &VoxelWorld, x: f32, z: f32) -> Option<i32> {
+    let x = x.floor() as i32;
+    let z = z.floor() as i32;
+    (0..=32)
+        .rev()
+        .find(|y| world.get(VoxelCoord::new(x, *y, z)).is_some())
+}
+
 fn horizontal_distance(a: Vec3, b: Vec3) -> f32 {
     Vec3::new(a.x - b.x, 0.0, a.z - b.z).length()
 }
@@ -1324,6 +1567,84 @@ fn build_demo_city() -> VoxelWorld {
 
 fn build_doom_map() -> VoxelWorld {
     DoomMapGenerator::new(DoomMapConfig::default()).generate()
+}
+
+fn build_voxel_sandbox_world() -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+
+    for z in -SANDBOX_HALF_EXTENT..=SANDBOX_HALF_EXTENT {
+        for x in -SANDBOX_HALF_EXTENT..=SANDBOX_HALF_EXTENT {
+            let height = sandbox_height_at(x, z);
+            let top_material = sandbox_surface_material(x, z, height);
+            for y in 0..=height {
+                let material = if y == height {
+                    top_material
+                } else if y >= height - 2 {
+                    VoxelMaterial::Dirt
+                } else {
+                    VoxelMaterial::Stone
+                };
+                world.set(VoxelCoord::new(x, y, z), VoxelCell::new(material));
+            }
+
+            if should_place_tree(x, z, height) {
+                stamp_sandbox_tree(&mut world, x, height + 1, z);
+            }
+        }
+    }
+
+    world
+}
+
+fn sandbox_height_at(x: i32, z: i32) -> i32 {
+    let ridge = ((x as f32 * 0.11).sin() * 2.4 + (z as f32 * 0.09).cos() * 2.0).round() as i32;
+    let rough = ((hash_i32_pair(x.div_euclid(4), z.div_euclid(4)) % 5) as i32) - 2;
+    (5 + ridge + rough).clamp(1, 13)
+}
+
+fn sandbox_surface_material(x: i32, z: i32, height: i32) -> VoxelMaterial {
+    if height <= 3 {
+        VoxelMaterial::Sand
+    } else if hash_i32_pair(x, z) % 23 == 0 {
+        VoxelMaterial::Regolith
+    } else {
+        VoxelMaterial::Grass
+    }
+}
+
+fn should_place_tree(x: i32, z: i32, height: i32) -> bool {
+    height > 4 && x.abs() > 8 && z.abs() > 8 && hash_i32_pair(x, z) % 89 == 0
+}
+
+fn stamp_sandbox_tree(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
+    for trunk_y in y..=(y + 4) {
+        world.set(
+            VoxelCoord::new(x, trunk_y, z),
+            VoxelCell::new(VoxelMaterial::Wood),
+        );
+    }
+
+    for leaf_y in (y + 3)..=(y + 6) {
+        let radius = if leaf_y == y + 6 { 1 } else { 2 };
+        for dz in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx * dx + dz * dz <= radius * radius + 1 {
+                    world.set(
+                        VoxelCoord::new(x + dx, leaf_y, z + dz),
+                        VoxelCell::new(VoxelMaterial::Leaves),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn hash_i32_pair(x: i32, z: i32) -> u32 {
+    let mut hash = x as u32;
+    hash = hash.wrapping_mul(0x85eb_ca6b) ^ z as u32;
+    hash ^= hash >> 16;
+    hash = hash.wrapping_mul(0xc2b2_ae35);
+    hash ^ (hash >> 13)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2379,9 +2700,16 @@ fn build_menu_scene(tick: u64) -> Scene {
     });
     scene.overlays.push(Overlay {
         x: 48,
-        y: 64,
+        y: 61,
         z: 10,
-        text: "WASD MOVE   CLICK/SPACE FIRE   M MENU".to_string(),
+        text: "7  VOXEL SANDBOX".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 48,
+        y: 68,
+        z: 10,
+        text: "WASD MOVE   CLICK/SPACE USE   M MENU".to_string(),
         style: TextStyle::default(),
     });
     scene
@@ -2447,6 +2775,84 @@ fn render_asset_viewer_scene(scene: &mut Scene, viewer: &AssetViewerState, mouse
             text: format!("{}{} {}", marker, index + 1, preview.name),
             style: TextStyle::default(),
         });
+    }
+}
+
+fn render_voxel_sandbox_scene(
+    scene: &mut Scene,
+    sandbox: &VoxelSandboxState,
+    mouse_captured: bool,
+) {
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "VOXEL SANDBOX  block {} {}  mouse {}  M menu",
+            sandbox.selected_block + 1,
+            material_label(sandbox.selected_material()),
+            if mouse_captured { "locked" } else { "free" }
+        ),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 4,
+        z: 120,
+        text: sandbox_palette_text(sandbox),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 6,
+        z: 120,
+        text: "WASD move  Space/Ctrl rise/drop  Shift boost  left remove  right place".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: VIEWPORT.width as i32 / 2,
+        y: VIEWPORT.height as i32 / 2,
+        z: 150,
+        text: "+".to_string(),
+        style: TextStyle::default(),
+    });
+}
+
+fn sandbox_palette_text(sandbox: &VoxelSandboxState) -> String {
+    sandbox
+        .palette
+        .iter()
+        .enumerate()
+        .map(|(index, material)| {
+            if index == sandbox.selected_block {
+                format!("[{}:{}]", index + 1, material_label(*material))
+            } else {
+                format!("{}:{}", index + 1, material_label(*material))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn material_label(material: VoxelMaterial) -> &'static str {
+    match material {
+        VoxelMaterial::Regolith => "regolith",
+        VoxelMaterial::Basalt => "basalt",
+        VoxelMaterial::Ocean => "water",
+        VoxelMaterial::Ice => "ice",
+        VoxelMaterial::Grass => "grass",
+        VoxelMaterial::Dirt => "dirt",
+        VoxelMaterial::Stone => "stone",
+        VoxelMaterial::Sand => "sand",
+        VoxelMaterial::Wood => "wood",
+        VoxelMaterial::Leaves => "leaves",
+        VoxelMaterial::CornStalk => "corn",
+        VoxelMaterial::CarbonLife => "carbon",
+        VoxelMaterial::SiliconLife => "silicon",
+        VoxelMaterial::Habitat => "habitat",
+        VoxelMaterial::ShipHull => "hull",
+        VoxelMaterial::Glass => "glass",
+        VoxelMaterial::Beacon => "beacon",
     }
 }
 
@@ -3095,6 +3501,69 @@ mod tests {
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::AssetViewer);
         assert!(!app.asset_viewer.assets.is_empty());
+    }
+
+    #[test]
+    fn menu_can_start_voxel_sandbox_mode() {
+        let mut app = AppState::new();
+
+        let action =
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit7), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::StartScene);
+        assert_eq!(app.mode, AppMode::VoxelSandbox);
+        assert!(app.sandbox.world.voxel_count() > 10_000);
+    }
+
+    #[test]
+    fn voxel_sandbox_selects_palette_blocks() {
+        let mut app = AppState::new();
+        app.start_voxel_sandbox();
+
+        let action =
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit4), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::None);
+        assert_eq!(app.sandbox.selected_material(), VoxelMaterial::Sand);
+    }
+
+    #[test]
+    fn voxel_sandbox_removes_center_raycast_block() {
+        let mut world = VoxelWorld::new();
+        let coord = VoxelCoord::new(0, 2, 0);
+        world.set(coord, VoxelCell::new(VoxelMaterial::Stone));
+        let mut sandbox = VoxelSandboxState {
+            world,
+            selected_block: 0,
+            palette: vec![VoxelMaterial::Grass],
+        };
+        let camera = Camera::new(Vec3::new(0.5, 2.5, -3.5)).looking_at(0.0, 0.0);
+
+        sandbox.remove_block(&camera);
+
+        assert_eq!(sandbox.world.get(coord), None);
+    }
+
+    #[test]
+    fn voxel_sandbox_places_block_on_hit_face() {
+        let mut world = VoxelWorld::new();
+        world.set(
+            VoxelCoord::new(0, 2, 0),
+            VoxelCell::new(VoxelMaterial::Stone),
+        );
+        let mut sandbox = VoxelSandboxState {
+            world,
+            selected_block: 0,
+            palette: vec![VoxelMaterial::Wood],
+        };
+        let camera = Camera::new(Vec3::new(0.5, 2.5, -3.5)).looking_at(0.0, 0.0);
+
+        sandbox.place_block(&camera);
+
+        assert_eq!(
+            sandbox.world.get(VoxelCoord::new(0, 2, -1)),
+            Some(VoxelCell::new(VoxelMaterial::Wood))
+        );
     }
 
     #[test]
