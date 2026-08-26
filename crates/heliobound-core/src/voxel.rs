@@ -42,6 +42,7 @@ pub enum VoxelMaterial {
     Sand,
     Wood,
     Leaves,
+    Zombie,
     CornStalk,
     CarbonLife,
     SiliconLife,

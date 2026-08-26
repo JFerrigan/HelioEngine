@@ -52,6 +52,22 @@ const WEAPON_RANGE: f32 = 95.0;
 const WEAPON_DAMAGE: i32 = 55;
 const SHOT_FLASH_TIME: f32 = 0.12;
 const BULLET_TRACE_TIME: f32 = 0.18;
+const ZOMBIE_WALK_SPEED: f32 = 13.0;
+const ZOMBIE_SPRINT_MULTIPLIER: f32 = 1.65;
+const ZOMBIE_SPRINT_DRAIN: f32 = 0.42;
+const ZOMBIE_SPRINT_RECHARGE: f32 = 0.28;
+const ZOMBIE_ATTACK_RANGE: f32 = 2.1;
+const ZOMBIE_ATTACK_COOLDOWN: f32 = 1.05;
+const ZOMBIE_MAX_HITS: i32 = 3;
+const ZOMBIE_HIT_FLASH_TIME: f32 = 0.32;
+const ZOMBIE_ROUND_BREAK_TIME: f32 = 3.0;
+const ZOMBIE_SPAWN_INTERVAL: f32 = 0.65;
+const ZOMBIE_START_AMMO: i32 = 96;
+const ZOMBIE_MAG_SIZE: i32 = 24;
+const ZOMBIE_WALL_WEAPON_COST: i32 = 750;
+const ZOMBIE_DOOR_COST: i32 = 900;
+const ZOMBIE_HIT_POINTS: i32 = 10;
+const ZOMBIE_KILL_POINTS: i32 = 100;
 const MOUSE_SENSITIVITY: f32 = 0.0025;
 const PITCH_LIMIT: f32 = 1.52;
 const ROLL_SPEED: f32 = 1.8;
@@ -112,6 +128,39 @@ const NPC_BODY_OFFSETS: [(i32, i32, i32, bool); 19] = [
     (-1, 4, 0, true),
     (0, 4, 0, true),
     (1, 4, 0, true),
+];
+const ZOMBIE_BODY_OFFSETS: [(i32, i32, i32, VoxelMaterial); 31] = [
+    (-1, 1, 0, VoxelMaterial::Zombie),
+    (1, 1, 0, VoxelMaterial::Zombie),
+    (-1, 2, 0, VoxelMaterial::Zombie),
+    (0, 2, 0, VoxelMaterial::Zombie),
+    (1, 2, 0, VoxelMaterial::Zombie),
+    (-1, 3, 0, VoxelMaterial::Zombie),
+    (0, 3, 0, VoxelMaterial::Zombie),
+    (1, 3, 0, VoxelMaterial::Zombie),
+    (-1, 3, -1, VoxelMaterial::Zombie),
+    (1, 3, -1, VoxelMaterial::Zombie),
+    (-2, 3, 0, VoxelMaterial::Beacon),
+    (2, 3, 0, VoxelMaterial::Beacon),
+    (-3, 2, 0, VoxelMaterial::Zombie),
+    (3, 2, 0, VoxelMaterial::Zombie),
+    (-1, 4, 0, VoxelMaterial::Zombie),
+    (0, 4, 0, VoxelMaterial::Zombie),
+    (1, 4, 0, VoxelMaterial::Zombie),
+    (-1, 4, -1, VoxelMaterial::Zombie),
+    (0, 4, -1, VoxelMaterial::Beacon),
+    (1, 4, -1, VoxelMaterial::Zombie),
+    (-1, 5, 0, VoxelMaterial::Zombie),
+    (0, 5, 0, VoxelMaterial::Zombie),
+    (1, 5, 0, VoxelMaterial::Zombie),
+    (-1, 5, -1, VoxelMaterial::Beacon),
+    (1, 5, -1, VoxelMaterial::Beacon),
+    (-1, 6, 0, VoxelMaterial::Zombie),
+    (0, 6, 0, VoxelMaterial::Zombie),
+    (1, 6, 0, VoxelMaterial::Zombie),
+    (-1, 7, 0, VoxelMaterial::Beacon),
+    (0, 7, 0, VoxelMaterial::Beacon),
+    (1, 7, 0, VoxelMaterial::Beacon),
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -245,6 +294,7 @@ enum AppMode {
     BarScene,
     AssetViewer,
     VoxelSandbox,
+    Zombies,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,6 +316,8 @@ struct AppState {
     corn_maze: CornMazeState,
     asset_viewer: AssetViewerState,
     sandbox: VoxelSandboxState,
+    zombies_map: VoxelWorld,
+    zombies: ZombiesState,
     planet_builder: SceneBuilder,
     city_builder: SceneBuilder,
     camera: Camera,
@@ -287,6 +339,8 @@ impl AppState {
             corn_maze: CornMazeState::new(),
             asset_viewer: AssetViewerState::new(),
             sandbox: VoxelSandboxState::new(),
+            zombies_map: build_zombies_map(&ZombiesState::new()),
+            zombies: ZombiesState::new(),
             planet_builder: SceneBuilder::new(
                 GraphicsConfig {
                     viewport: VIEWPORT,
@@ -343,6 +397,10 @@ impl AppState {
                     self.start_voxel_sandbox();
                     return KeyboardAction::StartScene;
                 }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit8)) => {
+                    self.start_zombies();
+                    return KeyboardAction::StartScene;
+                }
                 (AppMode::AssetViewer, key) => {
                     if let Some(index) = asset_digit_index(key) {
                         self.asset_viewer.select(index);
@@ -371,6 +429,18 @@ impl AppState {
                 }
                 (AppMode::CityShooter, PhysicalKey::Code(KeyCode::Space)) => {
                     return KeyboardAction::Fire;
+                }
+                (AppMode::Zombies, PhysicalKey::Code(KeyCode::Space)) => {
+                    return KeyboardAction::Fire;
+                }
+                (AppMode::Zombies, PhysicalKey::Code(KeyCode::KeyR)) => {
+                    self.zombies.reload();
+                    return KeyboardAction::None;
+                }
+                (AppMode::Zombies, PhysicalKey::Code(KeyCode::KeyF)) => {
+                    self.zombies
+                        .interact(&mut self.zombies_map, self.camera.position);
+                    return KeyboardAction::None;
                 }
                 (_, PhysicalKey::Code(KeyCode::Escape)) => {
                     return KeyboardAction::ReleaseMouse;
@@ -438,6 +508,14 @@ impl AppState {
         self.mode = AppMode::VoxelSandbox;
         self.sandbox = VoxelSandboxState::new();
         self.camera = sandbox_start_camera(&self.sandbox.world);
+        self.input = PlayerInput::default();
+    }
+
+    fn start_zombies(&mut self) {
+        self.mode = AppMode::Zombies;
+        self.zombies = ZombiesState::new();
+        self.zombies_map = build_zombies_map(&self.zombies);
+        self.camera = zombies_start_camera();
         self.input = PlayerInput::default();
     }
 
@@ -523,6 +601,25 @@ impl AppState {
                 render_voxel_sandbox_scene(&mut scene, &self.sandbox, mouse_captured);
                 scene
             }
+            AppMode::Zombies => {
+                self.zombies
+                    .update_player(&mut self.camera, &self.input, &self.zombies_map, dt);
+                self.zombies_map = build_zombies_map(&self.zombies);
+                let hurt = self.zombies.update_rounds_and_zombies(
+                    &self.zombies_map,
+                    self.camera.position,
+                    dt,
+                );
+                if hurt {
+                    self.audio_events.push(SoundEffect::PlayerHurt);
+                }
+                let render_world = zombies_world_with_zombies(&self.zombies_map, &self.zombies);
+                let mut scene = self
+                    .city_builder
+                    .build(&render_world, &self.camera, self.tick);
+                render_zombies_scene(&mut scene, &self.camera, &self.zombies, mouse_captured);
+                scene
+            }
         }
     }
 
@@ -536,7 +633,8 @@ impl AppState {
             | AppMode::CityShooter
             | AppMode::CornMaze
             | AppMode::BarScene
-            | AppMode::VoxelSandbox => {
+            | AppMode::VoxelSandbox
+            | AppMode::Zombies => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped)
             }
             AppMode::AssetViewer => self.asset_viewer.rotate_with_mouse(delta_x, delta_y),
@@ -546,6 +644,7 @@ impl AppState {
     fn handle_mouse_button(&mut self, button: MouseButton) {
         match (self.mode, button) {
             (AppMode::CityShooter, MouseButton::Left) => self.fire_weapon(),
+            (AppMode::Zombies, MouseButton::Left) => self.fire_weapon(),
             (AppMode::VoxelSandbox, MouseButton::Left) => self.sandbox.remove_block(&self.camera),
             (AppMode::VoxelSandbox, MouseButton::Right) => self.sandbox.place_block(&self.camera),
             _ => {}
@@ -556,6 +655,9 @@ impl AppState {
         if self.mode == AppMode::CityShooter {
             self.audio_events
                 .extend(self.shooter.fire(&self.doom_map, &self.camera));
+        } else if self.mode == AppMode::Zombies {
+            self.audio_events
+                .extend(self.zombies.fire(&self.zombies_map, &self.camera));
         }
     }
 
@@ -569,7 +671,7 @@ fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
         AppMode::CityWalk => audio.enter_city_mode(),
         AppMode::CornMaze => audio.enter_corn_maze_mode(),
         AppMode::BarScene => audio.enter_bar_mode(),
-        AppMode::CityShooter => audio.enter_doom_mode(),
+        AppMode::CityShooter | AppMode::Zombies => audio.enter_doom_mode(),
         AppMode::Menu | AppMode::PlanetFlight | AppMode::AssetViewer | AppMode::VoxelSandbox => {
             audio.leave_ambience()
         }
@@ -651,6 +753,13 @@ fn sandbox_start_camera(world: &VoxelWorld) -> Camera {
         .looking_at(0.0, -0.12)
         .with_fov_y(68.0_f32.to_radians())
         .with_max_distance(120.0)
+}
+
+fn zombies_start_camera() -> Camera {
+    Camera::new(Vec3::new(0.5, WALK_EYE_HEIGHT, -66.5))
+        .looking_at(0.0, 0.0)
+        .with_fov_y(68.0_f32.to_radians())
+        .with_max_distance(150.0)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1182,6 +1291,398 @@ fn spawn_enemies() -> Vec<Enemy> {
     ]
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZombiesWeaponKind {
+    M1911,
+    WallRifle,
+}
+
+impl ZombiesWeaponKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::M1911 => "M1911",
+            Self::WallRifle => "WALL RIFLE",
+        }
+    }
+
+    fn damage(self) -> i32 {
+        match self {
+            Self::M1911 => 45,
+            Self::WallRifle => 72,
+        }
+    }
+
+    fn magazine_size(self) -> i32 {
+        match self {
+            Self::M1911 => ZOMBIE_MAG_SIZE,
+            Self::WallRifle => 32,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZombiesDoorKind {
+    Building,
+    CornField,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ZombiesDoor {
+    kind: ZombiesDoorKind,
+    position: Vec3,
+    open: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WallWeapon {
+    position: Vec3,
+    bought: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Zombie {
+    position: Vec3,
+    health: i32,
+    max_health: i32,
+    attack_cooldown: f32,
+}
+
+impl Zombie {
+    fn new(position: Vec3, round: u32) -> Self {
+        let max_health = 90 + (round.saturating_sub(1) as i32 * 34);
+        Self {
+            position,
+            health: max_health,
+            max_health,
+            attack_cooldown: 0.0,
+        }
+    }
+
+    fn is_alive(self) -> bool {
+        self.health > 0
+    }
+
+    fn contains_voxel(self, coord: VoxelCoord) -> bool {
+        zombie_body_contains_voxel(self.position, coord)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ZombiesState {
+    zombies: Vec<Zombie>,
+    bullet_traces: Vec<BulletTrace>,
+    round: u32,
+    queued_spawns: u32,
+    spawn_timer: f32,
+    round_break_timer: f32,
+    player_hits: i32,
+    damage_flash_timer: f32,
+    points: i32,
+    total_points: i32,
+    kills: u32,
+    ammo_reserve: i32,
+    ammo_in_mag: i32,
+    weapon: ZombiesWeaponKind,
+    shot_flash_timer: f32,
+    sprint: f32,
+    doors: Vec<ZombiesDoor>,
+    wall_weapon: WallWeapon,
+    game_over: bool,
+}
+
+impl ZombiesState {
+    fn new() -> Self {
+        let mut state = Self {
+            zombies: Vec::new(),
+            bullet_traces: Vec::new(),
+            round: 0,
+            queued_spawns: 0,
+            spawn_timer: 0.0,
+            round_break_timer: 0.0,
+            player_hits: 0,
+            damage_flash_timer: 0.0,
+            points: 500,
+            total_points: 0,
+            kills: 0,
+            ammo_reserve: ZOMBIE_START_AMMO,
+            ammo_in_mag: ZOMBIE_MAG_SIZE,
+            weapon: ZombiesWeaponKind::M1911,
+            shot_flash_timer: 0.0,
+            sprint: 1.0,
+            doors: vec![
+                ZombiesDoor {
+                    kind: ZombiesDoorKind::Building,
+                    position: Vec3::new(0.5, 0.0, -25.0),
+                    open: false,
+                },
+                ZombiesDoor {
+                    kind: ZombiesDoorKind::CornField,
+                    position: Vec3::new(-36.0, 0.0, 9.0),
+                    open: false,
+                },
+            ],
+            wall_weapon: WallWeapon {
+                position: Vec3::new(33.0, 0.0, -18.0),
+                bought: false,
+            },
+            game_over: false,
+        };
+        state.start_next_round();
+        state
+    }
+
+    fn update_player(
+        &mut self,
+        camera: &mut Camera,
+        input: &PlayerInput,
+        world: &VoxelWorld,
+        dt: f32,
+    ) {
+        if self.game_over {
+            return;
+        }
+
+        let sprinting = input.boost && self.sprint > 0.05 && moving_on_ground(input);
+        let speed = if sprinting {
+            ZOMBIE_WALK_SPEED * ZOMBIE_SPRINT_MULTIPLIER
+        } else {
+            ZOMBIE_WALK_SPEED
+        };
+        if sprinting {
+            self.sprint = (self.sprint - ZOMBIE_SPRINT_DRAIN * dt).max(0.0);
+        } else {
+            self.sprint = (self.sprint + ZOMBIE_SPRINT_RECHARGE * dt).min(1.0);
+        }
+
+        update_walking_camera_with_profile(
+            camera,
+            input,
+            world,
+            WalkProfile {
+                eye_height: WALK_EYE_HEIGHT,
+                speed,
+                collision_radius: WALK_COLLISION_RADIUS,
+            },
+            dt,
+        );
+    }
+
+    fn update_rounds_and_zombies(
+        &mut self,
+        world: &VoxelWorld,
+        player_position: Vec3,
+        dt: f32,
+    ) -> bool {
+        self.shot_flash_timer = (self.shot_flash_timer - dt).max(0.0);
+        self.damage_flash_timer = (self.damage_flash_timer - dt).max(0.0);
+        for trace in &mut self.bullet_traces {
+            trace.time_left = (trace.time_left - dt).max(0.0);
+        }
+        self.bullet_traces
+            .retain(|trace| trace.time_left > f32::EPSILON);
+
+        if self.game_over {
+            return false;
+        }
+
+        if self.alive_count() == 0 && self.queued_spawns == 0 {
+            self.round_break_timer -= dt;
+            if self.round_break_timer <= 0.0 {
+                self.start_next_round();
+            }
+        }
+
+        self.spawn_timer -= dt;
+        while self.queued_spawns > 0 && self.spawn_timer <= 0.0 {
+            self.spawn_one();
+            self.queued_spawns -= 1;
+            self.spawn_timer += ZOMBIE_SPAWN_INTERVAL;
+        }
+
+        let mut player_hurt = false;
+        for zombie in &mut self.zombies {
+            if !zombie.is_alive() {
+                continue;
+            }
+
+            zombie.attack_cooldown = (zombie.attack_cooldown - dt).max(0.0);
+            let distance = horizontal_distance(zombie.position, player_position);
+            if distance <= ZOMBIE_ATTACK_RANGE {
+                if zombie.attack_cooldown <= 0.0 {
+                    self.player_hits += 1;
+                    self.damage_flash_timer = ZOMBIE_HIT_FLASH_TIME;
+                    zombie.attack_cooldown = ZOMBIE_ATTACK_COOLDOWN;
+                    player_hurt = true;
+                    if self.player_hits >= ZOMBIE_MAX_HITS {
+                        self.game_over = true;
+                    }
+                }
+                continue;
+            }
+
+            let to_player = horizontal(player_position - zombie.position);
+            if to_player.length() <= f32::EPSILON {
+                continue;
+            }
+            let candidate = zombie.position + to_player * ZOMBIE_WALK_SPEED * dt;
+            let candidate = Vec3::new(candidate.x, WALK_EYE_HEIGHT, candidate.z);
+            if can_walk_to(world, candidate) {
+                zombie.position.x = candidate.x;
+                zombie.position.z = candidate.z;
+            }
+        }
+
+        player_hurt
+    }
+
+    fn fire(&mut self, world: &VoxelWorld, camera: &Camera) -> Vec<SoundEffect> {
+        if self.game_over {
+            return Vec::new();
+        }
+        if self.ammo_in_mag <= 0 {
+            self.reload();
+            return Vec::new();
+        }
+
+        self.ammo_in_mag -= 1;
+        self.shot_flash_timer = SHOT_FLASH_TIME;
+        self.bullet_traces.push(BulletTrace::from_camera(camera));
+        let mut effects = vec![SoundEffect::Gunshot];
+
+        let render_world = zombies_world_with_zombies(world, self);
+        let Some(hit) = raycast(
+            &render_world,
+            Ray::new(camera.position, camera.forward()),
+            WEAPON_RANGE,
+        ) else {
+            return effects;
+        };
+        let Some(index) = self.zombie_index_for_voxel(hit.coord) else {
+            return effects;
+        };
+
+        let zombie = &mut self.zombies[index];
+        zombie.health = (zombie.health - self.weapon.damage()).max(0);
+        self.points += ZOMBIE_HIT_POINTS;
+        self.total_points += ZOMBIE_HIT_POINTS;
+        if zombie.health == 0 {
+            self.points += ZOMBIE_KILL_POINTS;
+            self.total_points += ZOMBIE_KILL_POINTS;
+            self.kills += 1;
+            effects.push(SoundEffect::EnemyDeath);
+        } else {
+            effects.push(SoundEffect::EnemyHit);
+        }
+        effects
+    }
+
+    fn reload(&mut self) {
+        if self.ammo_reserve <= 0 || self.ammo_in_mag >= self.weapon.magazine_size() {
+            return;
+        }
+        let needed = self.weapon.magazine_size() - self.ammo_in_mag;
+        let loaded = needed.min(self.ammo_reserve);
+        self.ammo_in_mag += loaded;
+        self.ammo_reserve -= loaded;
+    }
+
+    fn interact(&mut self, world: &mut VoxelWorld, player_position: Vec3) {
+        if self.game_over {
+            return;
+        }
+        for door in &mut self.doors {
+            if !door.open
+                && self.points >= ZOMBIE_DOOR_COST
+                && horizontal_distance(player_position, door.position) < 5.5
+            {
+                self.points -= ZOMBIE_DOOR_COST;
+                door.open = true;
+                clear_zombies_door(world, door.kind);
+                return;
+            }
+        }
+
+        if !self.wall_weapon.bought
+            && self.points >= ZOMBIE_WALL_WEAPON_COST
+            && horizontal_distance(player_position, self.wall_weapon.position) < 6.5
+        {
+            self.points -= ZOMBIE_WALL_WEAPON_COST;
+            self.wall_weapon.bought = true;
+            self.weapon = ZombiesWeaponKind::WallRifle;
+            self.ammo_in_mag = self.weapon.magazine_size();
+            self.ammo_reserve = 160;
+        }
+    }
+
+    fn start_next_round(&mut self) {
+        self.round += 1;
+        self.queued_spawns = 5 + self.round * 3;
+        self.spawn_timer = 0.0;
+        self.round_break_timer = ZOMBIE_ROUND_BREAK_TIME;
+        self.zombies.retain(|zombie| zombie.is_alive());
+    }
+
+    fn spawn_one(&mut self) {
+        let spawns = zombie_spawn_points(self);
+        let index = (self.zombies.len() + self.round as usize * 3) % spawns.len();
+        self.zombies.push(Zombie::new(spawns[index], self.round));
+    }
+
+    fn zombie_index_for_voxel(&self, coord: VoxelCoord) -> Option<usize> {
+        self.zombies
+            .iter()
+            .enumerate()
+            .filter(|(_, zombie)| zombie.is_alive())
+            .find_map(|(index, zombie)| zombie.contains_voxel(coord).then_some(index))
+    }
+
+    fn alive_count(&self) -> usize {
+        self.zombies
+            .iter()
+            .filter(|zombie| zombie.is_alive())
+            .count()
+    }
+
+    fn health_left(&self) -> i32 {
+        (ZOMBIE_MAX_HITS - self.player_hits).max(0)
+    }
+
+    fn rounds_survived(&self) -> u32 {
+        if self.game_over {
+            self.round.saturating_sub(1)
+        } else {
+            self.round
+        }
+    }
+}
+
+fn moving_on_ground(input: &PlayerInput) -> bool {
+    input.forward || input.backward || input.left || input.right
+}
+
+fn zombie_spawn_points(state: &ZombiesState) -> Vec<Vec3> {
+    let mut points = vec![
+        Vec3::new(-42.5, 0.0, -57.5),
+        Vec3::new(43.5, 0.0, -55.5),
+        Vec3::new(-55.5, 0.0, -5.5),
+    ];
+    if state
+        .doors
+        .iter()
+        .any(|door| door.kind == ZombiesDoorKind::Building && door.open)
+    {
+        points.extend([Vec3::new(47.5, 0.0, 19.5), Vec3::new(9.5, 0.0, 45.5)]);
+    }
+    if state
+        .doors
+        .iter()
+        .any(|door| door.kind == ZombiesDoorKind::CornField && door.open)
+    {
+        points.extend([Vec3::new(-63.5, 0.0, 45.5), Vec3::new(-31.5, 0.0, 66.5)]);
+    }
+    points
+}
+
 fn handle_movement_input(input: &mut PlayerInput, key: &PhysicalKey, state: ElementState) {
     let pressed = state == ElementState::Pressed;
     match key {
@@ -1588,6 +2089,260 @@ fn build_doom_map() -> VoxelWorld {
     DoomMapGenerator::new(DoomMapConfig::default()).generate()
 }
 
+fn build_zombies_map(state: &ZombiesState) -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-84, 0, -84),
+        VoxelCoord::new(84, 0, 84),
+        VoxelMaterial::Regolith,
+    );
+    stamp_zombies_boundary(&mut world);
+    stamp_zombies_street(&mut world);
+    stamp_zombies_building(&mut world, state);
+    stamp_zombies_corn_field(&mut world, state);
+    stamp_zombies_wall_weapon(&mut world, &state.wall_weapon);
+
+    world
+}
+
+fn stamp_zombies_boundary(world: &mut VoxelWorld) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-84, 1, -84),
+        VoxelCoord::new(84, 10, -82),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-84, 1, 82),
+        VoxelCoord::new(84, 10, 84),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-84, 1, -84),
+        VoxelCoord::new(-82, 10, 84),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(82, 1, -84),
+        VoxelCoord::new(84, 10, 84),
+        VoxelMaterial::Basalt,
+    );
+}
+
+fn stamp_zombies_street(world: &mut VoxelWorld) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-76, 0, -76),
+        VoxelCoord::new(74, 0, -38),
+        VoxelMaterial::Stone,
+    );
+    for x in (-66..=66).step_by(18) {
+        fill_cuboid(
+            world,
+            VoxelCoord::new(x, 1, -58),
+            VoxelCoord::new(x + 5, 3, -52),
+            VoxelMaterial::ShipHull,
+        );
+        fill_cuboid(
+            world,
+            VoxelCoord::new(x + 1, 4, -57),
+            VoxelCoord::new(x + 4, 5, -53),
+            VoxelMaterial::Glass,
+        );
+    }
+    for x in (-70..=70).step_by(14) {
+        fill_cuboid(
+            world,
+            VoxelCoord::new(x, 1, -72),
+            VoxelCoord::new(x + 1, 8, -72),
+            VoxelMaterial::ShipHull,
+        );
+        world.set(
+            VoxelCoord::new(x, 9, -72),
+            VoxelCell::new(VoxelMaterial::Beacon),
+        );
+    }
+}
+
+fn stamp_zombies_building(world: &mut VoxelWorld, state: &ZombiesState) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-28, 1, -28),
+        VoxelCoord::new(42, 11, -26),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-28, 1, 34),
+        VoxelCoord::new(42, 11, 36),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-28, 1, -28),
+        VoxelCoord::new(-26, 11, 36),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(40, 1, -28),
+        VoxelCoord::new(42, 11, 36),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-24, 0, -24),
+        VoxelCoord::new(38, 0, 32),
+        VoxelMaterial::Habitat,
+    );
+    clear_cuboid(
+        world,
+        VoxelCoord::new(-4, 1, -28),
+        VoxelCoord::new(6, 9, -25),
+    );
+    if !door_open(state, ZombiesDoorKind::Building) {
+        fill_cuboid(
+            world,
+            VoxelCoord::new(-4, 1, -27),
+            VoxelCoord::new(6, 8, -26),
+            VoxelMaterial::Glass,
+        );
+    }
+
+    stamp_table(world, -12, -8);
+    stamp_table(world, 14, 10);
+    stamp_jukebox_at(world, -22, 1, 25);
+    stamp_dart_board_at(world, -27, 7, 15);
+    stamp_bottle(world, 30, 1, -14);
+    stamp_ash_tray(world, 7, 1, 22);
+    fill_cuboid(
+        world,
+        VoxelCoord::new(26, 1, -22),
+        VoxelCoord::new(34, 5, -12),
+        VoxelMaterial::Habitat,
+    );
+}
+
+fn stamp_zombies_corn_field(world: &mut VoxelWorld, state: &ZombiesState) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-80, 1, 2),
+        VoxelCoord::new(-38, 9, 4),
+        VoxelMaterial::Wood,
+    );
+    clear_cuboid(
+        world,
+        VoxelCoord::new(-55, 1, 2),
+        VoxelCoord::new(-45, 8, 4),
+    );
+    if !door_open(state, ZombiesDoorKind::CornField) {
+        fill_cuboid(
+            world,
+            VoxelCoord::new(-55, 1, 3),
+            VoxelCoord::new(-45, 8, 4),
+            VoxelMaterial::Wood,
+        );
+    }
+
+    for z in (10..=76).step_by(5) {
+        for x in (-78..=-36).step_by(4) {
+            if (x + z) % 11 != 0 {
+                stamp_corn_stalk(world, x, z, 10 + (hash_i32_pair(x, z) % 5) as i32);
+            }
+        }
+    }
+}
+
+fn stamp_zombies_wall_weapon(world: &mut VoxelWorld, wall_weapon: &WallWeapon) {
+    let x = wall_weapon.position.x.floor() as i32;
+    let z = wall_weapon.position.z.floor() as i32;
+    let material = if wall_weapon.bought {
+        VoxelMaterial::Glass
+    } else {
+        VoxelMaterial::Beacon
+    };
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x - 4, 4, z),
+        VoxelCoord::new(x + 4, 5, z),
+        material,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x + 1, 2, z),
+        VoxelCoord::new(x + 4, 3, z),
+        material,
+    );
+}
+
+fn door_open(state: &ZombiesState, kind: ZombiesDoorKind) -> bool {
+    state
+        .doors
+        .iter()
+        .any(|door| door.kind == kind && door.open)
+}
+
+fn clear_zombies_door(world: &mut VoxelWorld, kind: ZombiesDoorKind) {
+    match kind {
+        ZombiesDoorKind::Building => clear_cuboid(
+            world,
+            VoxelCoord::new(-4, 1, -28),
+            VoxelCoord::new(6, 9, -25),
+        ),
+        ZombiesDoorKind::CornField => clear_cuboid(
+            world,
+            VoxelCoord::new(-55, 1, 2),
+            VoxelCoord::new(-45, 8, 4),
+        ),
+    }
+}
+
+fn stamp_jukebox_at(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x - 4, y, z - 3),
+        VoxelCoord::new(x + 4, y + 8, z + 4),
+        VoxelMaterial::Habitat,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x - 3, y + 4, z - 4),
+        VoxelCoord::new(x + 3, y + 7, z - 4),
+        VoxelMaterial::Glass,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x - 2, y + 6, z - 5),
+        VoxelCoord::new(x + 2, y + 6, z - 5),
+        VoxelMaterial::Beacon,
+    );
+}
+
+fn stamp_dart_board_at(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
+    for dy in -3_i32..=3 {
+        for dz in -3_i32..=3 {
+            let distance = dy.abs() + dz.abs();
+            if distance <= 4 {
+                world.set(
+                    VoxelCoord::new(x, y + dy, z + dz),
+                    VoxelCell::new(if distance <= 1 {
+                        VoxelMaterial::Beacon
+                    } else if distance == 2 {
+                        VoxelMaterial::Glass
+                    } else {
+                        VoxelMaterial::Habitat
+                    }),
+                );
+            }
+        }
+    }
+}
+
 fn build_voxel_sandbox_world() -> VoxelWorld {
     let mut world = VoxelWorld::new();
 
@@ -1710,6 +2465,7 @@ fn build_asset_catalog() -> Vec<PreviewAsset> {
         PreviewAsset::new("dart board", build_dart_board_asset()),
         PreviewAsset::new("bottle", build_bottle_asset()),
         PreviewAsset::new("ash tray", build_ash_tray_asset()),
+        PreviewAsset::new("zombie", build_zombie_asset()),
     ];
 
     for (name, material) in [
@@ -1852,6 +2608,12 @@ fn build_bottle_asset() -> VoxelWorld {
 fn build_ash_tray_asset() -> VoxelWorld {
     let mut world = VoxelWorld::new();
     stamp_ash_tray(&mut world, 0, 1, 0);
+    world
+}
+
+fn build_zombie_asset() -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+    stamp_zombie_body(&mut world, Vec3::ZERO, VoxelMaterial::CarbonLife);
     world
 }
 
@@ -2345,6 +3107,23 @@ fn fill_cuboid(world: &mut VoxelWorld, a: VoxelCoord, b: VoxelCoord, material: V
     }
 }
 
+fn clear_cuboid(world: &mut VoxelWorld, a: VoxelCoord, b: VoxelCoord) {
+    let min_x = a.x.min(b.x);
+    let max_x = a.x.max(b.x);
+    let min_y = a.y.min(b.y);
+    let max_y = a.y.max(b.y);
+    let min_z = a.z.min(b.z);
+    let max_z = a.z.max(b.z);
+
+    for y in min_y..=max_y {
+        for z in min_z..=max_z {
+            for x in min_x..=max_x {
+                world.clear(VoxelCoord::new(x, y, z));
+            }
+        }
+    }
+}
+
 fn fill_oriented_cuboid(
     world: &mut VoxelWorld,
     origin_x: i32,
@@ -2627,6 +3406,16 @@ fn shooter_world_with_enemies(base: &VoxelWorld, shooter: &ShooterState) -> Voxe
     world
 }
 
+fn zombies_world_with_zombies(base: &VoxelWorld, zombies: &ZombiesState) -> VoxelWorld {
+    let mut world = base.clone();
+    for zombie in &zombies.zombies {
+        if zombie.is_alive() {
+            stamp_zombie(&mut world, zombie);
+        }
+    }
+    world
+}
+
 fn stamp_city_figure(world: &mut VoxelWorld, figure: &CityFigure) {
     let accent = if figure.watching_player {
         VoxelMaterial::Beacon
@@ -2643,6 +3432,38 @@ fn stamp_shooter_enemy(world: &mut VoxelWorld, enemy: &Enemy) {
         VoxelMaterial::SiliconLife,
         VoxelMaterial::Beacon,
     );
+}
+
+fn stamp_zombie(world: &mut VoxelWorld, zombie: &Zombie) {
+    let wounded = zombie.health * 2 < zombie.max_health;
+    let accent = if wounded {
+        VoxelMaterial::Beacon
+    } else {
+        VoxelMaterial::CarbonLife
+    };
+    stamp_zombie_body(world, zombie.position, accent);
+}
+
+fn stamp_zombie_body(world: &mut VoxelWorld, position: Vec3, accent: VoxelMaterial) {
+    let origin = VoxelCoord::new(position.x.floor() as i32, 0, position.z.floor() as i32);
+    for (x, y, z, material) in ZOMBIE_BODY_OFFSETS {
+        let material = if material == VoxelMaterial::Beacon {
+            accent
+        } else {
+            material
+        };
+        world.set(
+            VoxelCoord::new(origin.x + x, origin.y + y, origin.z + z),
+            VoxelCell::new(material),
+        );
+    }
+}
+
+fn zombie_body_contains_voxel(position: Vec3, coord: VoxelCoord) -> bool {
+    let origin = VoxelCoord::new(position.x.floor() as i32, 0, position.z.floor() as i32);
+    ZOMBIE_BODY_OFFSETS
+        .iter()
+        .any(|(x, y, z, _)| VoxelCoord::new(origin.x + *x, origin.y + *y, origin.z + *z) == coord)
 }
 
 fn stamp_npc_body(
@@ -2753,7 +3574,14 @@ fn build_menu_scene(tick: u64) -> Scene {
     });
     scene.overlays.push(Overlay {
         x: 48,
-        y: 68,
+        y: 65,
+        z: 10,
+        text: "8  HELIOBOUND ZOMBIES".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 48,
+        y: 72,
         z: 10,
         text: "WASD MOVE   CLICK/SPACE USE   M MENU".to_string(),
         style: TextStyle::default(),
@@ -2892,6 +3720,7 @@ fn material_label(material: VoxelMaterial) -> &'static str {
         VoxelMaterial::Sand => "sand",
         VoxelMaterial::Wood => "wood",
         VoxelMaterial::Leaves => "leaves",
+        VoxelMaterial::Zombie => "zombie",
         VoxelMaterial::CornStalk => "corn",
         VoxelMaterial::CarbonLife => "carbon",
         VoxelMaterial::SiliconLife => "silicon",
@@ -3035,6 +3864,107 @@ fn render_shooter_scene(
     });
 }
 
+fn render_zombies_scene(
+    scene: &mut Scene,
+    camera: &Camera,
+    zombies: &ZombiesState,
+    mouse_captured: bool,
+) {
+    scene.layers.push(Layer {
+        name: "bullets".to_string(),
+        z: 35,
+        cells: bullet_cells(scene.viewport, camera, &zombies.bullet_traces),
+    });
+    scene.layers.push(Layer {
+        name: "weapon".to_string(),
+        z: 40,
+        cells: zombies_weapon_cells(scene.viewport, zombies.shot_flash_timer > 0.0),
+    });
+    scene.layers.push(Layer {
+        name: "reticle".to_string(),
+        z: 50,
+        cells: reticle_cells(scene.viewport),
+    });
+    if zombies.damage_flash_timer > 0.0 {
+        scene.layers.push(Layer {
+            name: "damage".to_string(),
+            z: 60,
+            cells: damage_flash_cells(scene.viewport),
+        });
+    }
+
+    let hud = hud_style();
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "ROUND {}  ZOMBIES {}  SPAWNING {}  M menu",
+            zombies.round,
+            zombies.alive_count(),
+            zombies.queued_spawns
+        ),
+        style: hud.clone(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 5,
+        z: 120,
+        text: format!(
+            "HITS LEFT {}  SPRINT {:>3}%  MOUSE {}",
+            zombies.health_left(),
+            (zombies.sprint * 100.0).round() as i32,
+            if mouse_captured { "locked" } else { "free" }
+        ),
+        style: hud.clone(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 8,
+        z: 120,
+        text: format!(
+            "POINTS {}  KILLS {}  TOTAL {}",
+            zombies.points, zombies.kills, zombies.total_points
+        ),
+        style: hud.clone(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 11,
+        z: 120,
+        text: format!(
+            "{}  AMMO {}/{}  F buy/open  R reload",
+            zombies.weapon.label(),
+            zombies.ammo_in_mag,
+            zombies.ammo_reserve
+        ),
+        style: hud.clone(),
+    });
+
+    if zombies.game_over {
+        let center_x = scene.viewport.width as i32 / 2 - 21;
+        let center_y = scene.viewport.height as i32 / 2 - 5;
+        for (offset, text) in [
+            "GAME OVER".to_string(),
+            format!("ROUNDS SURVIVED {}", zombies.rounds_survived()),
+            format!("KILLS {}", zombies.kills),
+            format!("TOTAL POINTS {}", zombies.total_points),
+            "M MENU".to_string(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            scene.overlays.push(Overlay {
+                x: center_x,
+                y: center_y + offset as i32 * 3,
+                z: 180,
+                text,
+                style: hud.clone(),
+            });
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Projection {
     x: i32,
@@ -3176,6 +4106,83 @@ fn weapon_cells(viewport: Viewport, flash: bool) -> Vec<SceneCell> {
     cells
 }
 
+fn zombies_weapon_cells(viewport: Viewport, flash: bool) -> Vec<SceneCell> {
+    let art = [
+        "              __",
+        "          ___/ /",
+        "      ___/____/",
+        "     /===/      ",
+        " ___/___/       ",
+        "/__/ /          ",
+        "  /_/           ",
+    ];
+    let start_x = viewport.width as i32 - art[0].len() as i32 - 10;
+    let start_y = viewport.height as i32 - art.len() as i32 - 5;
+    let mut cells = Vec::new();
+
+    if flash {
+        for (x, y, glyph) in [(-8, -2, '*'), (-6, -1, '+'), (-4, -2, '*'), (-5, 0, '.')] {
+            cells.push(SceneCell {
+                x: start_x + x,
+                y: start_y + y,
+                glyph,
+                style: TextStyle {
+                    fg: Some("#ffda63".to_string()),
+                    bg: None,
+                    bold: true,
+                },
+            });
+        }
+    }
+
+    for (row, line) in art.iter().enumerate() {
+        for (col, glyph) in line.chars().enumerate() {
+            if glyph == ' ' {
+                continue;
+            }
+            cells.push(SceneCell {
+                x: start_x + col as i32,
+                y: start_y + row as i32,
+                glyph,
+                style: TextStyle::default(),
+            });
+        }
+    }
+
+    cells
+}
+
+fn damage_flash_cells(viewport: Viewport) -> Vec<SceneCell> {
+    let mut cells = Vec::new();
+    for y in 0..viewport.height as i32 {
+        for x in 0..viewport.width as i32 {
+            let near_edge =
+                x < 5 || y < 4 || x >= viewport.width as i32 - 5 || y >= viewport.height as i32 - 4;
+            if near_edge && (x + y) % 2 == 0 {
+                cells.push(SceneCell {
+                    x,
+                    y,
+                    glyph: '#',
+                    style: TextStyle {
+                        fg: Some("#b1182b".to_string()),
+                        bg: None,
+                        bold: true,
+                    },
+                });
+            }
+        }
+    }
+    cells
+}
+
+fn hud_style() -> TextStyle {
+    TextStyle {
+        fg: Some("#f3ead2".to_string()),
+        bg: Some("#000000".to_string()),
+        bold: true,
+    }
+}
+
 fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
     clear(frame, [0x08, 0x0b, 0x10, 0xff]);
 
@@ -3193,6 +4200,7 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
             "weapon" => [0xf0, 0xc6, 0x5b, 0xff],
             "reticle" => [0x9f, 0xf5, 0xff, 0xff],
             "minimap" => [0x9f, 0xf5, 0xff, 0xff],
+            "damage" => [0xb1, 0x18, 0x2b, 0xff],
             _ => [0xe6, 0xee, 0xf3, 0xff],
         };
 
@@ -3210,6 +4218,18 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
     }
 
     for overlay in &scene.overlays {
+        if let Some(bg) = style_bg_color(&overlay.style) {
+            fill_rect(
+                frame,
+                width,
+                height,
+                overlay.x * CHAR_WIDTH as i32 - 4,
+                overlay.y * CHAR_HEIGHT as i32 - 2,
+                overlay.text.chars().count() as i32 * CHAR_WIDTH as i32 + 8,
+                CHAR_HEIGHT as i32 + 4,
+                bg,
+            );
+        }
         draw_text(
             frame,
             width,
@@ -3224,6 +4244,10 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
 
 fn style_color(style: &TextStyle) -> Option<[u8; 4]> {
     style.fg.as_deref().and_then(parse_hex_color)
+}
+
+fn style_bg_color(style: &TextStyle) -> Option<[u8; 4]> {
+    style.bg.as_deref().and_then(parse_hex_color)
 }
 
 fn parse_hex_color(color: &str) -> Option<[u8; 4]> {
@@ -3241,6 +4265,23 @@ fn parse_hex_color(color: &str) -> Option<[u8; 4]> {
 fn clear(frame: &mut [u8], color: [u8; 4]) {
     for pixel in frame.chunks_exact_mut(4) {
         pixel.copy_from_slice(&color);
+    }
+}
+
+fn fill_rect(
+    frame: &mut [u8],
+    width: usize,
+    height: usize,
+    x: i32,
+    y: i32,
+    rect_width: i32,
+    rect_height: i32,
+    color: [u8; 4],
+) {
+    for py in y..(y + rect_height) {
+        for px in x..(x + rect_width) {
+            set_pixel(frame, width, height, px, py, color);
+        }
     }
 }
 
@@ -3586,6 +4627,19 @@ mod tests {
     }
 
     #[test]
+    fn menu_can_start_zombies_mode() {
+        let mut app = AppState::new();
+
+        let action =
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit8), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::StartScene);
+        assert_eq!(app.mode, AppMode::Zombies);
+        assert_eq!(app.zombies.round, 1);
+        assert!(app.zombies_map.voxel_count() > 10_000);
+    }
+
+    #[test]
     fn voxel_sandbox_selects_palette_blocks() {
         let mut app = AppState::new();
         app.start_voxel_sandbox();
@@ -3648,25 +4702,31 @@ mod tests {
             .assets
             .iter()
             .any(|asset| asset.name == "beacon block"));
+        assert!(viewer.assets.iter().any(|asset| asset.name == "zombie"));
     }
 
     #[test]
     fn asset_viewer_can_cycle_to_block_assets() {
         let mut viewer = AssetViewerState::new();
 
-        for _ in 0..8 {
+        for _ in 0..9 {
             viewer.select_next();
         }
 
         assert_eq!(viewer.selected_asset().name, "grass block");
         viewer.select_previous();
-        assert_eq!(viewer.selected_asset().name, "ash tray");
+        assert_eq!(viewer.selected_asset().name, "zombie");
     }
 
     #[test]
     fn parses_hex_text_style_color_for_window_renderer() {
         assert_eq!(parse_hex_color("#67b847"), Some([0x67, 0xb8, 0x47, 0xff]));
         assert_eq!(parse_hex_color("67b847"), None);
+    }
+
+    #[test]
+    fn hud_style_has_black_background_for_readability() {
+        assert_eq!(style_bg_color(&hud_style()), Some([0, 0, 0, 0xff]));
     }
 
     #[test]
@@ -4100,6 +5160,132 @@ mod tests {
             .expect("shooter scene should include bullet layer");
 
         assert!(!bullets.cells.is_empty());
+    }
+
+    #[test]
+    fn zombies_fire_awards_hit_and_kill_points_with_ammo() {
+        let mut app = AppState::new();
+        app.start_zombies();
+        app.zombies.zombies = vec![Zombie::new(Vec3::new(0.5, 0.0, -38.5), 1)];
+        app.zombies.zombies[0].health = app.zombies.weapon.damage();
+        let ammo_before = app.zombies.ammo_in_mag;
+
+        app.fire_weapon();
+
+        assert_eq!(app.zombies.ammo_in_mag, ammo_before - 1);
+        assert_eq!(app.zombies.kills, 1);
+        assert_eq!(
+            app.zombies.points,
+            500 + ZOMBIE_HIT_POINTS + ZOMBIE_KILL_POINTS
+        );
+        assert_eq!(
+            app.zombies.total_points,
+            ZOMBIE_HIT_POINTS + ZOMBIE_KILL_POINTS
+        );
+    }
+
+    #[test]
+    fn zombies_rounds_spawn_progressively_more_and_tougher_zombies() {
+        let mut zombies = ZombiesState::new();
+        zombies.zombies.clear();
+        zombies.queued_spawns = 0;
+        zombies.round_break_timer = 0.0;
+
+        zombies.update_rounds_and_zombies(
+            &build_zombies_map(&zombies),
+            zombies_start_camera().position,
+            0.1,
+        );
+
+        assert_eq!(zombies.round, 2);
+        assert_eq!(zombies.queued_spawns, 10);
+        assert_eq!(zombies.zombies.len(), 1);
+        assert!(zombies.zombies[0].max_health > Zombie::new(Vec3::ZERO, 1).max_health);
+    }
+
+    #[test]
+    fn zombies_doors_spend_points_and_open_new_area() {
+        let mut zombies = ZombiesState::new();
+        let mut world = build_zombies_map(&zombies);
+        zombies.points = ZOMBIE_DOOR_COST;
+
+        zombies.interact(&mut world, Vec3::new(0.5, WALK_EYE_HEIGHT, -27.5));
+
+        assert!(door_open(&zombies, ZombiesDoorKind::Building));
+        assert_eq!(zombies.points, 0);
+        assert_eq!(world.get(VoxelCoord::new(0, 4, -27)), None);
+    }
+
+    #[test]
+    fn zombies_wall_weapon_upgrades_weapon_and_refills_ammo() {
+        let mut zombies = ZombiesState::new();
+        let mut world = build_zombies_map(&zombies);
+        zombies.points = ZOMBIE_WALL_WEAPON_COST;
+
+        zombies.interact(&mut world, Vec3::new(33.0, WALK_EYE_HEIGHT, -18.0));
+
+        assert_eq!(zombies.weapon, ZombiesWeaponKind::WallRifle);
+        assert_eq!(zombies.points, 0);
+        assert_eq!(
+            zombies.ammo_in_mag,
+            ZombiesWeaponKind::WallRifle.magazine_size()
+        );
+        assert!(zombies.ammo_reserve > ZOMBIE_START_AMMO);
+    }
+
+    #[test]
+    fn zombies_take_three_hits_to_end_game() {
+        let mut zombies = ZombiesState::new();
+        zombies.zombies = vec![Zombie::new(Vec3::new(0.7, 0.0, -66.5), 1)];
+        let world = build_zombies_map(&zombies);
+        let player = zombies_start_camera().position;
+
+        for _ in 0..3 {
+            zombies.zombies[0].attack_cooldown = 0.0;
+            zombies.update_rounds_and_zombies(&world, player, 0.1);
+        }
+
+        assert_eq!(zombies.health_left(), 0);
+        assert!(zombies.game_over);
+    }
+
+    #[test]
+    fn zombies_scene_draws_bottom_right_weapon_and_hud() {
+        let mut app = AppState::new();
+        app.start_zombies();
+
+        let scene = app.frame(0.0, true);
+        let weapon = scene
+            .layers
+            .iter()
+            .find(|layer| layer.name == "weapon")
+            .expect("zombies scene should draw weapon");
+
+        assert!(weapon
+            .cells
+            .iter()
+            .any(|cell| cell.x > VIEWPORT.width as i32 - 35));
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("ROUND") && overlay.style.bg.is_some()));
+    }
+
+    #[test]
+    fn zombies_are_inserted_as_voxel_objects() {
+        let mut app = AppState::new();
+        app.start_zombies();
+        app.zombies.zombies = vec![Zombie::new(Vec3::new(0.5, 0.0, -38.5), 1)];
+        let world = zombies_world_with_zombies(&app.zombies_map, &app.zombies);
+
+        assert_eq!(
+            world.get(VoxelCoord::new(0, 4, -39)),
+            Some(VoxelCell::new(VoxelMaterial::Zombie))
+        );
+        assert!(app
+            .zombies
+            .zombie_index_for_voxel(VoxelCoord::new(0, 4, -39))
+            .is_some());
     }
 
     #[test]
