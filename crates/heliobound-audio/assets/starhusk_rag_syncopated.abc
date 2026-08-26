@@ -1,0 +1,184 @@
+X:1
+T:Starhusk Rag - Syncopated
+C:ChatGPT
+M:2/4
+L:1/8
+Q:1/4=108
+K:C
+P:A
+"C6"zE Gc | eG cE |
+"A7"z^C EG | A^C EG |
+"Dm7"zF Ad | fA dc |
+"G7"zB, DF | GB, DF |
+"C/E"zE Gc | BG cE |
+"E7"z^G Bd | eB d^G |
+"Am"zA ce | ac eA |
+"A7"zG E^C | AG E^C |
+"Dm7"zF Ad | cA dF |
+"G7"zB Gf | dB GF |
+"C6"zE Gc | eg cG |
+"C7"z_B GE | c_B GE |
+"F6"zA cf | ac fA |
+"F#dim7"z^F Ac | _eA c^F |
+"C/G"zG ce | gc eG |
+"A7"zA ^CE | GA E^C |
+"D7"z^F Ac | dA c^F |
+"G7"zG Bd | fB dG |
+"C6"ze dc | Gc EG |
+"G7"zB AG | FD B,G, |
+"C6"zE Gc | eG cE |
+"A7"z^C EG | A^C EG |
+"Dm7"zF Ad | fA dc |
+"G7"zB, DF | GB, DF |
+"C/E"zE Gc | BG cE |
+"E7"z^G Bd | eB d^G |
+"Am"zA ce | ae cA |
+"D7"z^F Ac | dA c^F |
+"F6"zA cf | ec fA |
+"Fm6"z_A cf | _ec f_A |
+"C/G"zG ce | gc eG |
+"A7"zA GE | ^CA, ^CE |
+"Dm7"zF Ad | cA dF |
+"G7"zB Gf | dB GF |
+"C6"zC EG | cG EC |
+"G7"G,2 z2 ||
+P:B
+"F6"zA cf | af cA |
+"C7"zG _Bc | e_B cG |
+"F6"zf ec | Af cA |
+"D7"z^F Ac | dA c^F |
+"Gm7"zG _Bd | gd _BG |
+"C7"zE G_B | cG _BE |
+"Fmaj7"zA ce | fc eA |
+"F7"z_E Ac | _eA c_E |
+"Bb6"z_B df | _bd f_B |
+"Bdim7"zB df | _af dB |
+"F/C"zc fa | c'a fc |
+"D7"zd ^fa | c'a f^d |
+"Gm7"z_b ag | d_b gd |
+"C7"ze c_B | Gc _BE |
+"F6"zf cA | Fc AF |
+"C7"zE G_B | cE G_B |
+"F6"zA cf | aA cf |
+"A7"z^C EG | A^C EG |
+"Dm7"zd cA | Fd Ac |
+"G7"zB, DF | GB, DF |
+"Cmaj7"zE GB | cG BE |
+"E7"z^G Bd | e^G Bd |
+"Am7"zA ce | ge cA |
+"A7"zG E^C | AE ^CG |
+"Dm7"zF Ad | fA dc |
+"G7"zB df | gb fd |
+"C6"ze gc' | e'c' ge |
+"C#dim7"z^c eg | _be g^c |
+"Dm7"zd fa | c'a fd |
+"G7"zb af | dg fd |
+"C6"zc eg | c'e' gc' |
+"G7"G2 z2 ||
+P:C
+"Am6"zA ce | ^fA ce |
+"E7"z^G Bd | eB d^G |
+"Am6"za ec | A e cA |
+"A7"zG E^C | A,E ^CG |
+"Dm9"zF Ac | eA cF |
+"G13"zB de | fB de |
+"Cmaj9"zE GB | dG BE |
+"E7#5"z^G Bc | eB c^G |
+"Am9"zA ce | b e cA |
+"Fmaj7"zA ce | a e cA |
+"B7"z^D ^FA | B^F A^D |
+"E7"zE ^GB | dB ^GE |
+"Am/C"zc ea | c'a ec |
+"D7"zd ^fa | c'a f^d |
+"Gmaj7"zB d^f | gd ^fB |
+"G7"zf dB | Gd Bf |
+"Cmaj9"zE GB | dB GE |
+"A7"z^C EG | A^C EG |
+"Dm9"zF Ac | eA cF |
+"G13"zB de | ge dB |
+"C6/9"ze dc | Ac GE |
+"E7"z^G Bd | eB d^G |
+"Am9"za ge | ca eg |
+"F#dim7"z^F Ac | _eA c^F |
+"G7"zG Bd | fB dG |
+"Ab7"z_A c_e | _g_e c_A |
+"G7"zG Bd | fB dG |
+"C6"zE Gc | eG cE |
+"A7"zA ^CE | GE ^CA, |
+"D7"z^F Ac | dA c^F |
+"G7"zB df | ab fd |
+"G7b9"z_A GF | DG F_A ||
+P:D
+"C6"zc eg | c'g ec |
+"C#dim7"z^c eg | _b g e^c |
+"Dm7"zd fa | c'a fd |
+"D#dim7"z^d ^fa | c'a f^d |
+"Em7"ze gb | d'b ge |
+"A7"z^c' ag | e^c' ga |
+"Dm7"zf ed | Ad fe |
+"G7"zB df | gb fd |
+"Cmaj9"ze gb | d'b ge |
+"E7"z^g bd' | e'b d'^g |
+"Am9"za c'e' | b e' c'a |
+"A7"zg e^c | a e ^cg |
+"Dm9"zf ac' | e'c' af |
+"G13"zb d'e' | g'e' d'b |
+"Cmaj9"ze' d'b | ge' bg |
+"C7"z_b ge | c_B eg |
+"Fmaj9"za c'e' | g'e' c'a |
+"FmMaj7"z_a c'e' | g'e' c'_a |
+"C/E"zg ec | Gc eg |
+"A7"za ge | ^c'a eg |
+"Dm9"zf ac' | e'c' af |
+"G7"zb af | dg fa |
+"Em7"ze gb | d'b ge |
+"A7"z^c' ba | e^c' ab |
+"Dm7"zf ed | Ad fe |
+"Ab7"z_a _g_e | c_a _eg |
+"G13"zg bd' | e'd' bg |
+"G7b9"z_a gf | dg f_a |
+"C6"ze gc' | e'c' ge |
+"A7"z^c' ag | e^c' ga |
+"Dm7"zf ad' | f'd' af |
+"G7"zb d'f' | g'f' d'b |
+"Cmaj9"ze' d'b | gd' bg |
+"F#dim7"z^f ac' | _e'c' a^f |
+"C/G"zg c'e' | g'e' c'g |
+"G7"zf' d'b | gd' bf' ||
+P:E
+"C6"ze' c'g | ec' ge |
+"A7"z^c' ae | ^c e a^c' |
+"Dm7"zf' d'a | f d' af' |
+"G7"zb gd | BG db |
+"Cmaj7"ze' d'b | ge' bd' |
+"E7"z^g bd' | e'b d'^g |
+"Am9"ze' c'b | ac' be' |
+"A7"zg e^c | A^c eg |
+"Dm9"zf ac' | e'c' af |
+"G13"zb d'e' | g'e' d'b |
+"Cmaj9"ze' g'b' | d''b' g'e' |
+"C7"z_b' g'e' | c'_b' e'g' |
+"Fmaj9"za' f'e' | c'e' f'a' |
+"F#dim7"z^f' a'c'' | _e''c'' a'^f' |
+"C/G"zg' e'c' | ge' c'g' |
+"A7"za' g'e' | ^c'e' g'a' |
+"D7"z^f' a'c'' | d''c'' a'^f' |
+"G13"zg' b'd'' | e''d'' b'g' |
+"C6"zc'' g'e' | c'e' g'c'' |
+"G7"zb' a'g' | f'g' a'b' |
+"C6"ze' g'c'' | e''c'' g'e' |
+"A7"z^c'' a'g' | e'a' g'^c'' |
+"Dm9"zf' a'c'' | e''c'' a'f' |
+"G13"zb' d''e'' | g''e'' d''b' |
+"Cmaj9"ze'' d''b' | g'b' d''e'' |
+"E7"z^g' b'd'' | e''d'' b'^g' |
+"Am9"za' c''e'' | b''e'' c''a' |
+"Ab7"z_a' c''_e'' | _g''_e'' c''_a' |
+"G13"zg' b'd'' | e''d'' b'g' |
+"G7b9"z_a' g'f' | d'g' f'_a' |
+"C6/9"ze' d'c' | gc' d'e' |
+"A7"za ge | ^ca eg |
+"Dm9"zf ac' | e'c' af |
+"G13"zb d'e' | g'e' d'b |
+"C6"zc' eg | c''g' e'c' |
+"C6"c4 ||

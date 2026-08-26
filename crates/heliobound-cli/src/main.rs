@@ -62,6 +62,9 @@ const CORN_WALK_SPEED: f32 = 34.0;
 const CORN_COLLISION_RADIUS: f32 = 1.15;
 const CORN_STALK_BASE_HEIGHT: i32 = 15;
 const CORN_MINIMAP_RADIUS: i32 = 6;
+const BAR_EYE_HEIGHT: f32 = 10.5;
+const BAR_WALK_SPEED: f32 = 18.0;
+const BAR_COLLISION_RADIUS: f32 = 0.85;
 const STANDARD_WALK_PROFILE: WalkProfile = WalkProfile {
     eye_height: WALK_EYE_HEIGHT,
     speed: WALK_SPEED,
@@ -71,6 +74,11 @@ const CORN_WALK_PROFILE: WalkProfile = WalkProfile {
     eye_height: CORN_WALK_EYE_HEIGHT,
     speed: CORN_WALK_SPEED,
     collision_radius: CORN_COLLISION_RADIUS,
+};
+const BAR_WALK_PROFILE: WalkProfile = WalkProfile {
+    eye_height: BAR_EYE_HEIGHT,
+    speed: BAR_WALK_SPEED,
+    collision_radius: BAR_COLLISION_RADIUS,
 };
 const NPC_BODY_OFFSETS: [(i32, i32, i32, bool); 19] = [
     (-1, 1, 0, false),
@@ -222,6 +230,7 @@ enum AppMode {
     CityWalk,
     CityShooter,
     CornMaze,
+    BarScene,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,6 +248,7 @@ struct AppState {
     planet: ProceduralPlanet,
     city: VoxelWorld,
     doom_map: VoxelWorld,
+    bar_scene: VoxelWorld,
     corn_maze: CornMazeState,
     planet_builder: SceneBuilder,
     city_builder: SceneBuilder,
@@ -257,6 +267,7 @@ impl AppState {
             planet: build_demo_planet(),
             city: build_demo_city(),
             doom_map: build_doom_map(),
+            bar_scene: build_bar_scene(),
             corn_maze: CornMazeState::new(),
             planet_builder: SceneBuilder::new(
                 GraphicsConfig {
@@ -300,6 +311,10 @@ impl AppState {
                 }
                 (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit4)) => {
                     self.start_corn_maze();
+                    return KeyboardAction::StartScene;
+                }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit5)) => {
+                    self.start_bar();
                     return KeyboardAction::StartScene;
                 }
                 (AppMode::Menu, PhysicalKey::Code(KeyCode::Escape)) => {
@@ -357,6 +372,12 @@ impl AppState {
         self.input = PlayerInput::default();
     }
 
+    fn start_bar(&mut self) {
+        self.mode = AppMode::BarScene;
+        self.camera = bar_start_camera();
+        self.input = PlayerInput::default();
+    }
+
     fn frame(&mut self, dt: f32, mouse_captured: bool) -> Scene {
         self.tick = self.tick.wrapping_add(1);
 
@@ -407,6 +428,20 @@ impl AppState {
                 render_corn_maze_scene(&mut scene, &self.corn_maze, &self.camera, mouse_captured);
                 scene
             }
+            AppMode::BarScene => {
+                update_walking_camera_with_profile(
+                    &mut self.camera,
+                    &self.input,
+                    &self.bar_scene,
+                    BAR_WALK_PROFILE,
+                    dt,
+                );
+                let mut scene = self
+                    .city_builder
+                    .build(&self.bar_scene, &self.camera, self.tick);
+                render_bar_scene(&mut scene, mouse_captured);
+                scene
+            }
         }
     }
 
@@ -416,7 +451,7 @@ impl AppState {
             AppMode::PlanetFlight => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Unrestricted)
             }
-            AppMode::CityWalk | AppMode::CityShooter | AppMode::CornMaze => {
+            AppMode::CityWalk | AppMode::CityShooter | AppMode::CornMaze | AppMode::BarScene => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped)
             }
         }
@@ -438,6 +473,7 @@ fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
     match mode {
         AppMode::CityWalk => audio.enter_city_mode(),
         AppMode::CornMaze => audio.enter_corn_maze_mode(),
+        AppMode::BarScene => audio.enter_bar_mode(),
         AppMode::CityShooter => audio.enter_doom_mode(),
         AppMode::Menu | AppMode::PlanetFlight => audio.leave_ambience(),
     }
@@ -499,6 +535,15 @@ fn corn_maze_start_camera(maze: &CornMazeState) -> Camera {
     )
     .with_fov_y(64.0_f32.to_radians())
     .with_max_distance(180.0)
+}
+
+fn bar_start_camera() -> Camera {
+    look_at(
+        Vec3::new(0.5, BAR_EYE_HEIGHT, -34.5),
+        Vec3::new(-34.0, BAR_EYE_HEIGHT, 28.0),
+    )
+    .with_fov_y(66.0_f32.to_radians())
+    .with_max_distance(120.0)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1106,6 +1151,575 @@ fn build_doom_map() -> VoxelWorld {
     DoomMapGenerator::new(DoomMapConfig::default()).generate()
 }
 
+#[derive(Clone, Copy, Debug)]
+enum BarFacing {
+    North,
+    South,
+    East,
+    West,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BarPose {
+    Standing,
+    Sitting,
+}
+
+fn build_bar_scene() -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+
+    stamp_bar_room(&mut world);
+    stamp_bar_counter(&mut world);
+    stamp_stage(&mut world);
+    stamp_tables_and_chairs(&mut world);
+    stamp_jukebox(&mut world);
+    stamp_dart_boards(&mut world);
+    stamp_bar_people(&mut world);
+
+    world
+}
+
+fn stamp_bar_room(world: &mut VoxelWorld) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-72, 0, -48),
+        VoxelCoord::new(72, 0, 48),
+        VoxelMaterial::Regolith,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-72, 1, -48),
+        VoxelCoord::new(-71, 18, 48),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(71, 1, -48),
+        VoxelCoord::new(72, 18, 48),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-72, 1, -48),
+        VoxelCoord::new(72, 18, -47),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-72, 1, 47),
+        VoxelCoord::new(72, 18, 48),
+        VoxelMaterial::Basalt,
+    );
+
+    for z in (-42..=42).step_by(12) {
+        fill_cuboid(
+            world,
+            VoxelCoord::new(-68, 18, z),
+            VoxelCoord::new(68, 18, z + 1),
+            VoxelMaterial::ShipHull,
+        );
+    }
+    for x in (-60..=60).step_by(20) {
+        fill_cuboid(
+            world,
+            VoxelCoord::new(x, 1, -44),
+            VoxelCoord::new(x + 1, 17, -43),
+            VoxelMaterial::ShipHull,
+        );
+        fill_cuboid(
+            world,
+            VoxelCoord::new(x, 1, 43),
+            VoxelCoord::new(x + 1, 17, 44),
+            VoxelMaterial::ShipHull,
+        );
+    }
+}
+
+fn stamp_bar_counter(world: &mut VoxelWorld) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(43, 1, -34),
+        VoxelCoord::new(58, 5, 32),
+        VoxelMaterial::Habitat,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(41, 6, -34),
+        VoxelCoord::new(59, 6, 32),
+        VoxelMaterial::ShipHull,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(39, 2, -33),
+        VoxelCoord::new(39, 2, 31),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(62, 1, -38),
+        VoxelCoord::new(68, 14, 36),
+        VoxelMaterial::Habitat,
+    );
+
+    for y in [4, 8, 12] {
+        fill_cuboid(
+            world,
+            VoxelCoord::new(59, y, -36),
+            VoxelCoord::new(62, y, 34),
+            VoxelMaterial::ShipHull,
+        );
+    }
+    for z in (-31..=29).step_by(5) {
+        stamp_bottle(world, 40, 7, z);
+        stamp_bottle(world, 60, 5, z - 1);
+        stamp_bottle(world, 60, 9, z + 1);
+        stamp_bottle(world, 60, 13, z);
+    }
+}
+
+fn stamp_stage(world: &mut VoxelWorld) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-62, 1, 20),
+        VoxelCoord::new(-16, 3, 43),
+        VoxelMaterial::ShipHull,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-62, 4, 43),
+        VoxelCoord::new(-16, 16, 45),
+        VoxelMaterial::CarbonLife,
+    );
+    for x in (-58..=-20).step_by(8) {
+        fill_cuboid(
+            world,
+            VoxelCoord::new(x, 4, 42),
+            VoxelCoord::new(x + 1, 15, 42),
+            VoxelMaterial::Basalt,
+        );
+    }
+
+    stamp_microphone(world, -38, 4, 30);
+    stamp_drum_kit(world, -52, 4, 35);
+    stamp_bottle(world, -22, 4, 25);
+}
+
+fn stamp_tables_and_chairs(world: &mut VoxelWorld) {
+    for (x, z) in [(-30, -22), (-4, -20), (22, -20), (-24, 6), (18, 7)] {
+        stamp_table(world, x, z);
+        stamp_chair(world, x - 7, z, BarFacing::East);
+        stamp_chair(world, x + 7, z, BarFacing::West);
+        stamp_chair(world, x, z - 7, BarFacing::South);
+    }
+
+    for z in (-25..=25).step_by(10) {
+        stamp_chair(world, 35, z, BarFacing::East);
+    }
+}
+
+fn stamp_table(world: &mut VoxelWorld, x: i32, z: i32) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x - 4, 5, z - 3),
+        VoxelCoord::new(x + 4, 5, z + 3),
+        VoxelMaterial::Habitat,
+    );
+    for (dx, dz) in [(-3, -2), (3, -2), (-3, 2), (3, 2)] {
+        fill_cuboid(
+            world,
+            VoxelCoord::new(x + dx, 1, z + dz),
+            VoxelCoord::new(x + dx, 4, z + dz),
+            VoxelMaterial::Basalt,
+        );
+    }
+    stamp_ash_tray(world, x, 6, z);
+    stamp_bottle(world, x + 3, 6, z - 1);
+}
+
+fn stamp_chair(world: &mut VoxelWorld, x: i32, z: i32, facing: BarFacing) {
+    fill_oriented_cuboid(
+        world,
+        x,
+        z,
+        facing,
+        VoxelCoord::new(-2, 2, -2),
+        VoxelCoord::new(2, 3, 2),
+        VoxelMaterial::Habitat,
+    );
+    fill_oriented_cuboid(
+        world,
+        x,
+        z,
+        facing,
+        VoxelCoord::new(-2, 4, 2),
+        VoxelCoord::new(2, 9, 2),
+        VoxelMaterial::ShipHull,
+    );
+    for (lx, lz) in [(-2, -2), (2, -2), (-2, 2), (2, 2)] {
+        fill_oriented_cuboid(
+            world,
+            x,
+            z,
+            facing,
+            VoxelCoord::new(lx, 1, lz),
+            VoxelCoord::new(lx, 2, lz),
+            VoxelMaterial::Basalt,
+        );
+    }
+}
+
+fn stamp_jukebox(world: &mut VoxelWorld) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-68, 1, -36),
+        VoxelCoord::new(-59, 10, -25),
+        VoxelMaterial::Habitat,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-67, 5, -35),
+        VoxelCoord::new(-58, 10, -26),
+        VoxelMaterial::Glass,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(-66, 7, -34),
+        VoxelCoord::new(-59, 8, -27),
+        VoxelMaterial::Beacon,
+    );
+    for z in [-34, -30, -26] {
+        fill_cuboid(
+            world,
+            VoxelCoord::new(-58, 2, z),
+            VoxelCoord::new(-58, 4, z),
+            VoxelMaterial::ShipHull,
+        );
+    }
+}
+
+fn stamp_dart_boards(world: &mut VoxelWorld) {
+    for z in [8_i32, 24] {
+        for y in 7_i32..=13 {
+            for dz in -3_i32..=3 {
+                let distance = (y - 10).abs() + dz.abs();
+                if distance <= 4 {
+                    let material = if distance <= 1 {
+                        VoxelMaterial::Beacon
+                    } else if distance == 2 {
+                        VoxelMaterial::Glass
+                    } else {
+                        VoxelMaterial::Habitat
+                    };
+                    world.set(VoxelCoord::new(-70, y, z + dz), VoxelCell::new(material));
+                }
+            }
+        }
+    }
+}
+
+fn stamp_bar_people(world: &mut VoxelWorld) {
+    let people = [
+        (-37, 29, BarFacing::South, BarPose::Standing),
+        (-52, 31, BarFacing::East, BarPose::Standing),
+        (-37, -22, BarFacing::East, BarPose::Sitting),
+        (-23, -22, BarFacing::West, BarPose::Sitting),
+        (-4, -27, BarFacing::North, BarPose::Sitting),
+        (29, -20, BarFacing::West, BarPose::Sitting),
+        (35, -5, BarFacing::East, BarPose::Sitting),
+        (35, 15, BarFacing::East, BarPose::Sitting),
+        (6, 6, BarFacing::West, BarPose::Standing),
+        (48, 26, BarFacing::West, BarPose::Standing),
+        (-60, -12, BarFacing::East, BarPose::Standing),
+    ];
+
+    for (index, (x, z, facing, pose)) in people.into_iter().enumerate() {
+        stamp_bar_person(world, x, z, facing, pose, index);
+    }
+}
+
+fn stamp_bar_person(
+    world: &mut VoxelWorld,
+    x: i32,
+    z: i32,
+    facing: BarFacing,
+    pose: BarPose,
+    index: usize,
+) {
+    let clothing = if index % 3 == 0 {
+        VoxelMaterial::SiliconLife
+    } else if index % 3 == 1 {
+        VoxelMaterial::Glass
+    } else {
+        VoxelMaterial::Habitat
+    };
+    let accent = if index % 2 == 0 {
+        VoxelMaterial::Beacon
+    } else {
+        VoxelMaterial::ShipHull
+    };
+
+    match pose {
+        BarPose::Standing => {
+            fill_oriented_cuboid(
+                world,
+                x,
+                z,
+                facing,
+                VoxelCoord::new(-2, 1, -1),
+                VoxelCoord::new(-1, 5, 1),
+                VoxelMaterial::CarbonLife,
+            );
+            fill_oriented_cuboid(
+                world,
+                x,
+                z,
+                facing,
+                VoxelCoord::new(1, 1, -1),
+                VoxelCoord::new(2, 5, 1),
+                VoxelMaterial::CarbonLife,
+            );
+            fill_oriented_cuboid(
+                world,
+                x,
+                z,
+                facing,
+                VoxelCoord::new(-2, 6, -1),
+                VoxelCoord::new(2, 10, 1),
+                clothing,
+            );
+            fill_oriented_cuboid(
+                world,
+                x,
+                z,
+                facing,
+                VoxelCoord::new(-4, 7, 0),
+                VoxelCoord::new(-3, 10, 0),
+                VoxelMaterial::CarbonLife,
+            );
+            fill_oriented_cuboid(
+                world,
+                x,
+                z,
+                facing,
+                VoxelCoord::new(3, 7, 0),
+                VoxelCoord::new(4, 10, 0),
+                VoxelMaterial::CarbonLife,
+            );
+            stamp_bar_head(world, x, z, facing, 11, accent);
+        }
+        BarPose::Sitting => {
+            fill_oriented_cuboid(
+                world,
+                x,
+                z,
+                facing,
+                VoxelCoord::new(-2, 1, -2),
+                VoxelCoord::new(-1, 3, 1),
+                VoxelMaterial::CarbonLife,
+            );
+            fill_oriented_cuboid(
+                world,
+                x,
+                z,
+                facing,
+                VoxelCoord::new(1, 1, -2),
+                VoxelCoord::new(2, 3, 1),
+                VoxelMaterial::CarbonLife,
+            );
+            fill_oriented_cuboid(
+                world,
+                x,
+                z,
+                facing,
+                VoxelCoord::new(-2, 4, -1),
+                VoxelCoord::new(2, 8, 1),
+                clothing,
+            );
+            fill_oriented_cuboid(
+                world,
+                x,
+                z,
+                facing,
+                VoxelCoord::new(-4, 5, 0),
+                VoxelCoord::new(-3, 8, 0),
+                VoxelMaterial::CarbonLife,
+            );
+            fill_oriented_cuboid(
+                world,
+                x,
+                z,
+                facing,
+                VoxelCoord::new(3, 5, 0),
+                VoxelCoord::new(4, 8, 0),
+                VoxelMaterial::CarbonLife,
+            );
+            stamp_bar_head(world, x, z, facing, 9, accent);
+        }
+    }
+}
+
+fn stamp_bar_head(
+    world: &mut VoxelWorld,
+    x: i32,
+    z: i32,
+    facing: BarFacing,
+    base_y: i32,
+    accent: VoxelMaterial,
+) {
+    fill_oriented_cuboid(
+        world,
+        x,
+        z,
+        facing,
+        VoxelCoord::new(-1, base_y, -1),
+        VoxelCoord::new(1, base_y + 2, 1),
+        VoxelMaterial::CarbonLife,
+    );
+    set_oriented(world, x, z, facing, -1, base_y + 1, -2, accent);
+    set_oriented(world, x, z, facing, 1, base_y + 1, -2, accent);
+    fill_oriented_cuboid(
+        world,
+        x,
+        z,
+        facing,
+        VoxelCoord::new(-2, base_y + 3, -1),
+        VoxelCoord::new(2, base_y + 3, 1),
+        accent,
+    );
+}
+
+fn stamp_bottle(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
+    world.set(
+        VoxelCoord::new(x, y, z),
+        VoxelCell::new(VoxelMaterial::Glass),
+    );
+    world.set(
+        VoxelCoord::new(x, y + 1, z),
+        VoxelCell::new(VoxelMaterial::Glass),
+    );
+    world.set(
+        VoxelCoord::new(x, y + 2, z),
+        VoxelCell::new(VoxelMaterial::Beacon),
+    );
+}
+
+fn stamp_ash_tray(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
+    for (dx, dz) in [(-1, 0), (0, -1), (0, 0), (0, 1), (1, 0)] {
+        world.set(
+            VoxelCoord::new(x + dx, y, z + dz),
+            VoxelCell::new(VoxelMaterial::Basalt),
+        );
+    }
+    world.set(
+        VoxelCoord::new(x, y + 1, z),
+        VoxelCell::new(VoxelMaterial::Glass),
+    );
+}
+
+fn stamp_microphone(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x, y, z),
+        VoxelCoord::new(x, y + 8, z),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x - 1, y + 8, z - 1),
+        VoxelCoord::new(x + 1, y + 9, z + 1),
+        VoxelMaterial::Glass,
+    );
+}
+
+fn stamp_drum_kit(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x - 3, y, z - 1),
+        VoxelCoord::new(x + 3, y + 3, z + 1),
+        VoxelMaterial::Habitat,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x - 5, y + 4, z - 3),
+        VoxelCoord::new(x - 2, y + 4, z),
+        VoxelMaterial::Glass,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x + 2, y + 5, z - 3),
+        VoxelCoord::new(x + 5, y + 5, z),
+        VoxelMaterial::Glass,
+    );
+}
+
+fn fill_cuboid(world: &mut VoxelWorld, a: VoxelCoord, b: VoxelCoord, material: VoxelMaterial) {
+    let min_x = a.x.min(b.x);
+    let max_x = a.x.max(b.x);
+    let min_y = a.y.min(b.y);
+    let max_y = a.y.max(b.y);
+    let min_z = a.z.min(b.z);
+    let max_z = a.z.max(b.z);
+
+    for y in min_y..=max_y {
+        for z in min_z..=max_z {
+            for x in min_x..=max_x {
+                world.set(VoxelCoord::new(x, y, z), VoxelCell::new(material));
+            }
+        }
+    }
+}
+
+fn fill_oriented_cuboid(
+    world: &mut VoxelWorld,
+    origin_x: i32,
+    origin_z: i32,
+    facing: BarFacing,
+    a: VoxelCoord,
+    b: VoxelCoord,
+    material: VoxelMaterial,
+) {
+    let min_x = a.x.min(b.x);
+    let max_x = a.x.max(b.x);
+    let min_y = a.y.min(b.y);
+    let max_y = a.y.max(b.y);
+    let min_z = a.z.min(b.z);
+    let max_z = a.z.max(b.z);
+
+    for y in min_y..=max_y {
+        for z in min_z..=max_z {
+            for x in min_x..=max_x {
+                set_oriented(world, origin_x, origin_z, facing, x, y, z, material);
+            }
+        }
+    }
+}
+
+fn set_oriented(
+    world: &mut VoxelWorld,
+    origin_x: i32,
+    origin_z: i32,
+    facing: BarFacing,
+    local_x: i32,
+    y: i32,
+    local_z: i32,
+    material: VoxelMaterial,
+) {
+    let (right_x, right_z, forward_x, forward_z) = match facing {
+        BarFacing::North => (1, 0, 0, -1),
+        BarFacing::South => (-1, 0, 0, 1),
+        BarFacing::East => (0, 1, 1, 0),
+        BarFacing::West => (0, -1, -1, 0),
+    };
+    world.set(
+        VoxelCoord::new(
+            origin_x + local_x * right_x + local_z * forward_x,
+            y,
+            origin_z + local_x * right_z + local_z * forward_z,
+        ),
+        VoxelCell::new(material),
+    );
+}
+
 fn build_corn_maze() -> (VoxelWorld, Vec<bool>, Vec3, Vec3) {
     let open = carve_corn_maze_tiles();
     let mut world = VoxelWorld::new();
@@ -1442,7 +2056,14 @@ fn build_menu_scene(tick: u64) -> Scene {
     });
     scene.overlays.push(Overlay {
         x: 48,
-        y: 56,
+        y: 53,
+        z: 10,
+        text: "5  STARHUSK BAR".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 48,
+        y: 60,
         z: 10,
         text: "WASD MOVE   CLICK/SPACE FIRE   M MENU".to_string(),
         style: TextStyle::default(),
@@ -1459,6 +2080,19 @@ fn render_city_walk_scene(scene: &mut Scene, figures: &CityFigureState, mouse_ca
             "CITY WALK  figures {} watching {}  mouse {}  M menu",
             figures.figures.len(),
             figures.watching_count(),
+            if mouse_captured { "locked" } else { "free" }
+        ),
+        style: TextStyle::default(),
+    });
+}
+
+fn render_bar_scene(scene: &mut Scene, mouse_captured: bool) {
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "STARHUSK BAR  granular voxel crowd  mouse {}  M menu",
             if mouse_captured { "locked" } else { "free" }
         ),
         style: TextStyle::default(),
@@ -2086,6 +2720,46 @@ mod tests {
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::CornMaze);
+    }
+
+    #[test]
+    fn menu_can_start_bar_scene_mode() {
+        let mut app = AppState::new();
+
+        let action =
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit5), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::StartScene);
+        assert_eq!(app.mode, AppMode::BarScene);
+        assert_eq!(app.camera.position.y, BAR_EYE_HEIGHT);
+    }
+
+    #[test]
+    fn bar_scene_contains_granular_people_and_props() {
+        let bar = build_bar_scene();
+
+        assert!(bar.voxel_count() > 20_000);
+        assert!(BAR_EYE_HEIGHT > WALK_EYE_HEIGHT * 3.0);
+        assert_eq!(
+            bar.get(VoxelCoord::new(-36, 12, 27)),
+            Some(VoxelCell::new(VoxelMaterial::Beacon))
+        );
+        assert_eq!(
+            bar.get(VoxelCoord::new(40, 9, -31)),
+            Some(VoxelCell::new(VoxelMaterial::Beacon))
+        );
+        assert_eq!(
+            bar.get(VoxelCoord::new(-30, 7, -22)),
+            Some(VoxelCell::new(VoxelMaterial::Glass))
+        );
+        assert_eq!(
+            bar.get(VoxelCoord::new(-62, 8, -34)),
+            Some(VoxelCell::new(VoxelMaterial::Beacon))
+        );
+        assert_eq!(
+            bar.get(VoxelCoord::new(-70, 10, 8)),
+            Some(VoxelCell::new(VoxelMaterial::Beacon))
+        );
     }
 
     #[test]

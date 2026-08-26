@@ -18,6 +18,7 @@ z4 _B,,6 z2 F,4 z6 C,,8 z8
 "#;
 pub const GLASS_STAIRCASE_ABC: &str = include_str!("../assets/glass_staircase.abc");
 pub const ROWS_THAT_MOVE_ABC: &str = include_str!("../assets/rows_that_move.abc");
+pub const STARHUSK_RAG_ABC: &str = include_str!("../assets/starhusk_rag_syncopated.abc");
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NoteEvent {
@@ -70,6 +71,10 @@ impl GameAudio {
         self.set_ambience(AmbienceKind::CornMaze);
     }
 
+    pub fn enter_bar_mode(&mut self) {
+        self.set_ambience(AmbienceKind::Bar);
+    }
+
     pub fn enter_doom_mode(&mut self) {
         self.set_ambience(AmbienceKind::Doom);
     }
@@ -95,6 +100,7 @@ impl GameAudio {
             match ambience {
                 AmbienceKind::City => backend.start_city_ambience(),
                 AmbienceKind::CornMaze => backend.start_corn_maze_ambience(),
+                AmbienceKind::Bar => backend.start_bar_ambience(),
                 AmbienceKind::Doom => backend.start_backrooms_ambience(),
             }
         }
@@ -121,12 +127,17 @@ impl GameAudio {
     pub fn in_corn_maze_mode(&self) -> bool {
         self.ambience == Some(AmbienceKind::CornMaze)
     }
+
+    pub fn in_bar_mode(&self) -> bool {
+        self.ambience == Some(AmbienceKind::Bar)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AmbienceKind {
     City,
     CornMaze,
+    Bar,
     Doom,
 }
 
@@ -165,6 +176,19 @@ impl RodioBackend {
         };
 
         let samples = synthesize_abc_limited(&tune, 0.16, CITY_AMBIENCE_SECONDS);
+        let player = Player::connect_new(self.sink.mixer());
+        player.set_volume(0.5);
+        player.append(samples_buffer(samples).repeat_infinite());
+        self.ambience = Some(player);
+    }
+
+    fn start_bar_ambience(&mut self) {
+        self.stop_ambience();
+        let Ok(tune) = parse_abc(STARHUSK_RAG_ABC) else {
+            return;
+        };
+
+        let samples = synthesize_abc_limited(&tune, 0.15, CITY_AMBIENCE_SECONDS);
         let player = Player::connect_new(self.sink.mixer());
         player.set_volume(0.5);
         player.append(samples_buffer(samples).repeat_infinite());
@@ -607,6 +631,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_starhusk_rag_asset() {
+        let tune = parse_abc(STARHUSK_RAG_ABC).unwrap();
+
+        assert_eq!(tune.title.as_deref(), Some("Starhusk Rag - Syncopated"));
+        assert_eq!(tune.tempo, 108.0);
+        assert!(tune.events.len() > 500);
+        assert!(tune
+            .events
+            .iter()
+            .filter_map(|event| event.frequency_hz)
+            .any(|freq| freq > 2_000.0));
+    }
+
+    #[test]
     fn parses_accidentals_octaves_and_fractional_lengths() {
         let tune = parse_abc("L:1/4\nQ:60\nK:C\n^C,3/2 _d/2 =F\n").unwrap();
 
@@ -668,8 +706,13 @@ mod tests {
         assert!(audio.in_corn_maze_mode());
         assert!(!audio.in_city_mode());
 
+        audio.enter_bar_mode();
+        assert!(audio.in_bar_mode());
+        assert!(!audio.in_corn_maze_mode());
+
         audio.leave_ambience();
         assert!(!audio.in_city_mode());
         assert!(!audio.in_corn_maze_mode());
+        assert!(!audio.in_bar_mode());
     }
 }
