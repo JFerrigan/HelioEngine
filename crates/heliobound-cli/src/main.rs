@@ -315,6 +315,7 @@ struct AppState {
     input: PlayerInput,
     city_figures: CityFigureState,
     shooter: ShooterState,
+    viewmodel_bob: ViewmodelBob,
     audio_events: Vec<SoundEffect>,
     tick: u64,
 }
@@ -350,6 +351,7 @@ impl AppState {
             input: PlayerInput::default(),
             city_figures: CityFigureState::new(),
             shooter: ShooterState::new(),
+            viewmodel_bob: ViewmodelBob::default(),
             audio_events: Vec::new(),
             tick: 0,
         }
@@ -473,6 +475,7 @@ impl AppState {
         self.camera = doom_start_camera();
         self.input = PlayerInput::default();
         self.shooter = ShooterState::new();
+        self.viewmodel_bob = ViewmodelBob::default();
     }
 
     fn start_corn_maze(&mut self) {
@@ -508,6 +511,7 @@ impl AppState {
         self.zombies_map = build_zombies_map(&self.zombies);
         self.camera = zombies_start_camera();
         self.input = PlayerInput::default();
+        self.viewmodel_bob = ViewmodelBob::default();
     }
 
     fn frame(&mut self, dt: f32, mouse_captured: bool) -> Scene {
@@ -531,7 +535,13 @@ impl AppState {
                 scene
             }
             AppMode::CityShooter => {
+                let before_move = self.camera.position;
                 update_walking_camera(&mut self.camera, &self.input, &self.doom_map, dt);
+                self.viewmodel_bob.update(
+                    horizontal_distance(before_move, self.camera.position),
+                    moving_on_ground(&self.input),
+                    dt,
+                );
                 if self
                     .shooter
                     .update(&self.doom_map, self.camera.position, dt)
@@ -542,7 +552,13 @@ impl AppState {
                 let mut scene = self
                     .city_builder
                     .build(&render_world, &self.camera, self.tick);
-                render_shooter_scene(&mut scene, &self.camera, &self.shooter, mouse_captured);
+                render_shooter_scene(
+                    &mut scene,
+                    &self.camera,
+                    &self.shooter,
+                    self.viewmodel_bob.offset(),
+                    mouse_captured,
+                );
                 scene
             }
             AppMode::CornMaze => {
@@ -593,8 +609,14 @@ impl AppState {
                 scene
             }
             AppMode::Zombies => {
+                let before_move = self.camera.position;
                 self.zombies
                     .update_player(&mut self.camera, &self.input, &self.zombies_map, dt);
+                self.viewmodel_bob.update(
+                    horizontal_distance(before_move, self.camera.position),
+                    moving_on_ground(&self.input),
+                    dt,
+                );
                 self.zombies_map = build_zombies_map(&self.zombies);
                 let hurt = self.zombies.update_rounds_and_zombies(
                     &self.zombies_map,
@@ -608,7 +630,13 @@ impl AppState {
                 let mut scene = self
                     .city_builder
                     .build(&render_world, &self.camera, self.tick);
-                render_zombies_scene(&mut scene, &self.camera, &self.zombies, mouse_captured);
+                render_zombies_scene(
+                    &mut scene,
+                    &self.camera,
+                    &self.zombies,
+                    self.viewmodel_bob.offset(),
+                    mouse_captured,
+                );
                 scene
             }
         }
@@ -771,6 +799,29 @@ struct WalkProfile {
     eye_height: f32,
     speed: f32,
     collision_radius: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ViewmodelBob {
+    phase: f32,
+    intensity: f32,
+}
+
+impl ViewmodelBob {
+    fn update(&mut self, movement_distance: f32, moving: bool, dt: f32) {
+        if moving && movement_distance > f32::EPSILON {
+            self.phase += movement_distance * 1.15;
+            self.intensity = (self.intensity + dt * 6.0).min(1.0);
+        } else {
+            self.intensity = (self.intensity - dt * 10.0).max(0.0);
+        }
+    }
+
+    fn offset(self) -> (i32, i32) {
+        let sway = (self.phase * 2.1).sin() * 2.0 * self.intensity;
+        let lift = (self.phase * 4.2).sin() * 1.1 * self.intensity;
+        (sway.round() as i32, lift.round() as i32)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -4042,6 +4093,7 @@ fn render_shooter_scene(
     scene: &mut Scene,
     camera: &Camera,
     shooter: &ShooterState,
+    bob_offset: (i32, i32),
     mouse_captured: bool,
 ) {
     scene.layers.push(Layer {
@@ -4052,7 +4104,7 @@ fn render_shooter_scene(
     scene.layers.push(Layer {
         name: "weapon".to_string(),
         z: 40,
-        cells: weapon_cells(scene.viewport, shooter.shot_flash_timer > 0.0),
+        cells: shooter_viewmodel_cells(scene.viewport, shooter.shot_flash_timer > 0.0, bob_offset),
     });
     scene.layers.push(Layer {
         name: "reticle".to_string(),
@@ -4078,6 +4130,7 @@ fn render_zombies_scene(
     scene: &mut Scene,
     camera: &Camera,
     zombies: &ZombiesState,
+    bob_offset: (i32, i32),
     mouse_captured: bool,
 ) {
     scene.layers.push(Layer {
@@ -4088,7 +4141,7 @@ fn render_zombies_scene(
     scene.layers.push(Layer {
         name: "weapon".to_string(),
         z: 40,
-        cells: zombies_weapon_cells(scene.viewport, zombies.shot_flash_timer > 0.0),
+        cells: zombies_viewmodel_cells(scene.viewport, zombies.shot_flash_timer > 0.0, bob_offset),
     });
     scene.layers.push(Layer {
         name: "reticle".to_string(),
@@ -4277,75 +4330,118 @@ fn reticle_cells(viewport: Viewport) -> Vec<SceneCell> {
     .collect()
 }
 
-fn weapon_cells(viewport: Viewport, flash: bool) -> Vec<SceneCell> {
-    let art = [
-        "      ||      ",
-        "     /##\\     ",
-        " ___/####\\___ ",
-        "|___  ##  ___|",
-        "    |####|    ",
+fn shooter_viewmodel_cells(
+    viewport: Viewport,
+    flash: bool,
+    bob_offset: (i32, i32),
+) -> Vec<SceneCell> {
+    let body_art = [
+        "      ##      ",
+        "     ####     ",
+        "    ######    ",
+        "    ##@@##    ",
+        "   ###@@###   ",
+        "   ###@@###   ",
+        "    ##@@##    ",
+        "     ####     ",
     ];
-    let start_x = (viewport.width as i32 - art[0].len() as i32) / 2;
-    let start_y = viewport.height as i32 - art.len() as i32 - 2;
+    let weapon_art = [
+        "              ____",
+        "         ____/###/",
+        "    ____/#######/",
+        " __/##########/  ",
+        " ###/====###/    ",
+        "   \\___####/     ",
+    ];
+    composite_viewmodel_cells(viewport, flash, bob_offset, &body_art, &weapon_art, false)
+}
+
+fn zombies_viewmodel_cells(
+    viewport: Viewport,
+    flash: bool,
+    bob_offset: (i32, i32),
+) -> Vec<SceneCell> {
+    let body_art = [
+        "     ####     ",
+        "    ######    ",
+        "   ##@@@@##   ",
+        "   ##@@@@##   ",
+        "   ###@@###   ",
+        "    ##@@##    ",
+        "     ####     ",
+        "     #  #     ",
+    ];
+    let weapon_art = [
+        "             __",
+        "         ___/ /",
+        "    ____/####/",
+        " __/########/",
+        " ##/===###/   ",
+        "  \\___###/    ",
+    ];
+    composite_viewmodel_cells(viewport, flash, bob_offset, &body_art, &weapon_art, true)
+}
+
+fn composite_viewmodel_cells(
+    viewport: Viewport,
+    flash: bool,
+    bob_offset: (i32, i32),
+    body_art: &[&str],
+    weapon_art: &[&str],
+    emphasize_flash: bool,
+) -> Vec<SceneCell> {
+    let (bob_x, bob_y) = bob_offset;
+    let body_width = body_art.iter().map(|line| line.len()).max().unwrap_or(0) as i32;
+    let weapon_width = weapon_art.iter().map(|line| line.len()).max().unwrap_or(0) as i32;
+    let body_height = body_art.len() as i32;
+    let weapon_height = weapon_art.len() as i32;
+    let base_x = viewport.width as i32 - (weapon_width + body_width / 2) - 8 + bob_x;
+    let base_y = viewport.height as i32 - body_height.max(weapon_height) - 4 + bob_y;
+    let body_x = base_x;
+    let body_y = base_y + 1;
+    let weapon_x = base_x + 7;
+    let weapon_y = base_y - 1;
     let mut cells = Vec::new();
 
     if flash {
+        let flash_color = if emphasize_flash {
+            TextStyle {
+                fg: Some("#ffda63".to_string()),
+                bg: None,
+                bold: true,
+            }
+        } else {
+            TextStyle::default()
+        };
         for (x, y, glyph) in [(0, -3, '*'), (-1, -2, '+'), (1, -2, '+'), (0, -1, '*')] {
             cells.push(SceneCell {
-                x: start_x + art[0].len() as i32 / 2 + x,
-                y: start_y + y,
+                x: weapon_x + weapon_width / 2 + x,
+                y: weapon_y + y,
                 glyph,
-                style: TextStyle::default(),
+                style: flash_color.clone(),
             });
         }
     }
 
-    for (row, line) in art.iter().enumerate() {
-        for (col, glyph) in line.chars().enumerate() {
-            if glyph == ' ' {
-                continue;
-            }
-            cells.push(SceneCell {
-                x: start_x + col as i32,
-                y: start_y + row as i32,
-                glyph,
-                style: TextStyle::default(),
-            });
-        }
-    }
+    push_art(&mut cells, body_x, body_y, body_art, TextStyle::default());
+    push_art(
+        &mut cells,
+        weapon_x,
+        weapon_y,
+        weapon_art,
+        TextStyle::default(),
+    );
 
     cells
 }
 
-fn zombies_weapon_cells(viewport: Viewport, flash: bool) -> Vec<SceneCell> {
-    let art = [
-        "              __",
-        "          ___/ /",
-        "      ___/____/",
-        "     /===/      ",
-        " ___/___/       ",
-        "/__/ /          ",
-        "  /_/           ",
-    ];
-    let start_x = viewport.width as i32 - art[0].len() as i32 - 10;
-    let start_y = viewport.height as i32 - art.len() as i32 - 5;
-    let mut cells = Vec::new();
-
-    if flash {
-        for (x, y, glyph) in [(-8, -2, '*'), (-6, -1, '+'), (-4, -2, '*'), (-5, 0, '.')] {
-            cells.push(SceneCell {
-                x: start_x + x,
-                y: start_y + y,
-                glyph,
-                style: TextStyle {
-                    fg: Some("#ffda63".to_string()),
-                    bg: None,
-                    bold: true,
-                },
-            });
-        }
-    }
-
+fn push_art(
+    cells: &mut Vec<SceneCell>,
+    start_x: i32,
+    start_y: i32,
+    art: &[&str],
+    style: TextStyle,
+) {
     for (row, line) in art.iter().enumerate() {
         for (col, glyph) in line.chars().enumerate() {
             if glyph == ' ' {
@@ -4355,12 +4451,10 @@ fn zombies_weapon_cells(viewport: Viewport, flash: bool) -> Vec<SceneCell> {
                 x: start_x + col as i32,
                 y: start_y + row as i32,
                 glyph,
-                style: TextStyle::default(),
+                style: style.clone(),
             });
         }
     }
-
-    cells
 }
 
 fn damage_flash_cells(viewport: Viewport) -> Vec<SceneCell> {
