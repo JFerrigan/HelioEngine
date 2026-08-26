@@ -5567,8 +5567,21 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
             "damage" => [0xb1, 0x18, 0x2b, 0xff],
             _ => [0xe6, 0xee, 0xf3, 0xff],
         };
+        let opaque_cells = layer_cells_are_opaque(layer.name.as_str());
 
         for cell in &layer.cells {
+            if opaque_cells && cell.glyph != ' ' {
+                fill_rect(
+                    frame,
+                    width,
+                    height,
+                    cell.x * CHAR_WIDTH as i32,
+                    cell.y * CHAR_HEIGHT as i32,
+                    CHAR_WIDTH as i32,
+                    CHAR_HEIGHT as i32,
+                    [0x08, 0x0b, 0x10, 0xff],
+                );
+            }
             draw_glyph(
                 frame,
                 width,
@@ -5604,6 +5617,13 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
             style_color(&overlay.style).unwrap_or([0xf0, 0xc6, 0x5b, 0xff]),
         );
     }
+}
+
+fn layer_cells_are_opaque(layer_name: &str) -> bool {
+    matches!(
+        layer_name,
+        "voxels" | "planet" | "enemies" | "weapon" | "damage"
+    )
 }
 
 fn style_color(style: &TextStyle) -> Option<[u8; 4]> {
@@ -6252,6 +6272,47 @@ mod tests {
     #[test]
     fn hud_style_has_black_background_for_readability() {
         assert_eq!(style_bg_color(&hud_style()), Some([0, 0, 0, 0xff]));
+    }
+
+    #[test]
+    fn opaque_voxel_cells_clear_background_stars() {
+        let mut scene = Scene::new(Viewport {
+            width: 1,
+            height: 1,
+        });
+        scene.layers.push(Layer {
+            name: "background".to_string(),
+            z: 0,
+            cells: vec![SceneCell {
+                x: 0,
+                y: 0,
+                glyph: '*',
+                style: TextStyle::default(),
+            }],
+        });
+        scene.layers.push(Layer {
+            name: "voxels".to_string(),
+            z: 10,
+            cells: vec![SceneCell {
+                x: 0,
+                y: 0,
+                glyph: '.',
+                style: TextStyle::default(),
+            }],
+        });
+        let bg_color = [0x50, 0x58, 0x66, 0xff];
+        let mut star_only = vec![0; CHAR_WIDTH * CHAR_HEIGHT * 4];
+        draw_glyph(&mut star_only, CHAR_WIDTH, CHAR_HEIGHT, 0, 0, '*', bg_color);
+        let mut covered = vec![0; CHAR_WIDTH * CHAR_HEIGHT * 4];
+        render_scene(&scene, &mut covered, CHAR_WIDTH, CHAR_HEIGHT);
+
+        let leaked_star_pixels = star_only
+            .chunks_exact(4)
+            .zip(covered.chunks_exact(4))
+            .filter(|(star, pixel)| **star == bg_color && **pixel == bg_color)
+            .count();
+
+        assert_eq!(leaked_star_pixels, 0);
     }
 
     #[test]
