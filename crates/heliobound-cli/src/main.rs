@@ -868,11 +868,10 @@ impl AssetViewerState {
 
     fn camera(&self) -> Camera {
         let asset = self.selected_asset();
-        let pitch = self.pitch.clamp(-1.35, 1.35);
         let yaw_sin = self.yaw.sin();
         let yaw_cos = self.yaw.cos();
-        let pitch_sin = pitch.sin();
-        let pitch_cos = pitch.cos();
+        let pitch_sin = self.pitch.sin();
+        let pitch_cos = self.pitch.cos();
         let offset = Vec3::new(
             yaw_sin * pitch_cos * self.distance,
             pitch_sin * self.distance,
@@ -894,7 +893,6 @@ impl AssetViewerState {
         let min_distance = ASSET_VIEWER_MIN_DISTANCE.max(self.selected_asset().radius * 1.15);
         self.distance = self.distance.clamp(min_distance, ASSET_VIEWER_MAX_DISTANCE);
         self.yaw = wrap_angle(self.yaw);
-        self.pitch = self.pitch.clamp(-1.35, 1.35);
         self.roll = wrap_angle(self.roll);
     }
 }
@@ -3130,6 +3128,16 @@ mod tests {
 
         assert!(near >= viewer.selected_asset().radius * 1.15);
         assert!(viewer.distance <= ASSET_VIEWER_MAX_DISTANCE);
+    }
+
+    #[test]
+    fn asset_viewer_allows_full_pitch_rotation() {
+        let mut viewer = AssetViewerState::new();
+        viewer.rotate_with_mouse(0.0, -2_000.0);
+        let camera = viewer.camera();
+
+        assert!(viewer.pitch.abs() > 1.35);
+        assert!(camera.forward().y.abs() > 0.1);
     }
 
     #[test]
