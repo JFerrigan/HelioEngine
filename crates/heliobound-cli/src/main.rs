@@ -92,12 +92,20 @@ const ASSET_VIEWER_DEFAULT_DISTANCE: f32 = 28.0;
 const ASSET_VIEWER_MIN_DISTANCE: f32 = 8.0;
 const ASSET_VIEWER_MAX_DISTANCE: f32 = 80.0;
 const ASSET_VIEWER_MOUSE_SENSITIVITY: f32 = 0.006;
-const VIEWMODEL_RENDER_WIDTH: usize = 50;
-const VIEWMODEL_RENDER_HEIGHT: usize = 28;
-const VIEWMODEL_OFFSET_X: i32 = 5;
-const VIEWMODEL_OFFSET_Y: i32 = 4;
-const VIEWMODEL_CAMERA_FOV: f32 = 34.0;
-const VIEWMODEL_CAMERA_DISTANCE_SCALE: f32 = 2.2;
+const WEAPON_VIEW_RENDER_WIDTH: usize = 72;
+const WEAPON_VIEW_RENDER_HEIGHT: usize = 40;
+const WEAPON_VIEW_SCREEN_RIGHT_MARGIN: i32 = 1;
+const WEAPON_VIEW_SCREEN_BOTTOM_MARGIN: i32 = -1;
+const WEAPON_VIEW_SCREEN_SHIFT_X: i32 = 0;
+const WEAPON_VIEW_SCREEN_SHIFT_Y: i32 = 0;
+const WEAPON_VIEW_CAMERA_RIGHT: f32 = 1.25;
+const WEAPON_VIEW_CAMERA_UP: f32 = 1.05;
+const WEAPON_VIEW_CAMERA_BACK: f32 = 1.75;
+const WEAPON_VIEW_TARGET_LEFT: f32 = 0.95;
+const WEAPON_VIEW_TARGET_UP: f32 = 0.10;
+const WEAPON_VIEW_TARGET_FORWARD: f32 = 0.45;
+const WEAPON_VIEW_CAMERA_FOV: f32 = 24.0;
+const WEAPON_VIEW_CAMERA_DISTANCE_SCALE: f32 = 4.0;
 const SANDBOX_HALF_EXTENT: i32 = 72;
 const SANDBOX_EYE_HEIGHT: f32 = 2.7;
 const SANDBOX_SPEED: f32 = 9.0;
@@ -2901,73 +2909,103 @@ fn build_weapon_asset() -> VoxelWorld {
 
     fill_cuboid(
         &mut world,
-        VoxelCoord::new(-8, 1, 0),
-        VoxelCoord::new(-4, 5, 2),
+        VoxelCoord::new(-18, 2, 0),
+        VoxelCoord::new(-9, 8, 4),
         VoxelMaterial::CarbonLife,
     );
     fill_cuboid(
         &mut world,
-        VoxelCoord::new(-4, 2, 0),
-        VoxelCoord::new(1, 3, 3),
+        VoxelCoord::new(-10, 4, 0),
+        VoxelCoord::new(1, 7, 5),
         VoxelMaterial::CarbonLife,
     );
     fill_cuboid(
         &mut world,
-        VoxelCoord::new(-1, 1, 0),
-        VoxelCoord::new(3, 5, 2),
+        VoxelCoord::new(-5, 3, 0),
+        VoxelCoord::new(7, 10, 5),
         VoxelMaterial::Basalt,
     );
     fill_cuboid(
         &mut world,
-        VoxelCoord::new(1, 3, 0),
-        VoxelCoord::new(12, 5, 1),
+        VoxelCoord::new(2, 7, 0),
+        VoxelCoord::new(28, 10, 3),
         VoxelMaterial::ShipHull,
     );
     fill_cuboid(
         &mut world,
-        VoxelCoord::new(4, 5, 0),
-        VoxelCoord::new(10, 7, 2),
+        VoxelCoord::new(10, 10, 1),
+        VoxelCoord::new(25, 13, 4),
         VoxelMaterial::ShipHull,
     );
     fill_cuboid(
         &mut world,
-        VoxelCoord::new(5, 4, -1),
-        VoxelCoord::new(8, 5, 0),
+        VoxelCoord::new(12, 9, -1),
+        VoxelCoord::new(20, 11, 1),
         VoxelMaterial::Glass,
     );
     fill_cuboid(
         &mut world,
-        VoxelCoord::new(9, 4, 0),
-        VoxelCoord::new(12, 4, 2),
+        VoxelCoord::new(24, 8, 0),
+        VoxelCoord::new(32, 9, 3),
         VoxelMaterial::Beacon,
     );
     fill_cuboid(
         &mut world,
-        VoxelCoord::new(-1, 4, 0),
-        VoxelCoord::new(1, 5, 1),
+        VoxelCoord::new(30, 7, 1),
+        VoxelCoord::new(38, 8, 2),
+        VoxelMaterial::Beacon,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-2, 10, 1),
+        VoxelCoord::new(4, 13, 4),
         VoxelMaterial::Basalt,
     );
     fill_cuboid(
         &mut world,
-        VoxelCoord::new(-2, 1, 1),
-        VoxelCoord::new(-1, 4, 2),
+        VoxelCoord::new(-5, 1, 2),
+        VoxelCoord::new(0, 6, 5),
         VoxelMaterial::Basalt,
     );
     fill_cuboid(
         &mut world,
-        VoxelCoord::new(-5, 0, 1),
-        VoxelCoord::new(-2, 2, 2),
+        VoxelCoord::new(-15, 0, 2),
+        VoxelCoord::new(-6, 4, 5),
         VoxelMaterial::CarbonLife,
     );
-    clear_cuboid(
+    fill_cuboid(
         &mut world,
-        VoxelCoord::new(-1, 2, 1),
-        VoxelCoord::new(0, 3, 1),
+        VoxelCoord::new(-20, 0, 1),
+        VoxelCoord::new(-14, 3, 4),
+        VoxelMaterial::CarbonLife,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-3, 0, 0),
+        VoxelCoord::new(8, 2, 2),
+        VoxelMaterial::CarbonLife,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(1, 2, 1),
+        VoxelCoord::new(5, 4, 4),
+        VoxelMaterial::CarbonLife,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(8, 6, 4),
+        VoxelCoord::new(28, 8, 5),
+        VoxelMaterial::ShipHull,
     );
     clear_cuboid(
         &mut world,
-        VoxelCoord::new(2, 4, 0),
-        VoxelCoord::new(3, 4, 1),
+        VoxelCoord::new(-4, 4, 2),
+        VoxelCoord::new(1, 6, 3),
+    );
+    clear_cuboid(
+        &mut world,
+        VoxelCoord::new(5, 9, 1),
+        VoxelCoord::new(8, 9, 2),
     );
 
     world
@@ -4444,10 +4482,14 @@ fn weapon_viewmodel_cells(
     bob_offset: (i32, i32),
 ) -> Vec<SceneCell> {
     let (bob_x, bob_y) = bob_offset;
-    let render_width = VIEWMODEL_RENDER_WIDTH;
-    let render_height = VIEWMODEL_RENDER_HEIGHT;
-    let start_x = viewport.width as i32 - render_width as i32 - VIEWMODEL_OFFSET_X + bob_x;
-    let start_y = viewport.height as i32 - render_height as i32 - VIEWMODEL_OFFSET_Y + bob_y;
+    let render_width = WEAPON_VIEW_RENDER_WIDTH;
+    let render_height = WEAPON_VIEW_RENDER_HEIGHT;
+    let start_x = viewport.width as i32 - render_width as i32 - WEAPON_VIEW_SCREEN_RIGHT_MARGIN
+        + WEAPON_VIEW_SCREEN_SHIFT_X
+        + bob_x;
+    let start_y = viewport.height as i32 - render_height as i32 - WEAPON_VIEW_SCREEN_BOTTOM_MARGIN
+        + WEAPON_VIEW_SCREEN_SHIFT_Y
+        + bob_y;
     let camera = weapon_viewmodel_camera(weapon_asset);
     let material_map = MaterialGlyphMap;
     let mut cells = Vec::new();
@@ -4458,7 +4500,7 @@ fn weapon_viewmodel_cells(
             if let Some(hit) = raycast(
                 &weapon_asset.world,
                 ray,
-                (weapon_asset.radius * VIEWMODEL_CAMERA_DISTANCE_SCALE).max(24.0),
+                (weapon_asset.radius * WEAPON_VIEW_CAMERA_DISTANCE_SCALE).max(64.0),
             ) {
                 cells.push(SceneCell {
                     x: start_x + x as i32,
@@ -4479,11 +4521,21 @@ fn weapon_viewmodel_cells(
 
 fn weapon_viewmodel_camera(asset: &PreviewAsset) -> Camera {
     let radius = asset.radius.max(8.0);
-    let eye = asset.center + Vec3::new(radius * 1.85, radius * 0.55, -radius * 1.95);
-    let target = asset.center + Vec3::new(-radius * 0.55, radius * 0.10, radius * 0.35);
+    let eye = asset.center
+        + Vec3::new(
+            radius * WEAPON_VIEW_CAMERA_RIGHT,
+            radius * WEAPON_VIEW_CAMERA_UP,
+            -radius * WEAPON_VIEW_CAMERA_BACK,
+        );
+    let target = asset.center
+        + Vec3::new(
+            -radius * WEAPON_VIEW_TARGET_LEFT,
+            radius * WEAPON_VIEW_TARGET_UP,
+            radius * WEAPON_VIEW_TARGET_FORWARD,
+        );
     look_at(eye, target)
-        .with_fov_y(VIEWMODEL_CAMERA_FOV.to_radians())
-        .with_max_distance((radius * 4.5).max(60.0))
+        .with_fov_y(WEAPON_VIEW_CAMERA_FOV.to_radians())
+        .with_max_distance((radius * WEAPON_VIEW_CAMERA_DISTANCE_SCALE).max(64.0))
 }
 
 fn add_weapon_muzzle_flash(
@@ -4969,6 +5021,11 @@ mod tests {
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::AssetViewer);
         assert!(!app.asset_viewer.assets.is_empty());
+        assert!(app
+            .asset_viewer
+            .assets
+            .iter()
+            .any(|asset| asset.name == "gun"));
     }
 
     #[test]
@@ -5185,6 +5242,25 @@ mod tests {
         let action = app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyM), ElementState::Pressed);
 
         assert_eq!(action, KeyboardAction::EnterMenu);
+    }
+
+    #[test]
+    fn weapon_asset_has_gun_silhouette() {
+        let gun = build_weapon_asset();
+
+        assert!(gun.voxel_count() > 700);
+        assert_eq!(
+            gun.get(VoxelCoord::new(34, 8, 1)),
+            Some(VoxelCell::new(VoxelMaterial::Beacon))
+        );
+        assert_eq!(
+            gun.get(VoxelCoord::new(-12, 5, 2)),
+            Some(VoxelCell::new(VoxelMaterial::CarbonLife))
+        );
+        assert_eq!(
+            gun.get(VoxelCoord::new(18, 11, 2)),
+            Some(VoxelCell::new(VoxelMaterial::ShipHull))
+        );
     }
 
     #[test]
