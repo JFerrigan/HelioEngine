@@ -348,6 +348,17 @@ impl AppState {
                         self.asset_viewer.select(index);
                         return KeyboardAction::None;
                     }
+                    match key {
+                        PhysicalKey::Code(KeyCode::KeyN) | PhysicalKey::Code(KeyCode::Period) => {
+                            self.asset_viewer.select_next();
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::KeyP) | PhysicalKey::Code(KeyCode::Comma) => {
+                            self.asset_viewer.select_previous();
+                            return KeyboardAction::None;
+                        }
+                        _ => {}
+                    }
                 }
                 (AppMode::VoxelSandbox, key) => {
                     if let Some(index) = asset_digit_index(key) {
@@ -941,6 +952,14 @@ impl AssetViewerState {
         self.camera =
             asset_viewer_start_camera(self.selected_asset(), ASSET_VIEWER_DEFAULT_DISTANCE);
         self.reset_distance();
+    }
+
+    fn select_next(&mut self) {
+        self.select((self.selected + 1) % self.assets.len());
+    }
+
+    fn select_previous(&mut self) {
+        self.select((self.selected + self.assets.len() - 1) % self.assets.len());
     }
 
     fn update(&mut self, input: &PlayerInput, dt: f32) {
@@ -1676,7 +1695,7 @@ fn build_bar_scene() -> VoxelWorld {
 }
 
 fn build_asset_catalog() -> Vec<PreviewAsset> {
-    vec![
+    let mut assets = vec![
         PreviewAsset::new(
             "standing bar patron",
             build_person_asset(BarPose::Standing, VoxelMaterial::SiliconLife),
@@ -1691,7 +1710,22 @@ fn build_asset_catalog() -> Vec<PreviewAsset> {
         PreviewAsset::new("dart board", build_dart_board_asset()),
         PreviewAsset::new("bottle", build_bottle_asset()),
         PreviewAsset::new("ash tray", build_ash_tray_asset()),
-    ]
+    ];
+
+    for (name, material) in [
+        ("grass block", VoxelMaterial::Grass),
+        ("dirt block", VoxelMaterial::Dirt),
+        ("stone block", VoxelMaterial::Stone),
+        ("sand block", VoxelMaterial::Sand),
+        ("wood block", VoxelMaterial::Wood),
+        ("leaf block", VoxelMaterial::Leaves),
+        ("glass block", VoxelMaterial::Glass),
+        ("beacon block", VoxelMaterial::Beacon),
+    ] {
+        assets.push(PreviewAsset::new(name, build_block_asset(material)));
+    }
+
+    assets
 }
 
 fn asset_bounds(world: &VoxelWorld) -> (Vec3, f32) {
@@ -1728,6 +1762,18 @@ fn build_person_asset(pose: BarPose, accent: VoxelMaterial) -> VoxelWorld {
         _ => 2,
     };
     stamp_bar_person(&mut world, 0, 0, BarFacing::South, pose, index);
+    world
+}
+
+fn build_block_asset(material: VoxelMaterial) -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+    for z in -2..=1 {
+        for y in 0..=3 {
+            for x in -2..=1 {
+                world.set(VoxelCoord::new(x, y, z), VoxelCell::new(material));
+            }
+        }
+    }
     world
 }
 
@@ -2763,7 +2809,7 @@ fn render_asset_viewer_scene(scene: &mut Scene, viewer: &AssetViewerState, mouse
         x: 2,
         y: 5,
         z: 120,
-        text: "1-8 select  A/D yaw  W/S pitch  Q/E roll  Space/Ctrl zoom".to_string(),
+        text: "1-9 select  N/P cycle  A/D yaw  W/S pitch  Q/E roll  Space/Ctrl zoom".to_string(),
         style: TextStyle::default(),
     });
     for (index, preview) in viewer.assets.iter().enumerate() {
@@ -3151,7 +3197,15 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
         };
 
         for cell in &layer.cells {
-            draw_glyph(frame, width, height, cell.x, cell.y, cell.glyph, color);
+            draw_glyph(
+                frame,
+                width,
+                height,
+                cell.x,
+                cell.y,
+                cell.glyph,
+                style_color(&cell.style).unwrap_or(color),
+            );
         }
     }
 
@@ -3163,9 +3217,25 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
             overlay.x,
             overlay.y,
             &overlay.text,
-            [0xf0, 0xc6, 0x5b, 0xff],
+            style_color(&overlay.style).unwrap_or([0xf0, 0xc6, 0x5b, 0xff]),
         );
     }
+}
+
+fn style_color(style: &TextStyle) -> Option<[u8; 4]> {
+    style.fg.as_deref().and_then(parse_hex_color)
+}
+
+fn parse_hex_color(color: &str) -> Option<[u8; 4]> {
+    let hex = color.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some([r, g, b, 0xff])
 }
 
 fn clear(frame: &mut [u8], color: [u8; 4]) {
@@ -3564,6 +3634,39 @@ mod tests {
             sandbox.world.get(VoxelCoord::new(0, 2, -1)),
             Some(VoxelCell::new(VoxelMaterial::Wood))
         );
+    }
+
+    #[test]
+    fn asset_viewer_catalog_includes_sandbox_blocks() {
+        let viewer = AssetViewerState::new();
+
+        assert!(viewer
+            .assets
+            .iter()
+            .any(|asset| asset.name == "grass block"));
+        assert!(viewer
+            .assets
+            .iter()
+            .any(|asset| asset.name == "beacon block"));
+    }
+
+    #[test]
+    fn asset_viewer_can_cycle_to_block_assets() {
+        let mut viewer = AssetViewerState::new();
+
+        for _ in 0..8 {
+            viewer.select_next();
+        }
+
+        assert_eq!(viewer.selected_asset().name, "grass block");
+        viewer.select_previous();
+        assert_eq!(viewer.selected_asset().name, "ash tray");
+    }
+
+    #[test]
+    fn parses_hex_text_style_color_for_window_renderer() {
+        assert_eq!(parse_hex_color("#67b847"), Some([0x67, 0xb8, 0x47, 0xff]));
+        assert_eq!(parse_hex_color("67b847"), None);
     }
 
     #[test]

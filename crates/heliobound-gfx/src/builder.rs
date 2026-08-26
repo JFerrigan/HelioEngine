@@ -38,6 +38,10 @@ impl MaterialGlyphMap {
         self.glyph_for_material(hit.cell.material, hit.normal, hit.distance)
     }
 
+    pub fn style_for(&self, hit: VoxelHit) -> TextStyle {
+        self.style_for_material(hit.cell.material, hit.normal)
+    }
+
     pub fn glyph_for_planet(&self, hit: PlanetHit) -> char {
         let lit = hit
             .normal
@@ -59,6 +63,10 @@ impl MaterialGlyphMap {
             PlanetTerrainClass::SiliconField => shade(intensity, "^*%AX"),
             PlanetTerrainClass::Crater => shade(intensity, " .oO@"),
         }
+    }
+
+    pub fn style_for_planet(&self, hit: PlanetHit) -> TextStyle {
+        self.style_for_material(hit.sample.material, hit.normal)
     }
 
     fn glyph_for_material(&self, material: VoxelMaterial, normal: Vec3, distance: f32) -> char {
@@ -88,6 +96,54 @@ impl MaterialGlyphMap {
             VoxelMaterial::Beacon => shade(intensity, "i!*@"),
         }
     }
+
+    fn style_for_material(&self, material: VoxelMaterial, normal: Vec3) -> TextStyle {
+        let lit = normal
+            .dot(Vec3::new(-0.35, 0.75, -0.55).normalized())
+            .max(0.0);
+        let brightness = (0.48 + lit * 0.52).clamp(0.35, 1.0);
+        TextStyle {
+            fg: Some(scale_hex_color(material_base_color(material), brightness)),
+            bg: None,
+            bold: brightness > 0.82,
+        }
+    }
+}
+
+fn material_base_color(material: VoxelMaterial) -> [u8; 3] {
+    match material {
+        VoxelMaterial::Regolith => [0xa8, 0x86, 0x62],
+        VoxelMaterial::Basalt => [0x55, 0x5a, 0x60],
+        VoxelMaterial::Ocean => [0x2d, 0x7d, 0xc9],
+        VoxelMaterial::Ice => [0xb8, 0xeb, 0xff],
+        VoxelMaterial::Grass => [0x67, 0xb8, 0x47],
+        VoxelMaterial::Dirt => [0x8a, 0x5b, 0x36],
+        VoxelMaterial::Stone => [0x8e, 0x93, 0x96],
+        VoxelMaterial::Sand => [0xd8, 0xc2, 0x7a],
+        VoxelMaterial::Wood => [0xa0, 0x63, 0x32],
+        VoxelMaterial::Leaves => [0x34, 0x8f, 0x45],
+        VoxelMaterial::CornStalk => [0xb8, 0xc9, 0x44],
+        VoxelMaterial::CarbonLife => [0xdf, 0x75, 0x9e],
+        VoxelMaterial::SiliconLife => [0xa8, 0x9d, 0xff],
+        VoxelMaterial::Habitat => [0x9c, 0xa7, 0xb2],
+        VoxelMaterial::ShipHull => [0xc2, 0xc8, 0xd2],
+        VoxelMaterial::Glass => [0x9f, 0xf5, 0xff],
+        VoxelMaterial::Beacon => [0xff, 0xda, 0x63],
+    }
+}
+
+fn scale_hex_color(color: [u8; 3], brightness: f32) -> String {
+    let [r, g, b] = color;
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        scale_channel(r, brightness),
+        scale_channel(g, brightness),
+        scale_channel(b, brightness)
+    )
+}
+
+fn scale_channel(channel: u8, brightness: f32) -> u8 {
+    ((channel as f32 * brightness).round()).clamp(0.0, 255.0) as u8
 }
 
 #[derive(Clone, Debug)]
@@ -135,7 +191,7 @@ impl SceneBuilder {
                         x: x as i32,
                         y: y as i32,
                         glyph: self.materials.glyph_for(hit),
-                        style: TextStyle::default(),
+                        style: self.materials.style_for(hit),
                     });
                 }
             }
@@ -194,7 +250,7 @@ impl SceneBuilder {
                         x: x as i32,
                         y: y as i32,
                         glyph: self.materials.glyph_for_planet(hit),
-                        style: TextStyle::default(),
+                        style: self.materials.style_for_planet(hit),
                     });
                 }
             }
@@ -560,6 +616,42 @@ mod tests {
             .layers
             .iter()
             .any(|layer| layer.name == "voxels" && !layer.cells.is_empty()));
+    }
+
+    #[test]
+    fn builder_colors_voxels_by_material() {
+        let mut world = VoxelWorld::new();
+        world.set(
+            VoxelCoord::new(0, 0, 8),
+            VoxelCell::new(VoxelMaterial::Grass),
+        );
+        let camera = Camera::new(Vec3::new(0.5, 0.5, 0.5));
+        let builder = SceneBuilder::new(
+            GraphicsConfig {
+                viewport: Viewport {
+                    width: 9,
+                    height: 9,
+                },
+                max_distance: 20.0,
+            },
+            MaterialGlyphMap,
+        );
+
+        let scene = builder.build(&world, &camera, 0);
+        let voxel = scene
+            .layers
+            .iter()
+            .find(|layer| layer.name == "voxels")
+            .and_then(|layer| layer.cells.first())
+            .expect("grass voxel should be drawn");
+
+        assert!(voxel
+            .style
+            .fg
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with('#'));
+        assert_ne!(voxel.style.fg, Some("#dfe8db".to_string()));
     }
 
     #[test]
