@@ -374,16 +374,17 @@ struct AppState {
     viewmodel_bob: ViewmodelBob,
     audio_events: Vec<SoundEffect>,
     drone_course_nonce: u64,
+    randomize_drone_course: bool,
     drone_course_runs: u64,
     tick: u64,
 }
 
 impl AppState {
     fn new() -> Self {
-        Self::new_with_drone_course_nonce(runtime_seed_nonce())
+        Self::new_with_drone_course_nonce(runtime_seed_nonce(), true)
     }
 
-    fn new_with_drone_course_nonce(drone_course_nonce: u64) -> Self {
+    fn new_with_drone_course_nonce(drone_course_nonce: u64, randomize_drone_course: bool) -> Self {
         let initial_drone_seed = drone_course_seed(drone_course_nonce, 0);
         Self {
             mode: AppMode::Menu,
@@ -420,6 +421,7 @@ impl AppState {
             viewmodel_bob: ViewmodelBob::default(),
             audio_events: Vec::new(),
             drone_course_nonce,
+            randomize_drone_course,
             drone_course_runs: 0,
             tick: 0,
         }
@@ -620,6 +622,9 @@ impl AppState {
     fn start_drone_gate_runner(&mut self) {
         self.mode = AppMode::DroneGateRunner;
         self.drone_course_runs = self.drone_course_runs.wrapping_add(1);
+        if self.randomize_drone_course {
+            self.drone_course_nonce = mix_seed(self.drone_course_nonce ^ runtime_seed_nonce());
+        }
         self.drone_gate_runner = DroneGateRunnerState::new_seeded(drone_course_seed(
             self.drone_course_nonce,
             self.drone_course_runs,
@@ -3239,8 +3244,13 @@ fn runtime_seed_nonce() -> u64 {
 }
 
 fn drone_course_seed(nonce: u64, run_index: u64) -> u64 {
-    let mut value =
-        DRONE_GATE_SEED ^ nonce.rotate_left(17) ^ run_index.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    mix_seed(
+        DRONE_GATE_SEED ^ nonce.rotate_left(17) ^ run_index.wrapping_mul(0x9E37_79B9_7F4A_7C15),
+    )
+}
+
+fn mix_seed(seed: u64) -> u64 {
+    let mut value = seed;
     value ^= value >> 30;
     value = value.wrapping_mul(0xBF58_476D_1CE4_E5B9);
     value ^= value >> 27;
@@ -6720,7 +6730,7 @@ mod tests {
 
     #[test]
     fn menu_can_start_drone_gate_runner_mode() {
-        let mut app = AppState::new_with_drone_course_nonce(0xD00D);
+        let mut app = AppState::new_with_drone_course_nonce(0xD00D, false);
 
         let action =
             app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit0), ElementState::Pressed);
@@ -6736,7 +6746,7 @@ mod tests {
 
     #[test]
     fn drone_gate_runner_restarts_with_new_procedural_course() {
-        let mut app = AppState::new_with_drone_course_nonce(0xD00D);
+        let mut app = AppState::new_with_drone_course_nonce(0xD00D, false);
 
         app.start_drone_gate_runner();
         let first = app.drone_gate_runner.course.clone();
