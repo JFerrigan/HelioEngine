@@ -370,6 +370,7 @@ struct AppState {
     shooter: ShooterState,
     viewmodel_bob: ViewmodelBob,
     audio_events: Vec<SoundEffect>,
+    drone_course_runs: u64,
     tick: u64,
 }
 
@@ -409,6 +410,7 @@ impl AppState {
             shooter: ShooterState::new(),
             viewmodel_bob: ViewmodelBob::default(),
             audio_events: Vec::new(),
+            drone_course_runs: 0,
             tick: 0,
         }
     }
@@ -607,7 +609,9 @@ impl AppState {
 
     fn start_drone_gate_runner(&mut self) {
         self.mode = AppMode::DroneGateRunner;
-        self.drone_gate_runner = DroneGateRunnerState::new_seeded(DRONE_GATE_SEED);
+        self.drone_course_runs = self.drone_course_runs.wrapping_add(1);
+        self.drone_gate_runner =
+            DroneGateRunnerState::new_seeded(drone_course_seed(self.drone_course_runs));
         self.camera = drone_gate_runner_start_camera(&self.drone_gate_runner);
         self.input = PlayerInput::default();
     }
@@ -3215,6 +3219,15 @@ fn build_doom_map() -> VoxelWorld {
     DoomMapGenerator::new(DoomMapConfig::default()).generate()
 }
 
+fn drone_course_seed(run_index: u64) -> u64 {
+    let mut value = DRONE_GATE_SEED ^ run_index.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^ (value >> 31)
+}
+
 fn generate_drone_gate_course(seed: u64, config: DroneGateRunnerConfig) -> DroneGateCourse {
     let mut rng = LiminalRng::new(seed);
     let mut positions = Vec::new();
@@ -5581,8 +5594,9 @@ fn render_drone_gate_runner_scene(
         y: 2,
         z: 120,
         text: format!(
-            "DRONE GATE RUNNER  map {}  gate {}/{}  mouse {}",
+            "DRONE GATE RUNNER  map {}  seed {:016x}  gate {}/{}  mouse {}",
             runner.course.name,
+            runner.course.seed,
             runner.active_gate + 1,
             runner.course.gates.len(),
             if mouse_captured { "locked" } else { "free" }
@@ -6650,8 +6664,22 @@ mod tests {
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::DroneGateRunner);
-        assert_eq!(app.drone_gate_runner.course.seed, DRONE_GATE_SEED);
+        assert_eq!(app.drone_gate_runner.course.seed, drone_course_seed(1));
         assert!(app.camera.max_distance >= DRONE_GATE_VIEW_DISTANCE);
+    }
+
+    #[test]
+    fn drone_gate_runner_restarts_with_new_procedural_course() {
+        let mut app = AppState::new();
+
+        app.start_drone_gate_runner();
+        let first = app.drone_gate_runner.course.clone();
+        app.enter_menu();
+        app.start_drone_gate_runner();
+        let second = app.drone_gate_runner.course.clone();
+
+        assert_ne!(first.seed, second.seed);
+        assert_ne!(first.gates, second.gates);
     }
 
     #[test]
