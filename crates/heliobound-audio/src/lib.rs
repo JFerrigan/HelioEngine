@@ -19,6 +19,11 @@ z4 _B,,6 z2 F,4 z6 C,,8 z8
 pub const GLASS_STAIRCASE_ABC: &str = include_str!("../assets/glass_staircase.abc");
 pub const ROWS_THAT_MOVE_ABC: &str = include_str!("../assets/rows_that_move.abc");
 pub const STARHUSK_RAG_ABC: &str = include_str!("../assets/starhusk_rag_syncopated.abc");
+pub const RAG_ABC: &str = include_str!("../assets/rag.abc");
+pub const RESCIND_ABC: &str = include_str!("../assets/rescind.abc");
+
+const ABC_PLAYBACK_PRESERVE_SCALE: f32 = 2.0;
+const ABC_PLAYBACK_RESCIND_SCALE: f32 = 1.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NoteEvent {
@@ -41,6 +46,7 @@ pub enum SoundEffect {
     EnemyHit,
     EnemyDeath,
     PlayerHurt,
+    GateSuccess,
 }
 
 pub struct GameAudio {
@@ -79,6 +85,10 @@ impl GameAudio {
         self.set_ambience(AmbienceKind::Doom);
     }
 
+    pub fn enter_drone_mode(&mut self) {
+        self.set_ambience(AmbienceKind::Drone);
+    }
+
     pub fn leave_ambience(&mut self) {
         self.ambience = None;
         if let Some(backend) = &mut self.backend {
@@ -102,6 +112,7 @@ impl GameAudio {
                 AmbienceKind::CornMaze => backend.start_corn_maze_ambience(),
                 AmbienceKind::Bar => backend.start_bar_ambience(),
                 AmbienceKind::Doom => backend.start_backrooms_ambience(),
+                AmbienceKind::Drone => backend.start_drone_ambience(),
             }
         }
     }
@@ -131,6 +142,10 @@ impl GameAudio {
     pub fn in_bar_mode(&self) -> bool {
         self.ambience == Some(AmbienceKind::Bar)
     }
+
+    pub fn in_drone_mode(&self) -> bool {
+        self.ambience == Some(AmbienceKind::Drone)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,6 +154,7 @@ enum AmbienceKind {
     CornMaze,
     Bar,
     Doom,
+    Drone,
 }
 
 struct RodioBackend {
@@ -162,7 +178,12 @@ impl RodioBackend {
             return;
         };
 
-        let samples = synthesize_abc_limited(&tune, 0.18, CITY_AMBIENCE_SECONDS);
+        let samples = synthesize_abc_limited(
+            &tune,
+            0.18,
+            CITY_AMBIENCE_SECONDS,
+            ABC_PLAYBACK_PRESERVE_SCALE,
+        );
         let player = Player::connect_new(self.sink.mixer());
         player.set_volume(0.48);
         player.append(samples_buffer(samples).repeat_infinite());
@@ -175,7 +196,12 @@ impl RodioBackend {
             return;
         };
 
-        let samples = synthesize_abc_limited(&tune, 0.16, CITY_AMBIENCE_SECONDS);
+        let samples = synthesize_abc_limited(
+            &tune,
+            0.16,
+            CITY_AMBIENCE_SECONDS,
+            ABC_PLAYBACK_PRESERVE_SCALE,
+        );
         let player = Player::connect_new(self.sink.mixer());
         player.set_volume(0.5);
         player.append(samples_buffer(samples).repeat_infinite());
@@ -188,7 +214,12 @@ impl RodioBackend {
             return;
         };
 
-        let samples = synthesize_abc_limited(&tune, 0.15, CITY_AMBIENCE_SECONDS);
+        let samples = synthesize_abc_limited(
+            &tune,
+            0.15,
+            CITY_AMBIENCE_SECONDS,
+            ABC_PLAYBACK_PRESERVE_SCALE,
+        );
         let player = Player::connect_new(self.sink.mixer());
         player.set_volume(0.5);
         player.append(samples_buffer(samples).repeat_infinite());
@@ -202,10 +233,32 @@ impl RodioBackend {
         };
 
         let mut samples = synthesize_backrooms_bed(24.0);
-        mix_in(&mut samples, &synthesize_abc(&tune, 0.22), 0);
+        mix_in(
+            &mut samples,
+            &synthesize_abc_with_scale(&tune, 0.22, ABC_PLAYBACK_PRESERVE_SCALE),
+            0,
+        );
 
         let player = Player::connect_new(self.sink.mixer());
         player.set_volume(0.55);
+        player.append(samples_buffer(samples).repeat_infinite());
+        self.ambience = Some(player);
+    }
+
+    fn start_drone_ambience(&mut self) {
+        self.stop_ambience();
+        let Ok(tune) = parse_abc(RESCIND_ABC) else {
+            return;
+        };
+
+        let samples = synthesize_abc_limited(
+            &tune,
+            0.16,
+            CITY_AMBIENCE_SECONDS,
+            ABC_PLAYBACK_RESCIND_SCALE,
+        );
+        let player = Player::connect_new(self.sink.mixer());
+        player.set_volume(0.44);
         player.append(samples_buffer(samples).repeat_infinite());
         self.ambience = Some(player);
     }
@@ -222,6 +275,7 @@ impl RodioBackend {
             SoundEffect::EnemyHit => synthesize_enemy_hit(),
             SoundEffect::EnemyDeath => synthesize_enemy_death(),
             SoundEffect::PlayerHurt => synthesize_player_hurt(),
+            SoundEffect::GateSuccess => synthesize_gate_success(),
         };
         self.sink.mixer().add(samples_buffer(samples));
     }
@@ -230,6 +284,7 @@ impl RodioBackend {
 pub fn parse_abc(input: &str) -> Result<AbcTune, String> {
     let mut title = None;
     let mut tempo = 120.0;
+    let mut beat_unit = (1.0_f32, 4.0_f32);
     let mut unit_note_value = None;
     let mut body = String::new();
 
@@ -242,7 +297,10 @@ pub fn parse_abc(input: &str) -> Result<AbcTune, String> {
         if let Some(value) = line.strip_prefix("T:") {
             title = Some(value.trim().to_string());
         } else if let Some(value) = line.strip_prefix("Q:") {
-            tempo = parse_tempo(value.trim()).unwrap_or(tempo);
+            if let Some((parsed_tempo, parsed_beat_unit)) = parse_tempo(value.trim()) {
+                tempo = parsed_tempo;
+                beat_unit = parsed_beat_unit;
+            }
         } else if let Some(value) = line.strip_prefix("L:") {
             let value = value.trim();
             parse_fraction(value).ok_or_else(|| format!("invalid L: field: {value}"))?;
@@ -261,7 +319,7 @@ pub fn parse_abc(input: &str) -> Result<AbcTune, String> {
 
     let unit_note_seconds = unit_note_value
         .as_deref()
-        .and_then(|value| parse_unit_note_seconds(value, tempo))
+        .and_then(|value| parse_unit_note_seconds(value, tempo, beat_unit))
         .unwrap_or(60.0 / tempo);
 
     Ok(AbcTune {
@@ -272,18 +330,32 @@ pub fn parse_abc(input: &str) -> Result<AbcTune, String> {
     })
 }
 
-fn parse_tempo(value: &str) -> Option<f32> {
-    value
-        .split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
-        .filter(|part| !part.is_empty())
-        .last()
-        .and_then(|part| part.parse::<f32>().ok())
-        .filter(|tempo| *tempo > 0.0)
+fn parse_tempo(value: &str) -> Option<(f32, (f32, f32))> {
+    let value = value.trim();
+    let Some((tempo_part, beat_part)) = value.rsplit_once('=') else {
+        let tempo = value
+            .split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
+            .filter(|part| !part.is_empty())
+            .last()
+            .and_then(|part| part.parse::<f32>().ok())
+            .filter(|tempo| *tempo > 0.0)?;
+        return Some((tempo, (1.0, 4.0)));
+    };
+    let tempo = beat_part
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|tempo| *tempo > 0.0)?;
+    let beat_unit = parse_fraction(tempo_part.trim())?;
+    Some((tempo, beat_unit))
 }
 
-fn parse_unit_note_seconds(value: &str, tempo: f32) -> Option<f32> {
-    let (_numerator, _denominator) = parse_fraction(value)?;
-    Some(60.0 / tempo)
+fn parse_unit_note_seconds(value: &str, tempo: f32, beat_unit: (f32, f32)) -> Option<f32> {
+    let (unit_numerator, unit_denominator) = parse_fraction(value)?;
+    let (beat_numerator, beat_denominator) = beat_unit;
+    let unit_note = unit_numerator / unit_denominator;
+    let beat_note = beat_numerator / beat_denominator;
+    Some((60.0 / tempo) * (unit_note / beat_note))
 }
 
 fn parse_events(body: &str, unit_note_seconds: f32) -> Result<Vec<NoteEvent>, String> {
@@ -441,10 +513,19 @@ fn note_frequency(note: char, accidental: i32, octave_shift: i32) -> f32 {
 }
 
 pub fn synthesize_abc(tune: &AbcTune, gain: f32) -> Vec<f32> {
-    synthesize_abc_limited(tune, gain, f32::INFINITY)
+    synthesize_abc_with_scale(tune, gain, 1.0)
 }
 
-fn synthesize_abc_limited(tune: &AbcTune, gain: f32, max_seconds: f32) -> Vec<f32> {
+fn synthesize_abc_with_scale(tune: &AbcTune, gain: f32, playback_scale: f32) -> Vec<f32> {
+    synthesize_abc_limited(tune, gain, f32::INFINITY, playback_scale)
+}
+
+fn synthesize_abc_limited(
+    tune: &AbcTune,
+    gain: f32,
+    max_seconds: f32,
+    playback_scale: f32,
+) -> Vec<f32> {
     let mut samples = Vec::new();
     let mut elapsed = 0.0;
     for event in &tune.events {
@@ -452,7 +533,7 @@ fn synthesize_abc_limited(tune: &AbcTune, gain: f32, max_seconds: f32) -> Vec<f3
             break;
         }
 
-        let duration_seconds = event.duration_seconds.min(max_seconds - elapsed);
+        let duration_seconds = (event.duration_seconds * playback_scale).min(max_seconds - elapsed);
         let frames = (duration_seconds * SAMPLE_RATE as f32).max(1.0) as usize;
         for frame in 0..frames {
             let t = frame as f32 / SAMPLE_RATE as f32;
@@ -496,6 +577,7 @@ pub fn synthesize_effect(effect: SoundEffect) -> Vec<f32> {
         SoundEffect::EnemyHit => synthesize_enemy_hit(),
         SoundEffect::EnemyDeath => synthesize_enemy_death(),
         SoundEffect::PlayerHurt => synthesize_player_hurt(),
+        SoundEffect::GateSuccess => synthesize_gate_success(),
     }
 }
 
@@ -513,6 +595,25 @@ fn synthesize_enemy_death() -> Vec<f32> {
 
 fn synthesize_player_hurt() -> Vec<f32> {
     synthesize_burst(0.28, 52.0, 140.0, 0.70)
+}
+
+fn synthesize_gate_success() -> Vec<f32> {
+    let mut samples = Vec::new();
+    for (freq, duration, gain) in [
+        (784.0, 0.06, 0.48),
+        (988.0, 0.07, 0.56),
+        (1174.0, 0.10, 0.62),
+    ] {
+        let frames = (duration * SAMPLE_RATE as f32).max(1.0) as usize;
+        for frame in 0..frames {
+            let t = frame as f32 / SAMPLE_RATE as f32;
+            let envelope = envelope(frame, frames, 0.05, 0.30);
+            let shimmer = (TAU * (freq * 1.995) * t).sin() * 0.18;
+            let sample = soft_clip(((TAU * freq * t).sin() * 0.82 + shimmer) * gain * envelope);
+            push_stereo(&mut samples, sample * 0.96, sample);
+        }
+    }
+    samples
 }
 
 fn synthesize_burst(duration_seconds: f32, low_hz: f32, high_hz: f32, gain: f32) -> Vec<f32> {
@@ -599,6 +700,7 @@ mod tests {
         assert_eq!(tune.tempo, 112.0);
         assert_eq!(tune.events.len(), 4);
         assert!(tune.events.iter().all(|event| event.frequency_hz.is_some()));
+        assert!((tune.unit_note_seconds - (60.0 / 112.0) * 0.5).abs() < 0.0001);
     }
 
     #[test]
@@ -631,6 +733,14 @@ mod tests {
     }
 
     #[test]
+    fn parses_plain_tempo_as_quarter_notes_per_minute() {
+        let tune = parse_abc("L:1/8\nQ:54\nK:C\nC2 D2\n").unwrap();
+
+        assert_eq!(tune.tempo, 54.0);
+        assert!((tune.unit_note_seconds - (60.0 / 54.0) * 0.5).abs() < 0.0001);
+    }
+
+    #[test]
     fn parses_starhusk_rag_asset() {
         let tune = parse_abc(STARHUSK_RAG_ABC).unwrap();
 
@@ -642,6 +752,14 @@ mod tests {
             .iter()
             .filter_map(|event| event.frequency_hz)
             .any(|freq| freq > 2_000.0));
+    }
+
+    #[test]
+    fn parses_rag_asset_for_drone_ambience() {
+        let tune = parse_abc(RAG_ABC).unwrap();
+
+        assert_eq!(tune.title.as_deref(), Some("Starhusk Rag — Syncopated"));
+        assert!(tune.events.len() > 500);
     }
 
     #[test]
@@ -682,10 +800,13 @@ mod tests {
     fn synthesizes_stereo_effect_buffers() {
         let gunshot = synthesize_effect(SoundEffect::Gunshot);
         let hurt = synthesize_effect(SoundEffect::PlayerHurt);
+        let gate = synthesize_effect(SoundEffect::GateSuccess);
 
         assert!(gunshot.len() > hurt.len() / 2);
         assert_eq!(gunshot.len() % CHANNELS as usize, 0);
         assert!(gunshot.iter().any(|sample| sample.abs() > 0.01));
+        assert!(!gate.is_empty());
+        assert_eq!(gate.len() % CHANNELS as usize, 0);
     }
 
     #[test]
@@ -710,9 +831,13 @@ mod tests {
         assert!(audio.in_bar_mode());
         assert!(!audio.in_corn_maze_mode());
 
+        audio.enter_drone_mode();
+        assert!(audio.in_drone_mode());
+
         audio.leave_ambience();
         assert!(!audio.in_city_mode());
         assert!(!audio.in_corn_maze_mode());
         assert!(!audio.in_bar_mode());
+        assert!(!audio.in_drone_mode());
     }
 }

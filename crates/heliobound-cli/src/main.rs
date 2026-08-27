@@ -191,9 +191,16 @@ const DRONE_GATE_TUBE_RADIUS: i32 = 1;
 const DRONE_GATE_DEPTH: i32 = 2;
 const DRONE_GATE_PASS_DISTANCE: f32 = 7.5;
 const DRONE_GATE_RING_SEGMENTS: usize = 32;
+const DRONE_GATE_COURSE_GATE_COUNT: usize = 14;
 const DRONE_GATE_COURSE_WIDTH: f32 = 80.0;
 const DRONE_GATE_COURSE_HEIGHT: f32 = 28.0;
 const DRONE_GATE_COURSE_SPACING: f32 = 58.0;
+const DRONE_GATE_COURSE_BASE_ALTITUDE: f32 = 18.0;
+const DRONE_GATE_COURSE_LATERAL_WAVE: f32 = 0.76;
+const DRONE_GATE_COURSE_VERTICAL_WAVE: f32 = 0.59;
+const DRONE_GATE_COURSE_LATERAL_JITTER: f32 = 18.0;
+const DRONE_GATE_COURSE_VERTICAL_JITTER_DOWN: f32 = 6.0;
+const DRONE_GATE_COURSE_VERTICAL_JITTER_UP: f32 = 8.0;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
@@ -748,8 +755,12 @@ impl AppState {
                 scene
             }
             AppMode::DroneGateRunner => {
-                self.drone_gate_runner
-                    .update_camera(&mut self.camera, &self.input, dt);
+                if let Some(effect) =
+                    self.drone_gate_runner
+                        .update_camera(&mut self.camera, &self.input, dt)
+                {
+                    self.audio_events.push(effect);
+                }
                 let world = self.drone_gate_runner.render_world();
                 let mut scene = self.city_builder.build(&world, &self.camera, self.tick);
                 render_drone_gate_runner_scene(&mut scene, &self.drone_gate_runner, mouse_captured);
@@ -809,14 +820,11 @@ fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
     match mode {
         AppMode::CityWalk => audio.enter_city_mode(),
         AppMode::CornMaze => audio.enter_corn_maze_mode(),
-        AppMode::BarScene => audio.enter_bar_mode(),
+        AppMode::BarScene | AppMode::VoxelSandbox => audio.enter_bar_mode(),
         AppMode::CityShooter | AppMode::Zombies => audio.enter_doom_mode(),
-        AppMode::Menu
-        | AppMode::PlanetFlight
-        | AppMode::AssetViewer
-        | AppMode::VoxelSandbox
-        | AppMode::Liminal
-        | AppMode::DroneGateRunner => audio.leave_ambience(),
+        AppMode::PlanetFlight | AppMode::Liminal => audio.enter_doom_mode(),
+        AppMode::DroneGateRunner => audio.enter_drone_mode(),
+        AppMode::Menu | AppMode::AssetViewer => audio.leave_ambience(),
     }
 }
 
@@ -835,14 +843,12 @@ fn look_at(position: Vec3, target: Vec3) -> Camera {
 
 fn planet_start_camera() -> Camera {
     let envelope_radius = PLANET_RADIUS as f32 + PLANET_TERRAIN_AMPLITUDE;
-    look_at(
-        Vec3::new(
-            0.0,
-            PLANET_START_Y_OFFSET,
-            -(envelope_radius + PLANET_START_ALTITUDE),
-        ),
-        Vec3::ZERO,
-    )
+    Camera::new(Vec3::new(
+        0.0,
+        PLANET_START_Y_OFFSET,
+        -(envelope_radius + PLANET_START_ALTITUDE),
+    ))
+    .looking_at(0.0, std::f32::consts::FRAC_PI_2)
     .with_fov_y(55.0_f32.to_radians())
     .with_max_distance(PLANET_VIEW_DISTANCE)
 }
@@ -912,7 +918,12 @@ fn liminal_start_camera(liminal: &LiminalState) -> Camera {
 }
 
 fn drone_gate_runner_start_camera(runner: &DroneGateRunnerState) -> Camera {
-    let first_gate = runner.course.gates.first().copied().unwrap_or(Vec3::ZERO);
+    let first_gate = runner
+        .course
+        .gates
+        .first()
+        .map(|target| target.position)
+        .unwrap_or(Vec3::ZERO);
     look_at(runner.start_position, first_gate)
         .with_fov_y(72.0_f32.to_radians())
         .with_max_distance(DRONE_GATE_VIEW_DISTANCE)
@@ -1133,7 +1144,21 @@ struct DroneGateRunnerConfig {
     tube_radius: i32,
     pass_distance: f32,
     spacing: f32,
+    course: DroneCourseGenerationConfig,
     flight: DroneFlightModel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DroneCourseGenerationConfig {
+    gate_count: usize,
+    lateral_amplitude: f32,
+    vertical_amplitude: f32,
+    base_altitude: f32,
+    lateral_wave_frequency: f32,
+    vertical_wave_frequency: f32,
+    lateral_jitter: f32,
+    vertical_jitter_down: f32,
+    vertical_jitter_up: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1154,6 +1179,17 @@ impl Default for DroneGateRunnerConfig {
             tube_radius: DRONE_GATE_TUBE_RADIUS,
             pass_distance: DRONE_GATE_PASS_DISTANCE,
             spacing: DRONE_GATE_COURSE_SPACING,
+            course: DroneCourseGenerationConfig {
+                gate_count: DRONE_GATE_COURSE_GATE_COUNT,
+                lateral_amplitude: DRONE_GATE_COURSE_WIDTH,
+                vertical_amplitude: DRONE_GATE_COURSE_HEIGHT,
+                base_altitude: DRONE_GATE_COURSE_BASE_ALTITUDE,
+                lateral_wave_frequency: DRONE_GATE_COURSE_LATERAL_WAVE,
+                vertical_wave_frequency: DRONE_GATE_COURSE_VERTICAL_WAVE,
+                lateral_jitter: DRONE_GATE_COURSE_LATERAL_JITTER,
+                vertical_jitter_down: DRONE_GATE_COURSE_VERTICAL_JITTER_DOWN,
+                vertical_jitter_up: DRONE_GATE_COURSE_VERTICAL_JITTER_UP,
+            },
             flight: DroneFlightModel {
                 max_speed: DRONE_GATE_FLIGHT_SPEED,
                 strafe_speed: DRONE_GATE_STRAFE_SPEED,
@@ -1166,11 +1202,17 @@ impl Default for DroneGateRunnerConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DroneGateTarget {
+    position: Vec3,
+    normal: Vec3,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct DroneGateCourse {
     seed: u64,
     name: &'static str,
-    gates: Vec<Vec3>,
+    gates: Vec<DroneGateTarget>,
 }
 
 #[derive(Clone, Debug)]
@@ -1191,11 +1233,15 @@ impl DroneGateRunnerState {
     fn new_seeded(seed: u64) -> Self {
         let config = DroneGateRunnerConfig::default();
         let course = generate_drone_gate_course(seed, config);
-        let first_gate = course.gates.first().copied().unwrap_or(Vec3::ZERO);
+        let first_gate = course
+            .gates
+            .first()
+            .map(|target| target.position)
+            .unwrap_or(Vec3::ZERO);
         let second_gate = course
             .gates
             .get(1)
-            .copied()
+            .map(|target| target.position)
             .unwrap_or(first_gate + Vec3::new(0.0, 0.0, config.spacing));
         let direction = horizontal(second_gate - first_gate);
         let start_position = first_gate - direction * DRONE_GATE_START_BACK;
@@ -1214,11 +1260,16 @@ impl DroneGateRunnerState {
         }
     }
 
-    fn update_camera(&mut self, camera: &mut Camera, input: &PlayerInput, dt: f32) {
+    fn update_camera(
+        &mut self,
+        camera: &mut Camera,
+        input: &PlayerInput,
+        dt: f32,
+    ) -> Option<SoundEffect> {
         apply_flight_roll(camera, input, dt);
         self.update_velocity(camera, input, dt);
         camera.position = camera.position + self.velocity * dt;
-        self.update(camera.position, dt);
+        self.update(camera.position, dt)
     }
 
     fn update_velocity(&mut self, camera: &Camera, input: &PlayerInput, dt: f32) {
@@ -1267,29 +1318,32 @@ impl DroneGateRunnerState {
         }
     }
 
-    fn update(&mut self, player_position: Vec3, dt: f32) {
+    fn update(&mut self, player_position: Vec3, dt: f32) -> Option<SoundEffect> {
         self.elapsed += dt;
         if self.course.gates.is_empty() {
             self.previous_position = player_position;
-            return;
+            return None;
         }
 
         if self.crossed_active_gate(self.previous_position, player_position) {
             self.advance_gate();
+            self.previous_position = player_position;
+            return Some(SoundEffect::GateSuccess);
         }
         self.previous_position = player_position;
+        None
     }
 
     fn crossed_active_gate(&self, from: Vec3, to: Vec3) -> bool {
         let gate = self.course.gates[self.active_gate];
-        let center_delta = to - gate;
-        let radial = Vec3::new(center_delta.x, center_delta.y, 0.0).length();
+        let previous_plane = (from - gate.position).dot(gate.normal);
+        let current_plane = (to - gate.position).dot(gate.normal);
+        let plane_position = to - gate.normal * current_plane;
+        let radial = (plane_position - gate.position).length();
         if radial > self.config.inner_radius {
             return false;
         }
 
-        let previous_plane = from.z - gate.z;
-        let current_plane = to.z - gate.z;
         previous_plane.abs().min(current_plane.abs()) <= self.config.pass_distance
             || previous_plane.signum() != current_plane.signum()
     }
@@ -1304,7 +1358,10 @@ impl DroneGateRunnerState {
     }
 
     fn active_gate_position(&self) -> Option<Vec3> {
-        self.course.gates.get(self.active_gate).copied()
+        self.course
+            .gates
+            .get(self.active_gate)
+            .map(|target| target.position)
     }
 
     fn render_world(&self) -> VoxelWorld {
@@ -3160,21 +3217,47 @@ fn build_doom_map() -> VoxelWorld {
 
 fn generate_drone_gate_course(seed: u64, config: DroneGateRunnerConfig) -> DroneGateCourse {
     let mut rng = LiminalRng::new(seed);
-    let mut gates = Vec::new();
-    let gate_count = 14;
+    let mut positions = Vec::new();
 
-    for index in 0..gate_count {
+    for index in 0..config.course.gate_count {
         let t = index as f32;
-        let wave_x = (t * 0.76).sin() * DRONE_GATE_COURSE_WIDTH;
-        let wave_y = 18.0 + (t * 0.59).cos() * DRONE_GATE_COURSE_HEIGHT;
-        let jitter_x = rng.range_f32(-18.0, 18.0);
-        let jitter_y = rng.range_f32(-6.0, 8.0);
-        gates.push(Vec3::new(
+        let wave_x =
+            (t * config.course.lateral_wave_frequency).sin() * config.course.lateral_amplitude;
+        let wave_y = config.course.base_altitude
+            + (t * config.course.vertical_wave_frequency).cos() * config.course.vertical_amplitude;
+        let jitter_x = rng.range_f32(-config.course.lateral_jitter, config.course.lateral_jitter);
+        let jitter_y = rng.range_f32(
+            -config.course.vertical_jitter_down,
+            config.course.vertical_jitter_up,
+        );
+        positions.push(Vec3::new(
             wave_x + jitter_x,
             (wave_y + jitter_y).max(config.gate_radius as f32 + 4.0),
             index as f32 * config.spacing,
         ));
     }
+
+    let gates = positions
+        .iter()
+        .enumerate()
+        .map(|(index, position)| {
+            let previous = index
+                .checked_sub(1)
+                .and_then(|previous| positions.get(previous))
+                .copied();
+            let next = positions.get(index + 1).copied();
+            let normal = match (previous, next) {
+                (Some(previous), Some(next)) => (next - previous).normalized(),
+                (None, Some(next)) => (next - *position).normalized(),
+                (Some(previous), None) => (*position - previous).normalized(),
+                (None, None) => Vec3::new(0.0, 0.0, 1.0),
+            };
+            DroneGateTarget {
+                position: *position,
+                normal,
+            }
+        })
+        .collect();
 
     DroneGateCourse {
         seed,
@@ -3206,8 +3289,8 @@ fn stamp_drone_course_grid(world: &mut VoxelWorld, state: &DroneGateRunnerState)
     let Some(last) = state.course.gates.last().copied() else {
         return;
     };
-    let z_min = first.z.floor() as i32 - 56;
-    let z_max = last.z.ceil() as i32 + 80;
+    let z_min = first.position.z.floor() as i32 - 56;
+    let z_max = last.position.z.ceil() as i32 + 80;
 
     for z in (z_min..=z_max).step_by(32) {
         for x in (-128..=128).step_by(32) {
@@ -3221,8 +3304,16 @@ fn stamp_drone_course_grid(world: &mut VoxelWorld, state: &DroneGateRunnerState)
     for gate in &state.course.gates {
         fill_cuboid(
             world,
-            VoxelCoord::new(gate.x.floor() as i32 - 1, -16, gate.z.floor() as i32 - 1),
-            VoxelCoord::new(gate.x.floor() as i32 + 1, -10, gate.z.floor() as i32 + 1),
+            VoxelCoord::new(
+                gate.position.x.floor() as i32 - 1,
+                -16,
+                gate.position.z.floor() as i32 - 1,
+            ),
+            VoxelCoord::new(
+                gate.position.x.floor() as i32 + 1,
+                -10,
+                gate.position.z.floor() as i32 + 1,
+            ),
             VoxelMaterial::ShipHull,
         );
     }
@@ -3230,7 +3321,7 @@ fn stamp_drone_course_grid(world: &mut VoxelWorld, state: &DroneGateRunnerState)
 
 fn stamp_drone_gate(
     world: &mut VoxelWorld,
-    center: Vec3,
+    target: DroneGateTarget,
     config: DroneGateRunnerConfig,
     active: bool,
     completed: bool,
@@ -3243,41 +3334,54 @@ fn stamp_drone_gate(
         VoxelMaterial::Gate
     };
     let radius = config.gate_radius as f32;
+    let center = target.position;
+    let (right, up) = drone_gate_basis(target.normal);
 
     for segment in 0..DRONE_GATE_RING_SEGMENTS {
         let radians = segment as f32 / DRONE_GATE_RING_SEGMENTS as f32 * std::f32::consts::TAU;
-        let x = center.x + radians.cos() * radius;
-        let y = center.y + radians.sin() * radius;
+        let point = center + right * (radians.cos() * radius) + up * (radians.sin() * radius);
         fill_cuboid(
             world,
             VoxelCoord::new(
-                x.round() as i32 - config.tube_radius,
-                y.round() as i32 - config.tube_radius,
-                center.z.round() as i32 - DRONE_GATE_DEPTH,
+                point.x.round() as i32 - config.tube_radius,
+                point.y.round() as i32 - config.tube_radius,
+                point.z.round() as i32 - DRONE_GATE_DEPTH,
             ),
             VoxelCoord::new(
-                x.round() as i32 + config.tube_radius,
-                y.round() as i32 + config.tube_radius,
-                center.z.round() as i32 + DRONE_GATE_DEPTH,
+                point.x.round() as i32 + config.tube_radius,
+                point.y.round() as i32 + config.tube_radius,
+                point.z.round() as i32 + DRONE_GATE_DEPTH,
             ),
             material,
         );
     }
 
+    let crown = center + up * (config.gate_radius as f32 + 3.5);
     fill_cuboid(
         world,
         VoxelCoord::new(
-            center.x.round() as i32 - 1,
-            center.y.round() as i32 + config.gate_radius + 2,
-            center.z.round() as i32 - 1,
+            crown.x.round() as i32 - 1,
+            crown.y.round() as i32 - 1,
+            crown.z.round() as i32 - 1,
         ),
         VoxelCoord::new(
-            center.x.round() as i32 + 1,
-            center.y.round() as i32 + config.gate_radius + 5,
-            center.z.round() as i32 + 1,
+            crown.x.round() as i32 + 1,
+            crown.y.round() as i32 + 2,
+            crown.z.round() as i32 + 1,
         ),
         material,
     );
+}
+
+fn drone_gate_basis(normal: Vec3) -> (Vec3, Vec3) {
+    let normal = normal.normalized();
+    let world_up = Vec3::new(0.0, 1.0, 0.0);
+    let mut right = world_up.cross(normal).normalized();
+    if right.length() <= f32::EPSILON {
+        right = Vec3::new(1.0, 0.0, 0.0);
+    }
+    let up = normal.cross(right).normalized();
+    (right, up)
 }
 
 fn stamp_drone_start_marker(world: &mut VoxelWorld, position: Vec3) {
@@ -4214,7 +4318,10 @@ fn build_drone_gate_asset() -> VoxelWorld {
     let mut world = VoxelWorld::new();
     stamp_drone_gate(
         &mut world,
-        Vec3::new(0.0, DRONE_GATE_FRAME_RADIUS as f32 + 2.0, 0.0),
+        DroneGateTarget {
+            position: Vec3::new(0.0, DRONE_GATE_FRAME_RADIUS as f32 + 2.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, 1.0),
+        },
         DroneGateRunnerConfig::default(),
         true,
         false,
@@ -6560,12 +6667,26 @@ mod tests {
     }
 
     #[test]
+    fn drone_gate_course_uses_tunable_generation_baseline() {
+        let config = DroneGateRunnerConfig::default();
+        let course = generate_drone_gate_course(1234, config);
+
+        assert_eq!(course.gates.len(), config.course.gate_count);
+        for pair in course.gates.windows(2) {
+            let spacing = (pair[1].position - pair[0].position).length();
+            assert!(spacing > config.spacing * 0.70);
+            assert!(spacing < config.spacing * 2.50);
+            assert!((pair[0].normal.length() - 1.0).abs() < 0.001);
+        }
+    }
+
+    #[test]
     fn drone_runner_advances_when_player_flies_through_active_gate() {
         let mut runner = DroneGateRunnerState::new_seeded(DRONE_GATE_SEED);
-        let gate = runner.active_gate_position().unwrap();
-        runner.previous_position = Vec3::new(gate.x, gate.y, gate.z - 12.0);
+        let gate = runner.course.gates[runner.active_gate];
+        runner.previous_position = gate.position - gate.normal * 12.0;
 
-        runner.update(Vec3::new(gate.x, gate.y, gate.z + 12.0), 0.016);
+        runner.update(gate.position + gate.normal * 12.0, 0.016);
 
         assert_eq!(runner.active_gate, 1);
         assert_eq!(runner.passed_gates, 1);
@@ -6629,14 +6750,16 @@ mod tests {
     #[test]
     fn drone_runner_world_lights_active_gate() {
         let runner = DroneGateRunnerState::new_seeded(DRONE_GATE_SEED);
-        let gate = runner.active_gate_position().unwrap();
+        let gate = runner.course.gates[runner.active_gate];
+        let (right, _) = drone_gate_basis(gate.normal);
+        let sample = gate.position + right * runner.config.gate_radius as f32;
         let world = runner.render_world();
 
         assert_eq!(
             world.get(VoxelCoord::new(
-                gate.x.round() as i32 + DRONE_GATE_FRAME_RADIUS,
-                gate.y.round() as i32,
-                gate.z.round() as i32
+                sample.x.round() as i32,
+                sample.y.round() as i32,
+                sample.z.round() as i32
             )),
             Some(VoxelCell::new(VoxelMaterial::Beacon))
         );
