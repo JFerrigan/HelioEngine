@@ -95,6 +95,7 @@ impl MaterialGlyphMap {
             VoxelMaterial::ShipHull => shade(intensity, "<>XZ"),
             VoxelMaterial::Glass => shade(intensity, "'.oO"),
             VoxelMaterial::Beacon => shade(intensity, "i!*@"),
+            VoxelMaterial::Gate => shade(intensity, "()0@"),
         }
     }
 
@@ -131,6 +132,7 @@ fn material_base_color(material: VoxelMaterial) -> [u8; 3] {
         VoxelMaterial::ShipHull => [0xc2, 0xc8, 0xd2],
         VoxelMaterial::Glass => [0x9f, 0xf5, 0xff],
         VoxelMaterial::Beacon => [0xff, 0xda, 0x63],
+        VoxelMaterial::Gate => [0xff, 0x74, 0x39],
     }
 }
 

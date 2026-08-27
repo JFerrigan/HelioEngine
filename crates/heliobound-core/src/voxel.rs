@@ -50,6 +50,7 @@ pub enum VoxelMaterial {
     ShipHull,
     Glass,
     Beacon,
+    Gate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

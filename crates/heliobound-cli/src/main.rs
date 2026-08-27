@@ -176,6 +176,18 @@ const ZOMBIE_BODY_OFFSETS: [(i32, i32, i32, VoxelMaterial); 18] = [
     (1, 2, -1, VoxelMaterial::Beacon),
     (0, 5, 0, VoxelMaterial::Beacon),
 ];
+const DRONE_GATE_SEED: u64 = 0xD20A_6A7E_2026_0826;
+const DRONE_GATE_VIEW_DISTANCE: f32 = 900.0;
+const DRONE_GATE_START_BACK: f32 = 42.0;
+const DRONE_GATE_FRAME_RADIUS: i32 = 7;
+const DRONE_GATE_INNER_RADIUS: f32 = 5.7;
+const DRONE_GATE_TUBE_RADIUS: i32 = 1;
+const DRONE_GATE_DEPTH: i32 = 2;
+const DRONE_GATE_PASS_DISTANCE: f32 = 7.5;
+const DRONE_GATE_RING_SEGMENTS: usize = 32;
+const DRONE_GATE_COURSE_WIDTH: f32 = 80.0;
+const DRONE_GATE_COURSE_HEIGHT: f32 = 28.0;
+const DRONE_GATE_COURSE_SPACING: f32 = 58.0;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
@@ -310,6 +322,7 @@ enum AppMode {
     VoxelSandbox,
     Zombies,
     Liminal,
+    DroneGateRunner,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -334,6 +347,7 @@ struct AppState {
     zombies_map: VoxelWorld,
     zombies: ZombiesState,
     liminal: LiminalState,
+    drone_gate_runner: DroneGateRunnerState,
     weapon_asset: PreviewAsset,
     planet_builder: SceneBuilder,
     city_builder: SceneBuilder,
@@ -360,6 +374,7 @@ impl AppState {
             zombies_map: build_zombies_map(&ZombiesState::new()),
             zombies: ZombiesState::new(),
             liminal: LiminalState::new_seeded(LIMINAL_SEED),
+            drone_gate_runner: DroneGateRunnerState::new_seeded(DRONE_GATE_SEED),
             weapon_asset: PreviewAsset::new("gun", build_weapon_asset()),
             planet_builder: SceneBuilder::new(
                 GraphicsConfig {
@@ -424,6 +439,10 @@ impl AppState {
                 }
                 (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit9)) => {
                     self.start_liminal();
+                    return KeyboardAction::StartScene;
+                }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit0)) => {
+                    self.start_drone_gate_runner();
                     return KeyboardAction::StartScene;
                 }
                 (AppMode::AssetViewer, PhysicalKey::Code(KeyCode::KeyM)) => {
@@ -564,6 +583,13 @@ impl AppState {
         self.mode = AppMode::Liminal;
         self.liminal = LiminalState::new_seeded(LIMINAL_SEED);
         self.camera = liminal_start_camera(&self.liminal);
+        self.input = PlayerInput::default();
+    }
+
+    fn start_drone_gate_runner(&mut self) {
+        self.mode = AppMode::DroneGateRunner;
+        self.drone_gate_runner = DroneGateRunnerState::new_seeded(DRONE_GATE_SEED);
+        self.camera = drone_gate_runner_start_camera(&self.drone_gate_runner);
         self.input = PlayerInput::default();
     }
 
@@ -709,6 +735,14 @@ impl AppState {
                 render_liminal_scene(&mut scene, &self.liminal, mouse_captured);
                 scene
             }
+            AppMode::DroneGateRunner => {
+                update_flight_camera(&mut self.camera, &self.input, dt);
+                self.drone_gate_runner.update(self.camera.position, dt);
+                let world = self.drone_gate_runner.render_world();
+                let mut scene = self.city_builder.build(&world, &self.camera, self.tick);
+                render_drone_gate_runner_scene(&mut scene, &self.drone_gate_runner, mouse_captured);
+                scene
+            }
         }
     }
 
@@ -716,6 +750,9 @@ impl AppState {
         match self.mode {
             AppMode::Menu => {}
             AppMode::PlanetFlight => {
+                apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Unrestricted)
+            }
+            AppMode::DroneGateRunner => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Unrestricted)
             }
             AppMode::CityWalk
@@ -766,7 +803,8 @@ fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
         | AppMode::PlanetFlight
         | AppMode::AssetViewer
         | AppMode::VoxelSandbox
-        | AppMode::Liminal => audio.leave_ambience(),
+        | AppMode::Liminal
+        | AppMode::DroneGateRunner => audio.leave_ambience(),
     }
 }
 
@@ -859,6 +897,13 @@ fn liminal_start_camera(liminal: &LiminalState) -> Camera {
         .looking_at(0.0, 0.0)
         .with_fov_y(66.0_f32.to_radians())
         .with_max_distance(120.0)
+}
+
+fn drone_gate_runner_start_camera(runner: &DroneGateRunnerState) -> Camera {
+    let first_gate = runner.course.gates.first().copied().unwrap_or(Vec3::ZERO);
+    look_at(runner.start_position, first_gate)
+        .with_fov_y(72.0_f32.to_radians())
+        .with_max_distance(DRONE_GATE_VIEW_DISTANCE)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1066,6 +1111,118 @@ impl CornMazeState {
         if horizontal_distance(player_position, self.exit_position) < 3.2 {
             self.escaped = true;
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DroneGateRunnerConfig {
+    gate_radius: i32,
+    inner_radius: f32,
+    tube_radius: i32,
+    pass_distance: f32,
+    spacing: f32,
+}
+
+impl Default for DroneGateRunnerConfig {
+    fn default() -> Self {
+        Self {
+            gate_radius: DRONE_GATE_FRAME_RADIUS,
+            inner_radius: DRONE_GATE_INNER_RADIUS,
+            tube_radius: DRONE_GATE_TUBE_RADIUS,
+            pass_distance: DRONE_GATE_PASS_DISTANCE,
+            spacing: DRONE_GATE_COURSE_SPACING,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct DroneGateCourse {
+    seed: u64,
+    name: &'static str,
+    gates: Vec<Vec3>,
+}
+
+#[derive(Clone, Debug)]
+struct DroneGateRunnerState {
+    config: DroneGateRunnerConfig,
+    course: DroneGateCourse,
+    active_gate: usize,
+    passed_gates: u32,
+    laps: u32,
+    start_position: Vec3,
+    previous_position: Vec3,
+    best_streak: u32,
+    elapsed: f32,
+}
+
+impl DroneGateRunnerState {
+    fn new_seeded(seed: u64) -> Self {
+        let config = DroneGateRunnerConfig::default();
+        let course = generate_drone_gate_course(seed, config);
+        let first_gate = course.gates.first().copied().unwrap_or(Vec3::ZERO);
+        let second_gate = course
+            .gates
+            .get(1)
+            .copied()
+            .unwrap_or(first_gate + Vec3::new(0.0, 0.0, config.spacing));
+        let direction = horizontal(second_gate - first_gate);
+        let start_position = first_gate - direction * DRONE_GATE_START_BACK;
+        let start_position = Vec3::new(start_position.x, first_gate.y, start_position.z);
+        Self {
+            config,
+            course,
+            active_gate: 0,
+            passed_gates: 0,
+            laps: 0,
+            start_position,
+            previous_position: start_position,
+            best_streak: 0,
+            elapsed: 0.0,
+        }
+    }
+
+    fn update(&mut self, player_position: Vec3, dt: f32) {
+        self.elapsed += dt;
+        if self.course.gates.is_empty() {
+            self.previous_position = player_position;
+            return;
+        }
+
+        if self.crossed_active_gate(self.previous_position, player_position) {
+            self.advance_gate();
+        }
+        self.previous_position = player_position;
+    }
+
+    fn crossed_active_gate(&self, from: Vec3, to: Vec3) -> bool {
+        let gate = self.course.gates[self.active_gate];
+        let center_delta = to - gate;
+        let radial = Vec3::new(center_delta.x, center_delta.y, 0.0).length();
+        if radial > self.config.inner_radius {
+            return false;
+        }
+
+        let previous_plane = from.z - gate.z;
+        let current_plane = to.z - gate.z;
+        previous_plane.abs().min(current_plane.abs()) <= self.config.pass_distance
+            || previous_plane.signum() != current_plane.signum()
+    }
+
+    fn advance_gate(&mut self) {
+        self.passed_gates += 1;
+        self.best_streak = self.best_streak.max(self.passed_gates);
+        self.active_gate = (self.active_gate + 1) % self.course.gates.len();
+        if self.active_gate == 0 {
+            self.laps += 1;
+        }
+    }
+
+    fn active_gate_position(&self) -> Option<Vec3> {
+        self.course.gates.get(self.active_gate).copied()
+    }
+
+    fn render_world(&self) -> VoxelWorld {
+        build_drone_gate_runner_world(self)
     }
 }
 
@@ -2892,6 +3049,145 @@ fn build_doom_map() -> VoxelWorld {
     DoomMapGenerator::new(DoomMapConfig::default()).generate()
 }
 
+fn generate_drone_gate_course(seed: u64, config: DroneGateRunnerConfig) -> DroneGateCourse {
+    let mut rng = LiminalRng::new(seed);
+    let mut gates = Vec::new();
+    let gate_count = 14;
+
+    for index in 0..gate_count {
+        let t = index as f32;
+        let wave_x = (t * 0.76).sin() * DRONE_GATE_COURSE_WIDTH;
+        let wave_y = 18.0 + (t * 0.59).cos() * DRONE_GATE_COURSE_HEIGHT;
+        let jitter_x = rng.range_f32(-18.0, 18.0);
+        let jitter_y = rng.range_f32(-6.0, 8.0);
+        gates.push(Vec3::new(
+            wave_x + jitter_x,
+            (wave_y + jitter_y).max(config.gate_radius as f32 + 4.0),
+            index as f32 * config.spacing,
+        ));
+    }
+
+    DroneGateCourse {
+        seed,
+        name: "Relay Spine",
+        gates,
+    }
+}
+
+fn build_drone_gate_runner_world(state: &DroneGateRunnerState) -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+    stamp_drone_course_grid(&mut world, state);
+    for (index, gate) in state.course.gates.iter().copied().enumerate() {
+        stamp_drone_gate(
+            &mut world,
+            gate,
+            state.config,
+            index == state.active_gate,
+            index < state.active_gate || state.laps > 0,
+        );
+    }
+    stamp_drone_start_marker(&mut world, state.start_position);
+    world
+}
+
+fn stamp_drone_course_grid(world: &mut VoxelWorld, state: &DroneGateRunnerState) {
+    let Some(first) = state.course.gates.first().copied() else {
+        return;
+    };
+    let Some(last) = state.course.gates.last().copied() else {
+        return;
+    };
+    let z_min = first.z.floor() as i32 - 56;
+    let z_max = last.z.ceil() as i32 + 80;
+
+    for z in (z_min..=z_max).step_by(32) {
+        for x in (-128..=128).step_by(32) {
+            world.set(
+                VoxelCoord::new(x, -18, z),
+                VoxelCell::new(VoxelMaterial::Glass),
+            );
+        }
+    }
+
+    for gate in &state.course.gates {
+        fill_cuboid(
+            world,
+            VoxelCoord::new(gate.x.floor() as i32 - 1, -16, gate.z.floor() as i32 - 1),
+            VoxelCoord::new(gate.x.floor() as i32 + 1, -10, gate.z.floor() as i32 + 1),
+            VoxelMaterial::ShipHull,
+        );
+    }
+}
+
+fn stamp_drone_gate(
+    world: &mut VoxelWorld,
+    center: Vec3,
+    config: DroneGateRunnerConfig,
+    active: bool,
+    completed: bool,
+) {
+    let material = if active {
+        VoxelMaterial::Beacon
+    } else if completed {
+        VoxelMaterial::Glass
+    } else {
+        VoxelMaterial::Gate
+    };
+    let radius = config.gate_radius as f32;
+
+    for segment in 0..DRONE_GATE_RING_SEGMENTS {
+        let radians = segment as f32 / DRONE_GATE_RING_SEGMENTS as f32 * std::f32::consts::TAU;
+        let x = center.x + radians.cos() * radius;
+        let y = center.y + radians.sin() * radius;
+        fill_cuboid(
+            world,
+            VoxelCoord::new(
+                x.round() as i32 - config.tube_radius,
+                y.round() as i32 - config.tube_radius,
+                center.z.round() as i32 - DRONE_GATE_DEPTH,
+            ),
+            VoxelCoord::new(
+                x.round() as i32 + config.tube_radius,
+                y.round() as i32 + config.tube_radius,
+                center.z.round() as i32 + DRONE_GATE_DEPTH,
+            ),
+            material,
+        );
+    }
+
+    fill_cuboid(
+        world,
+        VoxelCoord::new(
+            center.x.round() as i32 - 1,
+            center.y.round() as i32 + config.gate_radius + 2,
+            center.z.round() as i32 - 1,
+        ),
+        VoxelCoord::new(
+            center.x.round() as i32 + 1,
+            center.y.round() as i32 + config.gate_radius + 5,
+            center.z.round() as i32 + 1,
+        ),
+        material,
+    );
+}
+
+fn stamp_drone_start_marker(world: &mut VoxelWorld, position: Vec3) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(
+            position.x.floor() as i32 - 3,
+            position.y.floor() as i32 - 3,
+            position.z.floor() as i32 - 3,
+        ),
+        VoxelCoord::new(
+            position.x.floor() as i32 + 3,
+            position.y.floor() as i32 - 1,
+            position.z.floor() as i32 + 3,
+        ),
+        VoxelMaterial::ShipHull,
+    );
+}
+
 #[derive(Clone, Copy, Debug)]
 struct LiminalRng {
     state: u64,
@@ -2914,6 +3210,11 @@ impl LiminalRng {
 
     fn range_i32(&mut self, min: i32, max: i32) -> i32 {
         min + (self.next_u32() % (max - min + 1) as u32) as i32
+    }
+
+    fn range_f32(&mut self, min: f32, max: f32) -> f32 {
+        let unit = self.next_u32() as f32 / u32::MAX as f32;
+        min + (max - min) * unit
     }
 }
 
@@ -3659,6 +3960,10 @@ fn build_asset_catalog() -> Vec<PreviewAsset> {
     }
 
     assets.push(PreviewAsset::new("gun", build_weapon_asset()));
+    assets.push(PreviewAsset::new(
+        "drone race gate",
+        build_drone_gate_asset(),
+    ));
 
     assets
 }
@@ -3793,6 +4098,18 @@ fn build_ash_tray_asset() -> VoxelWorld {
 fn build_zombie_asset() -> VoxelWorld {
     let mut world = VoxelWorld::new();
     stamp_zombie_body(&mut world, Vec3::ZERO, VoxelMaterial::CarbonLife);
+    world
+}
+
+fn build_drone_gate_asset() -> VoxelWorld {
+    let mut world = VoxelWorld::new();
+    stamp_drone_gate(
+        &mut world,
+        Vec3::new(0.0, DRONE_GATE_FRAME_RADIUS as f32 + 2.0, 0.0),
+        DroneGateRunnerConfig::default(),
+        true,
+        false,
+    );
     world
 }
 
@@ -4874,9 +5191,16 @@ fn build_menu_scene(tick: u64) -> Scene {
     });
     scene.overlays.push(Overlay {
         x: 48,
-        y: 76,
+        y: 73,
         z: 10,
-        text: "WASD MOVE   F USE   T DEBUG ANOMALY   M MENU".to_string(),
+        text: "0  DRONE GATE RUNNER".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 48,
+        y: 80,
+        z: 10,
+        text: "WASD MOVE   SHIFT BOOST   Q/E ROLL   M MENU".to_string(),
         style: TextStyle::default(),
     });
     scene
@@ -5021,7 +5345,51 @@ fn material_label(material: VoxelMaterial) -> &'static str {
         VoxelMaterial::ShipHull => "hull",
         VoxelMaterial::Glass => "glass",
         VoxelMaterial::Beacon => "beacon",
+        VoxelMaterial::Gate => "gate",
     }
+}
+
+fn render_drone_gate_runner_scene(
+    scene: &mut Scene,
+    runner: &DroneGateRunnerState,
+    mouse_captured: bool,
+) {
+    let active = runner.active_gate_position().unwrap_or(Vec3::ZERO);
+    scene.layers.push(Layer {
+        name: "reticle".to_string(),
+        z: 50,
+        cells: reticle_cells(scene.viewport),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "DRONE GATE RUNNER  map {}  gate {}/{}  mouse {}",
+            runner.course.name,
+            runner.active_gate + 1,
+            runner.course.gates.len(),
+            if mouse_captured { "locked" } else { "free" }
+        ),
+        style: hud_style(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 5,
+        z: 120,
+        text: format!(
+            "laps {}  passed {}  time {:05.1}  next {:.0},{:.0},{:.0}",
+            runner.laps, runner.passed_gates, runner.elapsed, active.x, active.y, active.z
+        ),
+        style: hud_style(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 8,
+        z: 120,
+        text: "WASD strafe/forward  Space/Ctrl vertical  Shift boost  Q/E roll  M menu".to_string(),
+        style: hud_style(),
+    });
 }
 
 fn render_corn_maze_scene(
@@ -6039,6 +6407,77 @@ mod tests {
         assert_eq!(app.mode, AppMode::Liminal);
         assert_eq!(app.liminal.seed, LIMINAL_SEED);
         assert!(app.liminal.world.voxel_count() > 8_000);
+    }
+
+    #[test]
+    fn menu_can_start_drone_gate_runner_mode() {
+        let mut app = AppState::new();
+
+        let action =
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit0), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::StartScene);
+        assert_eq!(app.mode, AppMode::DroneGateRunner);
+        assert_eq!(app.drone_gate_runner.course.seed, DRONE_GATE_SEED);
+        assert!(app.camera.max_distance >= DRONE_GATE_VIEW_DISTANCE);
+    }
+
+    #[test]
+    fn drone_gate_course_generation_is_seeded() {
+        let config = DroneGateRunnerConfig::default();
+        let a = generate_drone_gate_course(1234, config);
+        let b = generate_drone_gate_course(1234, config);
+        let c = generate_drone_gate_course(4321, config);
+
+        assert_eq!(a.gates, b.gates);
+        assert_ne!(a.gates, c.gates);
+        assert!(a.gates.len() >= 10);
+    }
+
+    #[test]
+    fn drone_runner_advances_when_player_flies_through_active_gate() {
+        let mut runner = DroneGateRunnerState::new_seeded(DRONE_GATE_SEED);
+        let gate = runner.active_gate_position().unwrap();
+        runner.previous_position = Vec3::new(gate.x, gate.y, gate.z - 12.0);
+
+        runner.update(Vec3::new(gate.x, gate.y, gate.z + 12.0), 0.016);
+
+        assert_eq!(runner.active_gate, 1);
+        assert_eq!(runner.passed_gates, 1);
+    }
+
+    #[test]
+    fn drone_runner_uses_unrestricted_flight_controls() {
+        let mut app = AppState::new();
+        app.start_drone_gate_runner();
+        let start = app.camera.position;
+        app.input = PlayerInput {
+            forward: true,
+            roll_left: true,
+            ..PlayerInput::default()
+        };
+
+        app.frame(1.0, true);
+
+        assert!(app.camera.position != start);
+        assert!(app.camera.roll_radians > 0.0);
+    }
+
+    #[test]
+    fn drone_runner_world_lights_active_gate() {
+        let runner = DroneGateRunnerState::new_seeded(DRONE_GATE_SEED);
+        let gate = runner.active_gate_position().unwrap();
+        let world = runner.render_world();
+
+        assert_eq!(
+            world.get(VoxelCoord::new(
+                gate.x.round() as i32 + DRONE_GATE_FRAME_RADIUS,
+                gate.y.round() as i32,
+                gate.z.round() as i32
+            )),
+            Some(VoxelCell::new(VoxelMaterial::Beacon))
+        );
+        assert!(world.voxel_count() > 1_000);
     }
 
     #[test]
