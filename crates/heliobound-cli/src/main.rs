@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 use heliobound_audio::{GameAudio, SoundEffect};
@@ -201,6 +201,9 @@ const DRONE_GATE_COURSE_VERTICAL_WAVE: f32 = 0.59;
 const DRONE_GATE_COURSE_LATERAL_JITTER: f32 = 18.0;
 const DRONE_GATE_COURSE_VERTICAL_JITTER_DOWN: f32 = 6.0;
 const DRONE_GATE_COURSE_VERTICAL_JITTER_UP: f32 = 8.0;
+const DRONE_GATE_COURSE_YAW_BEND: f32 = 0.42;
+const DRONE_GATE_COURSE_PITCH_BEND: f32 = 0.18;
+const DRONE_GATE_COURSE_SPACING_JITTER: f32 = 0.12;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
@@ -370,12 +373,18 @@ struct AppState {
     shooter: ShooterState,
     viewmodel_bob: ViewmodelBob,
     audio_events: Vec<SoundEffect>,
+    drone_course_nonce: u64,
     drone_course_runs: u64,
     tick: u64,
 }
 
 impl AppState {
     fn new() -> Self {
+        Self::new_with_drone_course_nonce(runtime_seed_nonce())
+    }
+
+    fn new_with_drone_course_nonce(drone_course_nonce: u64) -> Self {
+        let initial_drone_seed = drone_course_seed(drone_course_nonce, 0);
         Self {
             mode: AppMode::Menu,
             planet: build_demo_planet(),
@@ -388,7 +397,7 @@ impl AppState {
             zombies_map: build_zombies_map(&ZombiesState::new()),
             zombies: ZombiesState::new(),
             liminal: LiminalState::new_seeded(LIMINAL_SEED),
-            drone_gate_runner: DroneGateRunnerState::new_seeded(DRONE_GATE_SEED),
+            drone_gate_runner: DroneGateRunnerState::new_seeded(initial_drone_seed),
             weapon_asset: PreviewAsset::new("gun", build_weapon_asset()),
             planet_builder: SceneBuilder::new(
                 GraphicsConfig {
@@ -410,6 +419,7 @@ impl AppState {
             shooter: ShooterState::new(),
             viewmodel_bob: ViewmodelBob::default(),
             audio_events: Vec::new(),
+            drone_course_nonce,
             drone_course_runs: 0,
             tick: 0,
         }
@@ -610,8 +620,10 @@ impl AppState {
     fn start_drone_gate_runner(&mut self) {
         self.mode = AppMode::DroneGateRunner;
         self.drone_course_runs = self.drone_course_runs.wrapping_add(1);
-        self.drone_gate_runner =
-            DroneGateRunnerState::new_seeded(drone_course_seed(self.drone_course_runs));
+        self.drone_gate_runner = DroneGateRunnerState::new_seeded(drone_course_seed(
+            self.drone_course_nonce,
+            self.drone_course_runs,
+        ));
         self.camera = drone_gate_runner_start_camera(&self.drone_gate_runner);
         self.input = PlayerInput::default();
     }
@@ -3219,8 +3231,16 @@ fn build_doom_map() -> VoxelWorld {
     DoomMapGenerator::new(DoomMapConfig::default()).generate()
 }
 
-fn drone_course_seed(run_index: u64) -> u64 {
-    let mut value = DRONE_GATE_SEED ^ run_index.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+fn runtime_seed_nonce() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+fn drone_course_seed(nonce: u64, run_index: u64) -> u64 {
+    let mut value =
+        DRONE_GATE_SEED ^ nonce.rotate_left(17) ^ run_index.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     value ^= value >> 30;
     value = value.wrapping_mul(0xBF58_476D_1CE4_E5B9);
     value ^= value >> 27;
@@ -3231,22 +3251,65 @@ fn drone_course_seed(run_index: u64) -> u64 {
 fn generate_drone_gate_course(seed: u64, config: DroneGateRunnerConfig) -> DroneGateCourse {
     let mut rng = LiminalRng::new(seed);
     let mut positions = Vec::new();
+    let min_altitude = config.gate_radius as f32 + 4.0;
+    let mut position = Vec3::new(
+        rng.range_f32(-config.course.lateral_jitter, config.course.lateral_jitter),
+        config.course.base_altitude.max(min_altitude)
+            + rng.range_f32(
+                -config.course.vertical_jitter_down,
+                config.course.vertical_jitter_up,
+            ),
+        0.0,
+    );
+    position.y = position.y.max(min_altitude);
+    let mut direction = Vec3::new(0.0, 0.0, 1.0);
 
     for index in 0..config.course.gate_count {
+        if index > 0 {
+            let t = index as f32;
+            let yaw = (t * config.course.lateral_wave_frequency).sin() * DRONE_GATE_COURSE_YAW_BEND
+                + rng.range_f32(-0.16, 0.16);
+            direction = direction
+                .rotate_around(Vec3::new(0.0, 1.0, 0.0), yaw)
+                .normalized();
+
+            let right = drone_gate_basis(direction).0;
+            let pitch = (t * config.course.vertical_wave_frequency).cos()
+                * DRONE_GATE_COURSE_PITCH_BEND
+                + rng.range_f32(-0.08, 0.08);
+            direction = direction.rotate_around(right, -pitch).normalized();
+
+            let spacing = config.spacing
+                * rng.range_f32(
+                    1.0 - DRONE_GATE_COURSE_SPACING_JITTER,
+                    1.0 + DRONE_GATE_COURSE_SPACING_JITTER,
+                );
+            position = position + direction * spacing;
+            position.y = position.y.max(min_altitude);
+        }
+
         let t = index as f32;
-        let wave_x =
-            (t * config.course.lateral_wave_frequency).sin() * config.course.lateral_amplitude;
-        let wave_y = config.course.base_altitude
-            + (t * config.course.vertical_wave_frequency).cos() * config.course.vertical_amplitude;
-        let jitter_x = rng.range_f32(-config.course.lateral_jitter, config.course.lateral_jitter);
-        let jitter_y = rng.range_f32(
-            -config.course.vertical_jitter_down,
-            config.course.vertical_jitter_up,
-        );
+        let right = drone_gate_basis(direction).0;
+        let vertical = Vec3::new(0.0, 1.0, 0.0);
+        let lateral_offset = (t * config.course.lateral_wave_frequency).sin()
+            * config.course.lateral_amplitude
+            * 0.12
+            + rng.range_f32(
+                -config.course.lateral_jitter * 0.35,
+                config.course.lateral_jitter * 0.35,
+            );
+        let vertical_offset = (t * config.course.vertical_wave_frequency).cos()
+            * config.course.vertical_amplitude
+            * 0.10
+            + rng.range_f32(
+                -config.course.vertical_jitter_down * 0.35,
+                config.course.vertical_jitter_up * 0.35,
+            );
+        let target_position = position + right * lateral_offset + vertical * vertical_offset;
         positions.push(Vec3::new(
-            wave_x + jitter_x,
-            (wave_y + jitter_y).max(config.gate_radius as f32 + 4.0),
-            index as f32 * config.spacing,
+            target_position.x,
+            target_position.y.max(min_altitude),
+            target_position.z,
         ));
     }
 
@@ -6657,20 +6720,23 @@ mod tests {
 
     #[test]
     fn menu_can_start_drone_gate_runner_mode() {
-        let mut app = AppState::new();
+        let mut app = AppState::new_with_drone_course_nonce(0xD00D);
 
         let action =
             app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit0), ElementState::Pressed);
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::DroneGateRunner);
-        assert_eq!(app.drone_gate_runner.course.seed, drone_course_seed(1));
+        assert_eq!(
+            app.drone_gate_runner.course.seed,
+            drone_course_seed(0xD00D, 1)
+        );
         assert!(app.camera.max_distance >= DRONE_GATE_VIEW_DISTANCE);
     }
 
     #[test]
     fn drone_gate_runner_restarts_with_new_procedural_course() {
-        let mut app = AppState::new();
+        let mut app = AppState::new_with_drone_course_nonce(0xD00D);
 
         app.start_drone_gate_runner();
         let first = app.drone_gate_runner.course.clone();
@@ -6706,6 +6772,17 @@ mod tests {
             assert!(spacing < config.spacing * 2.50);
             assert!((pair[0].normal.length() - 1.0).abs() < 0.001);
         }
+    }
+
+    #[test]
+    fn drone_gate_course_does_not_use_fixed_z_spine() {
+        let config = DroneGateRunnerConfig::default();
+        let course = generate_drone_gate_course(1234, config);
+
+        assert!(course.gates.windows(2).any(|pair| {
+            let step = pair[1].position - pair[0].position;
+            (step.z - config.spacing).abs() > 1.0 || step.x.abs() > 1.0
+        }));
     }
 
     #[test]
