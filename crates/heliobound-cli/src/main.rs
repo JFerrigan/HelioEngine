@@ -36,6 +36,12 @@ const PLANET_START_ALTITUDE: f32 = 125_000.0;
 const PLANET_START_Y_OFFSET: f32 = 18_000.0;
 const PLANET_VIEW_DISTANCE: f32 = 8_000_000.0;
 const FLIGHT_SPEED: f32 = 12_000.0;
+const DRONE_GATE_FLIGHT_SPEED: f32 = 100.0;
+const DRONE_GATE_STRAFE_SPEED: f32 = 42.0;
+const DRONE_GATE_ACCELERATION: f32 = 180.0;
+const DRONE_GATE_IDLE_DRAG: f32 = 2.4;
+const DRONE_GATE_TURN_DRAG: f32 = 0.35;
+const DRONE_GATE_BOOST_MULTIPLIER: f32 = 1.75;
 const WALK_SPEED: f32 = 15.0;
 const BOOST_MULTIPLIER: f32 = 8.0;
 const WALK_BOOST_MULTIPLIER: f32 = 2.25;
@@ -468,6 +474,12 @@ impl AppState {
                         _ => {}
                     }
                 }
+                (AppMode::VoxelSandbox, PhysicalKey::Code(KeyCode::KeyM)) => {
+                    return KeyboardAction::EnterMenu;
+                }
+                (AppMode::VoxelSandbox, PhysicalKey::Code(KeyCode::Escape)) => {
+                    return KeyboardAction::ReleaseMouse;
+                }
                 (AppMode::VoxelSandbox, key) => {
                     if let Some(index) = asset_digit_index(key) {
                         self.sandbox.select_block(index);
@@ -736,8 +748,8 @@ impl AppState {
                 scene
             }
             AppMode::DroneGateRunner => {
-                update_flight_camera(&mut self.camera, &self.input, dt);
-                self.drone_gate_runner.update(self.camera.position, dt);
+                self.drone_gate_runner
+                    .update_camera(&mut self.camera, &self.input, dt);
                 let world = self.drone_gate_runner.render_world();
                 let mut scene = self.city_builder.build(&world, &self.camera, self.tick);
                 render_drone_gate_runner_scene(&mut scene, &self.drone_gate_runner, mouse_captured);
@@ -1121,6 +1133,17 @@ struct DroneGateRunnerConfig {
     tube_radius: i32,
     pass_distance: f32,
     spacing: f32,
+    flight: DroneFlightModel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DroneFlightModel {
+    max_speed: f32,
+    strafe_speed: f32,
+    acceleration: f32,
+    idle_drag: f32,
+    turn_drag: f32,
+    boost_multiplier: f32,
 }
 
 impl Default for DroneGateRunnerConfig {
@@ -1131,6 +1154,14 @@ impl Default for DroneGateRunnerConfig {
             tube_radius: DRONE_GATE_TUBE_RADIUS,
             pass_distance: DRONE_GATE_PASS_DISTANCE,
             spacing: DRONE_GATE_COURSE_SPACING,
+            flight: DroneFlightModel {
+                max_speed: DRONE_GATE_FLIGHT_SPEED,
+                strafe_speed: DRONE_GATE_STRAFE_SPEED,
+                acceleration: DRONE_GATE_ACCELERATION,
+                idle_drag: DRONE_GATE_IDLE_DRAG,
+                turn_drag: DRONE_GATE_TURN_DRAG,
+                boost_multiplier: DRONE_GATE_BOOST_MULTIPLIER,
+            },
         }
     }
 }
@@ -1151,6 +1182,7 @@ struct DroneGateRunnerState {
     laps: u32,
     start_position: Vec3,
     previous_position: Vec3,
+    velocity: Vec3,
     best_streak: u32,
     elapsed: f32,
 }
@@ -1176,8 +1208,62 @@ impl DroneGateRunnerState {
             laps: 0,
             start_position,
             previous_position: start_position,
+            velocity: Vec3::ZERO,
             best_streak: 0,
             elapsed: 0.0,
+        }
+    }
+
+    fn update_camera(&mut self, camera: &mut Camera, input: &PlayerInput, dt: f32) {
+        apply_flight_roll(camera, input, dt);
+        self.update_velocity(camera, input, dt);
+        camera.position = camera.position + self.velocity * dt;
+        self.update(camera.position, dt);
+    }
+
+    fn update_velocity(&mut self, camera: &Camera, input: &PlayerInput, dt: f32) {
+        let mut desired = Vec3::ZERO;
+
+        if input.forward {
+            desired = desired + camera.forward();
+        }
+        if input.backward {
+            desired = desired - camera.forward();
+        }
+        if input.right {
+            desired = desired + camera.right();
+        }
+        if input.left {
+            desired = desired - camera.right();
+        }
+        if input.up {
+            desired = desired + camera.up();
+        }
+        if input.down {
+            desired = desired - camera.up();
+        }
+
+        let flight = self.config.flight;
+        if desired.length() > f32::EPSILON {
+            let has_primary_thrust = input.forward || input.backward;
+            let target_speed = if has_primary_thrust {
+                flight.max_speed
+            } else {
+                flight.strafe_speed
+            };
+            let target_speed = if input.boost {
+                target_speed * flight.boost_multiplier
+            } else {
+                target_speed
+            };
+            let target_velocity = desired.normalized() * target_speed;
+            self.velocity = approach_vec3(self.velocity, target_velocity, flight.acceleration * dt);
+            self.velocity = self.velocity * (1.0 - flight.turn_drag * dt).clamp(0.0, 1.0);
+        } else {
+            self.velocity = self.velocity * (1.0 - flight.idle_drag * dt).clamp(0.0, 1.0);
+            if self.velocity.length() < 0.05 {
+                self.velocity = Vec3::ZERO;
+            }
         }
     }
 
@@ -2679,6 +2765,15 @@ fn asset_digit_index(key: &PhysicalKey) -> Option<usize> {
 }
 
 fn update_flight_camera(camera: &mut Camera, input: &PlayerInput, dt: f32) {
+    update_flight_camera_with_speed(camera, input, dt, FLIGHT_SPEED);
+}
+
+fn update_flight_camera_with_speed(
+    camera: &mut Camera,
+    input: &PlayerInput,
+    dt: f32,
+    base_speed: f32,
+) {
     let mut movement = Vec3::ZERO;
 
     if input.forward {
@@ -2699,20 +2794,34 @@ fn update_flight_camera(camera: &mut Camera, input: &PlayerInput, dt: f32) {
     if input.down {
         movement = movement - camera.up();
     }
+    apply_flight_roll(camera, input, dt);
+
+    if movement.length() > f32::EPSILON {
+        let speed = if input.boost {
+            base_speed * BOOST_MULTIPLIER
+        } else {
+            base_speed
+        };
+        camera.position = camera.position + movement.normalized() * speed * dt;
+    }
+}
+
+fn apply_flight_roll(camera: &mut Camera, input: &PlayerInput, dt: f32) {
     if input.roll_left {
         camera.roll_by(ROLL_SPEED * dt);
     }
     if input.roll_right {
         camera.roll_by(-ROLL_SPEED * dt);
     }
+}
 
-    if movement.length() > f32::EPSILON {
-        let speed = if input.boost {
-            FLIGHT_SPEED * BOOST_MULTIPLIER
-        } else {
-            FLIGHT_SPEED
-        };
-        camera.position = camera.position + movement.normalized() * speed * dt;
+fn approach_vec3(current: Vec3, target: Vec3, max_delta: f32) -> Vec3 {
+    let delta = target - current;
+    let distance = delta.length();
+    if distance <= max_delta || distance <= f32::EPSILON {
+        target
+    } else {
+        current + delta.normalized() * max_delta
     }
 }
 
@@ -5378,8 +5487,14 @@ fn render_drone_gate_runner_scene(
         y: 5,
         z: 120,
         text: format!(
-            "laps {}  passed {}  time {:05.1}  next {:.0},{:.0},{:.0}",
-            runner.laps, runner.passed_gates, runner.elapsed, active.x, active.y, active.z
+            "laps {}  passed {}  time {:05.1}  speed {:03.0}  next {:.0},{:.0},{:.0}",
+            runner.laps,
+            runner.passed_gates,
+            runner.elapsed,
+            runner.velocity.length(),
+            active.x,
+            active.y,
+            active.z
         ),
         style: hud_style(),
     });
@@ -6384,6 +6499,16 @@ mod tests {
     }
 
     #[test]
+    fn voxel_sandbox_m_returns_to_menu() {
+        let mut app = AppState::new();
+        app.start_voxel_sandbox();
+
+        let action = app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyM), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::EnterMenu);
+    }
+
+    #[test]
     fn menu_can_start_zombies_mode() {
         let mut app = AppState::new();
 
@@ -6461,6 +6586,44 @@ mod tests {
 
         assert!(app.camera.position != start);
         assert!(app.camera.roll_radians > 0.0);
+    }
+
+    #[test]
+    fn drone_runner_accelerates_smoothly_toward_speed_cap() {
+        let mut runner = DroneGateRunnerState::new_seeded(DRONE_GATE_SEED);
+        let mut camera = drone_gate_runner_start_camera(&runner);
+        let input = PlayerInput {
+            forward: true,
+            ..PlayerInput::default()
+        };
+
+        runner.update_camera(&mut camera, &input, 0.1);
+        let first_speed = runner.velocity.length();
+        runner.update_camera(&mut camera, &input, 0.1);
+        let second_speed = runner.velocity.length();
+
+        assert!(first_speed > 0.0);
+        assert!(second_speed > first_speed);
+        assert!(second_speed < runner.config.flight.max_speed);
+    }
+
+    #[test]
+    fn drone_runner_coasts_down_when_thrust_stops() {
+        let mut runner = DroneGateRunnerState::new_seeded(DRONE_GATE_SEED);
+        let mut camera = drone_gate_runner_start_camera(&runner);
+        let thrust = PlayerInput {
+            forward: true,
+            ..PlayerInput::default()
+        };
+
+        runner.update_camera(&mut camera, &thrust, 0.5);
+        let powered_speed = runner.velocity.length();
+        runner.update_camera(&mut camera, &PlayerInput::default(), 0.25);
+        let coasting_speed = runner.velocity.length();
+
+        assert!(powered_speed > 0.0);
+        assert!(coasting_speed > 0.0);
+        assert!(coasting_speed < powered_speed);
     }
 
     #[test]
