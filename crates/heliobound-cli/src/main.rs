@@ -207,6 +207,17 @@ const DRONE_GATE_COURSE_SPACING_JITTER: f32 = 0.12;
 const DRONE_GATE_COURSE_LOOKAHEAD: usize = 12;
 const DRONE_GATE_COURSE_APPEND_COUNT: usize = 16;
 const DRONE_GATE_RENDER_PAST: usize = 4;
+const ECHOLOCATION_SEED: u64 = 0xEC40_10CA_7100_0001;
+const ECHOLOCATION_PING_SPEED: f32 = 42.0;
+const ECHOLOCATION_PING_MAX_RANGE: f32 = 92.0;
+const ECHOLOCATION_PING_BASE_THICKNESS: f32 = 2.2;
+const ECHOLOCATION_PING_THICKNESS_VARIATION: f32 = 1.4;
+const ECHOLOCATION_PING_FADE_SECONDS: f32 = 2.8;
+const ECHOLOCATION_WALK_PROFILE: WalkProfile = WalkProfile {
+    speed: 10.0,
+    collision_radius: 0.45,
+    eye_height: WALK_EYE_HEIGHT,
+};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
@@ -259,6 +270,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         play_audio_events(&mut audio, app.drain_audio_events());
                     } else if app.mode != AppMode::Menu {
                         mouse_captured = set_mouse_captured(&window, true);
+                        if mouse_captured && app.mode == AppMode::EchoLocation {
+                            app.handle_mouse_button(button);
+                        }
                     }
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
@@ -342,6 +356,7 @@ enum AppMode {
     Zombies,
     Liminal,
     DroneGateRunner,
+    EchoLocation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -367,6 +382,7 @@ struct AppState {
     zombies: ZombiesState,
     liminal: LiminalState,
     drone_gate_runner: DroneGateRunnerState,
+    echolocation: EchoLocationState,
     weapon_asset: PreviewAsset,
     planet_builder: SceneBuilder,
     city_builder: SceneBuilder,
@@ -402,6 +418,7 @@ impl AppState {
             zombies: ZombiesState::new(),
             liminal: LiminalState::new_seeded(LIMINAL_SEED),
             drone_gate_runner: DroneGateRunnerState::new_seeded(initial_drone_seed),
+            echolocation: EchoLocationState::new_seeded(ECHOLOCATION_SEED),
             weapon_asset: PreviewAsset::new("gun", build_weapon_asset()),
             planet_builder: SceneBuilder::new(
                 GraphicsConfig {
@@ -475,6 +492,10 @@ impl AppState {
                     self.start_drone_gate_runner();
                     return KeyboardAction::StartScene;
                 }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::KeyE)) => {
+                    self.start_echolocation();
+                    return KeyboardAction::StartScene;
+                }
                 (AppMode::AssetViewer, PhysicalKey::Code(KeyCode::KeyM)) => {
                     return KeyboardAction::EnterMenu;
                 }
@@ -517,6 +538,9 @@ impl AppState {
                     return KeyboardAction::Fire;
                 }
                 (AppMode::Zombies, PhysicalKey::Code(KeyCode::Space)) => {
+                    return KeyboardAction::Fire;
+                }
+                (AppMode::EchoLocation, PhysicalKey::Code(KeyCode::Space)) => {
                     return KeyboardAction::Fire;
                 }
                 (AppMode::Zombies, PhysicalKey::Code(KeyCode::KeyR)) => {
@@ -633,6 +657,13 @@ impl AppState {
             self.drone_course_runs,
         ));
         self.camera = drone_gate_runner_start_camera(&self.drone_gate_runner);
+        self.input = PlayerInput::default();
+    }
+
+    fn start_echolocation(&mut self) {
+        self.mode = AppMode::EchoLocation;
+        self.echolocation = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        self.camera = echolocation_start_camera(&self.echolocation);
         self.input = PlayerInput::default();
     }
 
@@ -790,6 +821,20 @@ impl AppState {
                 render_drone_gate_runner_scene(&mut scene, &self.drone_gate_runner, mouse_captured);
                 scene
             }
+            AppMode::EchoLocation => {
+                update_walking_camera_with_profile(
+                    &mut self.camera,
+                    &self.input,
+                    &self.echolocation.world,
+                    ECHOLOCATION_WALK_PROFILE,
+                    dt,
+                );
+                self.echolocation.update(dt);
+                let visible_world = self.echolocation.visible_world(self.camera.position);
+                let mut scene = self.city_builder.build(&visible_world, &self.camera, self.tick);
+                render_echolocation_scene(&mut scene, &self.echolocation, mouse_captured);
+                scene
+            }
         }
     }
 
@@ -808,7 +853,8 @@ impl AppState {
             | AppMode::BarScene
             | AppMode::VoxelSandbox
             | AppMode::Zombies
-            | AppMode::Liminal => {
+            | AppMode::Liminal
+            | AppMode::EchoLocation => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped)
             }
             AppMode::AssetViewer => self.asset_viewer.rotate_with_mouse(delta_x, delta_y),
@@ -819,6 +865,7 @@ impl AppState {
         match (self.mode, button) {
             (AppMode::CityShooter, MouseButton::Left) => self.fire_weapon(),
             (AppMode::Zombies, MouseButton::Left) => self.fire_weapon(),
+            (AppMode::EchoLocation, MouseButton::Left) => self.fire_weapon(),
             (AppMode::VoxelSandbox, MouseButton::Left) => self.sandbox.remove_block(&self.camera),
             (AppMode::VoxelSandbox, MouseButton::Right) => self.sandbox.place_block(&self.camera),
             _ => {}
@@ -832,6 +879,8 @@ impl AppState {
         } else if self.mode == AppMode::Zombies {
             self.audio_events
                 .extend(self.zombies.fire(&self.zombies_map, &self.camera));
+        } else if self.mode == AppMode::EchoLocation {
+            self.echolocation.emit_ping(self.camera.position);
         }
     }
 
@@ -848,6 +897,7 @@ fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
         AppMode::CityShooter | AppMode::Zombies => audio.enter_doom_mode(),
         AppMode::PlanetFlight | AppMode::Liminal => audio.enter_doom_mode(),
         AppMode::DroneGateRunner => audio.enter_drone_mode(),
+        AppMode::EchoLocation => audio.enter_doom_mode(),
         AppMode::Menu | AppMode::AssetViewer => audio.leave_ambience(),
     }
 }
@@ -951,6 +1001,15 @@ fn drone_gate_runner_start_camera(runner: &DroneGateRunnerState) -> Camera {
     look_at(runner.start_position, first_gate)
         .with_fov_y(72.0_f32.to_radians())
         .with_max_distance(DRONE_GATE_VIEW_DISTANCE)
+}
+
+fn echolocation_start_camera(echo: &EchoLocationState) -> Camera {
+    look_at(
+        echo.start_position,
+        echo.start_position + Vec3::new(0.0, 0.0, 8.0),
+    )
+    .with_fov_y(66.0_f32.to_radians())
+    .with_max_distance(110.0)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1422,6 +1481,125 @@ impl DroneGateRunnerState {
         let start = self.active_gate.saturating_sub(DRONE_GATE_RENDER_PAST);
         let end = (self.active_gate + DRONE_GATE_COURSE_LOOKAHEAD + 1).min(self.course.gates.len());
         (start, end)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EchoLocationConfig {
+    ping_speed: f32,
+    max_range: f32,
+    base_thickness: f32,
+    thickness_variation: f32,
+    fade_seconds: f32,
+}
+
+impl Default for EchoLocationConfig {
+    fn default() -> Self {
+        Self {
+            ping_speed: ECHOLOCATION_PING_SPEED,
+            max_range: ECHOLOCATION_PING_MAX_RANGE,
+            base_thickness: ECHOLOCATION_PING_BASE_THICKNESS,
+            thickness_variation: ECHOLOCATION_PING_THICKNESS_VARIATION,
+            fade_seconds: ECHOLOCATION_PING_FADE_SECONDS,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EchoPing {
+    origin: Vec3,
+    age: f32,
+    phase: f32,
+}
+
+impl EchoPing {
+    fn radius(&self, config: EchoLocationConfig) -> f32 {
+        self.age * config.ping_speed
+    }
+
+    fn thickness_at(&self, distance: f32, config: EchoLocationConfig) -> f32 {
+        let wave = (distance * 0.19 + self.phase).sin() * 0.5 + 0.5;
+        config.base_thickness + config.thickness_variation * wave
+    }
+
+    fn illuminates(&self, point: Vec3, config: EchoLocationConfig) -> bool {
+        let distance = (point - self.origin).length();
+        let radius = self.radius(config);
+        if radius > config.max_range || distance > config.max_range {
+            return false;
+        }
+        let thickness = self.thickness_at(distance, config);
+        (distance - radius).abs() <= thickness
+    }
+}
+
+#[derive(Clone, Debug)]
+struct EchoLocationState {
+    seed: u64,
+    config: EchoLocationConfig,
+    world: VoxelWorld,
+    start_position: Vec3,
+    pings: Vec<EchoPing>,
+    emitted_pings: u64,
+}
+
+impl EchoLocationState {
+    fn new_seeded(seed: u64) -> Self {
+        let (world, start_position) = build_echolocation_map(seed);
+        Self {
+            seed,
+            config: EchoLocationConfig::default(),
+            world,
+            start_position,
+            pings: Vec::new(),
+            emitted_pings: 0,
+        }
+    }
+
+    fn emit_ping(&mut self, origin: Vec3) {
+        let phase = ((self.seed ^ self.emitted_pings).wrapping_mul(0x9E37_79B9) as f32).sin();
+        self.pings.push(EchoPing {
+            origin,
+            age: 0.0,
+            phase,
+        });
+        self.emitted_pings += 1;
+    }
+
+    fn update(&mut self, dt: f32) {
+        for ping in &mut self.pings {
+            ping.age += dt;
+        }
+        let max_age = self.config.max_range / self.config.ping_speed + self.config.fade_seconds;
+        self.pings.retain(|ping| ping.age <= max_age);
+    }
+
+    fn visible_world(&self, _player_position: Vec3) -> VoxelWorld {
+        let mut visible = VoxelWorld::new();
+        let Some(bounds) = self.world.bounds() else {
+            return visible;
+        };
+
+        for y in bounds.min.y..=bounds.max.y {
+            for z in bounds.min.z..=bounds.max.z {
+                for x in bounds.min.x..=bounds.max.x {
+                    let coord = VoxelCoord::new(x, y, z);
+                    let Some(cell) = self.world.get(coord) else {
+                        continue;
+                    };
+                    let center = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
+                    if self
+                        .pings
+                        .iter()
+                        .any(|ping| ping.illuminates(center, self.config))
+                    {
+                        visible.set(coord, cell);
+                    }
+                }
+            }
+        }
+
+        visible
     }
 }
 
@@ -3269,6 +3447,156 @@ fn build_demo_city() -> VoxelWorld {
 
 fn build_doom_map() -> VoxelWorld {
     DoomMapGenerator::new(DoomMapConfig::default()).generate()
+}
+
+fn build_echolocation_map(seed: u64) -> (VoxelWorld, Vec3) {
+    let mut rng = LiminalRng::new(seed);
+    let mut world = VoxelWorld::new();
+    let rooms = [
+        (-38, -8, 16, 16),
+        (-8, -16, 20, 14),
+        (18, -28, 18, 16),
+        (-24, 16, 18, 14),
+        (16, 14, 22, 18),
+    ];
+
+    for (x, z, width, depth) in rooms {
+        stamp_echo_room(&mut world, x, z, width, depth);
+    }
+
+    stamp_echo_corridor(&mut world, -28, -3, -8, 3);
+    stamp_echo_corridor(&mut world, -2, -14, 4, 18);
+    stamp_echo_corridor(&mut world, 4, -14, 20, -14);
+    stamp_echo_corridor(&mut world, -8, 18, 18, 22);
+    clear_cuboid(
+        &mut world,
+        VoxelCoord::new(-22, 1, -2),
+        VoxelCoord::new(-22, 4, 2),
+    );
+    clear_cuboid(
+        &mut world,
+        VoxelCoord::new(-8, 1, -2),
+        VoxelCoord::new(-8, 4, 2),
+    );
+    clear_cuboid(
+        &mut world,
+        VoxelCoord::new(2, 1, -16),
+        VoxelCoord::new(6, 4, -16),
+    );
+    clear_cuboid(
+        &mut world,
+        VoxelCoord::new(18, 1, -16),
+        VoxelCoord::new(18, 4, -12),
+    );
+    clear_cuboid(
+        &mut world,
+        VoxelCoord::new(0, 1, -2),
+        VoxelCoord::new(4, 4, -2),
+    );
+    clear_cuboid(
+        &mut world,
+        VoxelCoord::new(-10, 1, 16),
+        VoxelCoord::new(-6, 4, 16),
+    );
+    clear_cuboid(
+        &mut world,
+        VoxelCoord::new(16, 1, 20),
+        VoxelCoord::new(16, 4, 24),
+    );
+
+    for _ in 0..8 {
+        let x = rng.range_i32(-30, 30);
+        let z = rng.range_i32(-25, 25);
+        if world.get(VoxelCoord::new(x, 1, z)).is_none()
+            && world.get(VoxelCoord::new(x, 0, z)).is_some()
+        {
+            fill_cuboid(
+                &mut world,
+                VoxelCoord::new(x, 1, z),
+                VoxelCoord::new(x, 3, z),
+                VoxelMaterial::Stone,
+            );
+        }
+    }
+
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-5, 1, 24),
+        VoxelCoord::new(5, 2, 25),
+        VoxelMaterial::Glass,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(26, 1, 18),
+        VoxelCoord::new(29, 4, 21),
+        VoxelMaterial::Beacon,
+    );
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(-27, 1, 21),
+        VoxelCoord::new(-22, 1, 25),
+        VoxelMaterial::Wood,
+    );
+
+    (world, Vec3::new(-28.5, WALK_EYE_HEIGHT, -0.5))
+}
+
+fn stamp_echo_room(world: &mut VoxelWorld, x: i32, z: i32, width: i32, depth: i32) {
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x, 0, z),
+        VoxelCoord::new(x + width, 0, z + depth),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x, 6, z),
+        VoxelCoord::new(x + width, 6, z + depth),
+        VoxelMaterial::ShipHull,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x, 1, z),
+        VoxelCoord::new(x + width, 5, z),
+        VoxelMaterial::Stone,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x, 1, z + depth),
+        VoxelCoord::new(x + width, 5, z + depth),
+        VoxelMaterial::Stone,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x, 1, z),
+        VoxelCoord::new(x, 5, z + depth),
+        VoxelMaterial::Stone,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(x + width, 1, z),
+        VoxelCoord::new(x + width, 5, z + depth),
+        VoxelMaterial::Stone,
+    );
+}
+
+fn stamp_echo_corridor(world: &mut VoxelWorld, x1: i32, z1: i32, x2: i32, z2: i32) {
+    let min_x = x1.min(x2) - 2;
+    let max_x = x1.max(x2) + 2;
+    let min_z = z1.min(z2) - 2;
+    let max_z = z1.max(z2) + 2;
+    fill_cuboid(
+        world,
+        VoxelCoord::new(min_x, 0, min_z),
+        VoxelCoord::new(max_x, 0, max_z),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(min_x, 6, min_z),
+        VoxelCoord::new(max_x, 6, max_z),
+        VoxelMaterial::ShipHull,
+    );
 }
 
 fn runtime_seed_nonce() -> u64 {
@@ -5570,7 +5898,14 @@ fn build_menu_scene(tick: u64) -> Scene {
     });
     scene.overlays.push(Overlay {
         x: 48,
-        y: 80,
+        y: 77,
+        z: 10,
+        text: "E  ECHOLOCATION".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 48,
+        y: 82,
         z: 10,
         text: "WASD MOVE   SHIFT BOOST   Q/E ROLL   M MENU".to_string(),
         style: TextStyle::default(),
@@ -5766,6 +6101,43 @@ fn render_drone_gate_runner_scene(
         y: 8,
         z: 120,
         text: "WASD strafe/forward  Space/Ctrl vertical  Shift boost  Q/E roll  M menu".to_string(),
+        style: hud_style(),
+    });
+}
+
+fn render_echolocation_scene(
+    scene: &mut Scene,
+    echo: &EchoLocationState,
+    mouse_captured: bool,
+) {
+    scene.layers.push(Layer {
+        name: "reticle".to_string(),
+        z: 50,
+        cells: reticle_cells(scene.viewport),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "ECHOLOCATION  seed {:016x}  active pings {}  mouse {}  M menu",
+            echo.seed,
+            echo.pings.len(),
+            if mouse_captured { "locked" } else { "free" }
+        ),
+        style: hud_style(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 5,
+        z: 120,
+        text: format!(
+            "Space/click ping  speed {:.0}  range {:.0}  thickness {:.1}+{:.1}",
+            echo.config.ping_speed,
+            echo.config.max_range,
+            echo.config.base_thickness,
+            echo.config.thickness_variation
+        ),
         style: hud_style(),
     });
 }
