@@ -14,8 +14,8 @@ There is no victory condition. The purpose is to keep moving, orient from sound,
 - Hold `Space` or the left mouse button, then release to emit an echo pulse. A quick tap sends the normal pulse; holding it charges a longer-range pulse up to 160 units.
 - Revealed geometry fades after a short time. Only faces exposed to open air render; faces buried against adjacent voxels remain hidden, so echoes do not reveal through solid ground or walls.
 - The pulse has a cooldown. Its default speed is 10 and its default maximum range is 92.
-- Charged pulses trade safety for information: the extra charge temporarily makes the pursuer faster for 3 seconds. The HUD warns `LOUD PULSE: IT IS CLOSER` while this effect is active.
-- Walking produces close player footstep sounds and tiny non-reflecting echo waves from the player’s floor position. They have the same 2.2-unit range and surface-return behavior as the pursuer’s footstep waves.
+- Charged pulses trade safety for information: their longer-ranging wave can reach the invisible pursuer and reveal where the pulse began. They do not change pursuer speed.
+- Walking produces close player footstep sounds and tiny non-reflecting echo waves from the player’s floor position. A pursuer that is within 12 horizontal units with a direct line of sight can hear the step and investigate it.
 - Reflections can create secondary pulses when echo strength is increased.
 - `V` toggles the full-map debug view.
 - `Tab` opens tuning controls: `[` / `]` change range, `-` / `=` change pulse speed, `,` / `.` change echo strength, and `R` restores the tuning defaults.
@@ -25,7 +25,7 @@ There is no victory condition. The purpose is to keep moving, orient from sound,
 
 One unkillable pursuer spawns on the reachable floor cell farthest from the seeded player start. It is entirely absent from the voxel world and echo-reveal data: it has no visible model, voxel, reflection, hitbox, or weapon interaction.
 
-It continually rebuilds a navigation field from the player position and uses it to follow rooms and corridors rather than cutting through walls. It walks at a deliberately slow pace (currently 3.0 units per second). Reaching within 0.72 units of the player ends the run immediately.
+It wanders through seeded reachable floor cells, sometimes pausing, and never navigates from the live player position. A player pulse alerts it only when that wave expands across its position; reflected waves preserve the original pulse location. Hearing a pulse or qualifying footstep gives it an 8-second investigation target. It paths to that remembered place, then searches nearby reachable cells until the timer ends or newer noise replaces it. It walks at a deliberately slow pace (currently 3.0 units per second). Reaching within 0.72 units of the player ends the run immediately.
 
 The pursuer is only communicated through its trail and sound:
 
@@ -33,6 +33,8 @@ The pursuer is only communicated through its trail and sound:
 - Footprints are visible only when directly in the player’s line of sight. They fade visually by age and expire after 4 seconds.
 - A quiet, spatialized invisible-footstep sound plays once per step pair (currently every 0.52 seconds).
 - Every individual print emits a tiny, non-reflecting echolocation wave. It begins at that exact floor position, moves at speed 5, and travels at most 2.2 units. These waves use the same surface-return path as the player’s pulse, but are much smaller and cannot reveal the pursuer itself.
+- While it has an active sound target, the HUD reads `IT HEARD YOU — SEARCHING`. Screen corruption follows a five-step proximity scale: distant searching begins with dim near-black edge flecks; middle ranges add gray reticle/HUD twitch and scattered ASCII replacement; close ranges add dense charcoal static and horizontal tears; point-blank searching heavily corrupts the ASCII view while remaining navigable. These are deterministic render-only effects and do not move the camera or affect input.
+- Searching also carries a subdued, pursuer-panned dead-radio noise bed. Deterministic gray-noise crackles begin at the second proximity tier and become more frequent and stronger as it closes, but remain below pursuer footsteps. Both the bed and bursts stop on investigation expiry, death, restart, and leaving the mode.
 
 ## Death and restart
 
@@ -43,7 +45,7 @@ YOU WERE FOUND
 R restart   M menu
 ```
 
-`R` starts a fresh run with the same deterministic Echolocation seed, resetting the player camera, input state, world reveals, pursuer, footprints, and waves. `M` returns to the mode menu.
+`R` starts a fresh run with the same deterministic Echolocation seed, resetting the player camera, input state, world reveals, pursuer behavior and remembered noise, footprints, waves, and search effect. `M` returns to the mode menu.
 
 ## Technical model
 

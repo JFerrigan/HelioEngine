@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use font8x8::{UnicodeFonts, BASIC_FONTS};
-use heliobound_audio::{GameAudio, SoundEffect};
+use heliobound_audio::{EcholocationInterference, GameAudio, SoundEffect};
 use heliobound_core::{
     Camera, CityConfig, CityGenerator, DoomMapConfig, DoomMapGenerator, PlanetConfig,
     ProceduralPlanet, Ray, Vec3, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld,
@@ -270,11 +270,11 @@ const ECHOLOCATION_PING_MAX_RANGE: f32 = 92.0;
 const ECHOLOCATION_PING_COOLDOWN_SECONDS: f32 = 1.0;
 const ECHO_CHARGED_PULSE_SECONDS: f32 = 1.5;
 const ECHO_CHARGED_PULSE_MAX_RANGE: f32 = 160.0;
-const ECHO_CHARGED_PULSE_ALERT_SECONDS: f32 = 3.0;
-const ECHO_CHARGED_PULSE_MAX_PURSUER_SPEED_MULTIPLIER: f32 = 1.85;
 const ECHO_PURSUER_SPEED: f32 = 3.0;
 const ECHO_PURSUER_CONTACT_RADIUS: f32 = 0.72;
 const ECHO_PURSUER_STEP_SECONDS: f32 = 0.52;
+const ECHO_PURSUER_INVESTIGATE_SECONDS: f32 = 8.0;
+const ECHO_PURSUER_FOOTSTEP_HEARING_RANGE: f32 = 12.0;
 // Prints need to remain long enough for the player to round a corner and see
 // a recently traversed corridor, but are still transient rather than a map.
 const ECHO_FOOTPRINT_LIFETIME: f32 = 4.0;
@@ -353,14 +353,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                             } else {
                                 app.enter_menu();
                                 audio.leave_ambience();
+                                audio.set_echolocation_interference(
+                                    EcholocationInterference::Inactive,
+                                );
                             }
                         }
                         KeyboardAction::EnterMenu => {
                             app.enter_menu();
                             audio.leave_ambience();
+                            audio.set_echolocation_interference(EcholocationInterference::Inactive);
                             mouse_captured = set_mouse_captured(&window, false);
                         }
                         KeyboardAction::StartScene => {
+                            // Restarts and mode changes must not carry an old search bed
+                            // into the new simulation before its first redraw.
+                            audio.set_echolocation_interference(EcholocationInterference::Inactive);
                             update_mode_audio(&mut audio, app.mode);
                             mouse_captured = set_mouse_captured(&window, false);
                         }
@@ -381,6 +388,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     last_frame = now;
 
                     let scene = app.frame(dt, mouse_captured);
+                    audio.set_echolocation_interference(app.echolocation_audio_state());
                     play_audio_events(&mut audio, app.drain_audio_events());
                     render_scene(
                         &scene,
@@ -1031,6 +1039,28 @@ impl AppState {
     fn drain_audio_events(&mut self) -> Vec<SoundEffect> {
         self.audio_events.drain(..).collect()
     }
+
+    fn echolocation_audio_state(&self) -> EcholocationInterference {
+        if self.mode != AppMode::EchoLocation
+            || self.echolocation.run_status != EchoRunStatus::Active
+        {
+            return EcholocationInterference::Inactive;
+        }
+        let effect = echo_search_effect(&self.echolocation, self.camera.position);
+        if effect.intensity <= 0.0 {
+            EcholocationInterference::Inactive
+        } else {
+            let direction = horizontal(self.echolocation.pursuer.position - self.camera.position);
+            EcholocationInterference::Active {
+                intensity: effect.intensity,
+                pursuer_pan: direction
+                    .normalized()
+                    .dot(self.camera.right())
+                    .clamp(-1.0, 1.0),
+                corruption_level: effect.corruption_level,
+            }
+        }
+    }
 }
 
 fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
@@ -1668,8 +1698,19 @@ struct EchoWave {
     age: f32,
     energy: f32,
     bounce_depth: u8,
+    original_emission_position: Vec3,
+    heard_by_pursuer: bool,
     impacts: Vec<EchoImpact>,
     next_impact: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum EchoPursuerMode {
+    Wander,
+    Investigate {
+        last_heard_position: Vec3,
+        remaining_seconds: f32,
+    },
 }
 
 impl EchoWave {
@@ -1727,6 +1768,10 @@ struct EchoPursuer {
     position: Vec3,
     step_timer: f32,
     travel_direction: Vec3,
+    mode: EchoPursuerMode,
+    target_position: Option<Vec3>,
+    wander_idle_remaining: f32,
+    selection_rng: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -1739,8 +1784,6 @@ struct EchoLocationState {
     revealed: HashMap<VoxelCoord, EchoReveal>,
     ping_cooldown_remaining: f32,
     pulse_charge_seconds: Option<f32>,
-    pursuer_alert_remaining: f32,
-    pursuer_alert_strength: f32,
     player_step_distance: f32,
     tuning_open: bool,
     show_full_map: bool,
@@ -1748,6 +1791,8 @@ struct EchoLocationState {
     footprints: Vec<EchoFootprint>,
     step_waves: Vec<EchoStepWave>,
     run_status: EchoRunStatus,
+    static_burst_timer: f32,
+    static_burst_counter: u32,
 }
 
 impl EchoLocationState {
@@ -1764,8 +1809,6 @@ impl EchoLocationState {
             revealed: HashMap::new(),
             ping_cooldown_remaining: 0.0,
             pulse_charge_seconds: None,
-            pursuer_alert_remaining: 0.0,
-            pursuer_alert_strength: 0.0,
             player_step_distance: 0.0,
             tuning_open: false,
             show_full_map: false,
@@ -1773,10 +1816,16 @@ impl EchoLocationState {
                 position: pursuer_position,
                 step_timer: 0.0,
                 travel_direction: Vec3::new(0.0, 0.0, 1.0),
+                mode: EchoPursuerMode::Wander,
+                target_position: None,
+                wander_idle_remaining: 0.0,
+                selection_rng: seed ^ 0xA5A5_7D31_9E37_79B9,
             },
             footprints: Vec::new(),
             step_waves: Vec::new(),
             run_status: EchoRunStatus::Active,
+            static_burst_timer: 0.0,
+            static_burst_counter: 0,
         }
     }
 
@@ -1803,6 +1852,7 @@ impl EchoLocationState {
             self.config.initial_energy,
             0,
             range,
+            origin,
         ));
         self.ping_cooldown_remaining = ECHOLOCATION_PING_COOLDOWN_SECONDS;
         true
@@ -1821,10 +1871,6 @@ impl EchoLocationState {
             self.config.max_range + (ECHO_CHARGED_PULSE_MAX_RANGE - self.config.max_range) * amount;
         if !self.emit_ping_with_range(origin, range) {
             return false;
-        }
-        if amount > 0.0 {
-            self.pursuer_alert_remaining = ECHO_CHARGED_PULSE_ALERT_SECONDS;
-            self.pursuer_alert_strength = amount;
         }
         true
     }
@@ -1855,10 +1901,12 @@ impl EchoLocationState {
                     1.0,
                     0,
                     ECHO_STEP_WAVE_MAX_RADIUS,
+                    foot_position,
                 )
                 .impacts,
                 next_impact: 0,
             });
+            self.notify_pursuer_of_footstep(foot_position);
             effects.push(SoundEffect::PlayerFootstep);
         }
         effects
@@ -1889,26 +1937,34 @@ impl EchoLocationState {
         if let Some(charge) = &mut self.pulse_charge_seconds {
             *charge = (*charge + dt).min(ECHO_CHARGED_PULSE_SECONDS);
         }
-        self.pursuer_alert_remaining = (self.pursuer_alert_remaining - dt).max(0.0);
-        if self.pursuer_alert_remaining <= 0.0 {
-            self.pursuer_alert_strength = 0.0;
-        }
         self.update_pursuer(dt, player_position, listener_right, &mut effects);
         if self.run_status == EchoRunStatus::Dead {
             return effects;
         }
+        self.update_static_bursts(dt, player_position, listener_right, &mut effects);
         self.ping_cooldown_remaining = (self.ping_cooldown_remaining - dt).max(0.0);
         let config = self.config;
         let mut secondary_sources = Vec::new();
         let mut reveals = Vec::new();
+        let mut heard_positions = Vec::new();
         for reveal in self.revealed.values_mut() {
             reveal.remaining_seconds -= dt;
         }
         self.revealed
             .retain(|_, reveal| reveal.remaining_seconds > 0.0);
         for wave in &mut self.waves {
+            let previous_radius = wave.radius(config);
             wave.age += dt;
             let radius_milli = (wave.radius(config).max(0.0) * 1000.0) as u32;
+            let pursuer_distance =
+                horizontal_distance(wave.original_emission_position, self.pursuer.position);
+            if !wave.heard_by_pursuer
+                && previous_radius <= pursuer_distance
+                && wave.radius(config) >= pursuer_distance
+            {
+                wave.heard_by_pursuer = true;
+                heard_positions.push(wave.original_emission_position);
+            }
             let can_reflect = wave.bounce_depth < echo_bounce_limit(config.echo_strength);
             while let Some(impact) = wave.impacts.get(wave.next_impact).copied() {
                 if impact.arrival_distance_milli > radius_milli {
@@ -1931,10 +1987,14 @@ impl EchoLocationState {
                             impact.source_air_cell,
                             reflected_energy,
                             wave.bounce_depth + 1,
+                            wave.original_emission_position,
                         ));
                     }
                 }
             }
+        }
+        for position in heard_positions {
+            self.notify_pursuer_of_noise(position);
         }
         // Footsteps use the same surface-return path as the player's pulse, but
         // their range is capped tightly and they never create reflected waves.
@@ -1960,9 +2020,16 @@ impl EchoLocationState {
         let slots = config.max_active_waves.saturating_sub(self.waves.len());
         self.waves
             .extend(secondary_sources.into_iter().take(slots).map(
-                |(source, energy, bounce_depth)| {
+                |(source, energy, bounce_depth, original_emission_position)| {
                     let range = config.max_range * energy.clamp(0.2, 1.0);
-                    build_echo_wave(&self.world, source, energy, bounce_depth, range)
+                    build_echo_wave(
+                        &self.world,
+                        source,
+                        energy,
+                        bounce_depth,
+                        range,
+                        original_emission_position,
+                    )
                 },
             ));
         effects
@@ -1975,9 +2042,69 @@ impl EchoLocationState {
         listener_right: Vec3,
         effects: &mut Vec<SoundEffect>,
     ) {
+        self.advance_pursuer_mode(dt);
+        if let Some(target) = self.pursuer.target_position {
+            self.move_pursuer_toward(dt, target);
+        }
+        self.update_pursuer_footsteps(dt, player_position, listener_right, effects);
+        if horizontal_distance(self.pursuer.position, player_position)
+            <= ECHO_PURSUER_CONTACT_RADIUS
+        {
+            self.run_status = EchoRunStatus::Dead;
+        }
+    }
+
+    fn advance_pursuer_mode(&mut self, dt: f32) {
+        let mode = self.pursuer.mode;
+        match mode {
+            EchoPursuerMode::Wander => {
+                self.pursuer.wander_idle_remaining =
+                    (self.pursuer.wander_idle_remaining - dt).max(0.0);
+                if self.pursuer.wander_idle_remaining <= 0.0
+                    && self.pursuer.target_position.is_none()
+                {
+                    self.pursuer.target_position = self.select_pursuer_destination(None);
+                }
+                if self.pursuer_target_reached() {
+                    self.pursuer.target_position = None;
+                    if self.next_pursuer_random() % 4 == 0 {
+                        self.pursuer.wander_idle_remaining =
+                            0.4 + (self.next_pursuer_random() % 80) as f32 / 100.0;
+                    }
+                }
+            }
+            EchoPursuerMode::Investigate {
+                last_heard_position,
+                remaining_seconds,
+            } => {
+                let remaining_seconds = (remaining_seconds - dt).max(0.0);
+                if remaining_seconds <= 0.0 {
+                    self.pursuer.mode = EchoPursuerMode::Wander;
+                    self.pursuer.target_position = None;
+                    self.pursuer.wander_idle_remaining = 0.0;
+                    return;
+                }
+                self.pursuer.mode = EchoPursuerMode::Investigate {
+                    last_heard_position,
+                    remaining_seconds,
+                };
+                if self.pursuer.target_position.is_none() {
+                    self.pursuer.target_position = Some(last_heard_position);
+                }
+                if self.pursuer_target_reached() {
+                    self.pursuer.target_position = self
+                        .select_pursuer_destination(Some(last_heard_position))
+                        .or(Some(last_heard_position));
+                }
+            }
+        }
+    }
+
+    fn move_pursuer_toward(&mut self, dt: f32, target: Vec3) {
         let Some(navigation) =
-            NavigationField::build(&self.world, player_position, ECHOLOCATION_WALK_PROFILE)
+            NavigationField::build(&self.world, target, ECHOLOCATION_WALK_PROFILE)
         else {
+            self.pursuer.target_position = None;
             return;
         };
         if let Some(step) = navigation.next_step(self.pursuer.position) {
@@ -1987,11 +2114,7 @@ impl EchoLocationState {
             let candidate = approach_vec3(
                 self.pursuer.position,
                 Vec3::new(step.x, self.pursuer.position.y, step.z),
-                ECHO_PURSUER_SPEED
-                    * (1.0
-                        + (ECHO_CHARGED_PULSE_MAX_PURSUER_SPEED_MULTIPLIER - 1.0)
-                            * self.pursuer_alert_strength)
-                    * dt,
+                ECHO_PURSUER_SPEED * dt,
             );
             let previous = self.pursuer.position;
             self.pursuer.position = move_walking_with_collision(
@@ -2005,6 +2128,15 @@ impl EchoLocationState {
                 self.pursuer.travel_direction = moved.normalized();
             }
         }
+    }
+
+    fn update_pursuer_footsteps(
+        &mut self,
+        dt: f32,
+        player_position: Vec3,
+        listener_right: Vec3,
+        effects: &mut Vec<SoundEffect>,
+    ) {
         self.pursuer.step_timer -= dt;
         while self.pursuer.step_timer <= 0.0 {
             self.pursuer.step_timer += ECHO_PURSUER_STEP_SECONDS;
@@ -2036,6 +2168,7 @@ impl EchoLocationState {
                         1.0,
                         0,
                         ECHO_STEP_WAVE_MAX_RADIUS,
+                        foot_position,
                     )
                     .impacts,
                     next_impact: 0,
@@ -2055,11 +2188,118 @@ impl EchoLocationState {
         for wave in &mut self.step_waves {
             wave.age += dt;
         }
-        if horizontal_distance(self.pursuer.position, player_position)
-            <= ECHO_PURSUER_CONTACT_RADIUS
-        {
-            self.run_status = EchoRunStatus::Dead;
+    }
+
+    fn notify_pursuer_of_noise(&mut self, position: Vec3) {
+        let floor_position =
+            Vec3::new(position.x, ECHOLOCATION_WALK_PROFILE.eye_height, position.z);
+        self.pursuer.mode = EchoPursuerMode::Investigate {
+            last_heard_position: floor_position,
+            remaining_seconds: ECHO_PURSUER_INVESTIGATE_SECONDS,
+        };
+        self.pursuer.target_position = Some(floor_position);
+        self.pursuer.wander_idle_remaining = 0.0;
+        self.static_burst_timer = 0.0;
+        self.static_burst_counter = 0;
+    }
+
+    fn update_static_bursts(
+        &mut self,
+        dt: f32,
+        listener_position: Vec3,
+        listener_right: Vec3,
+        effects: &mut Vec<SoundEffect>,
+    ) {
+        let effect = echo_search_effect(self, listener_position);
+        if effect.corruption_level <= 1 {
+            return;
         }
+        self.static_burst_timer -= dt;
+        while self.static_burst_timer <= 0.0 {
+            let hash =
+                echo_static_hash((self.seed as u32) ^ 0xBADA_5500, self.static_burst_counter);
+            let variation = (hash & 0xffff) as f32 / 65535.0;
+            let (min_interval, max_interval, gain) = match effect.corruption_level {
+                2 => (2.7, 3.3, 0.025),
+                3 => (1.5, 2.0, 0.045),
+                4 => (0.7, 1.0, 0.065),
+                _ => (0.3, 0.55, 0.085),
+            };
+            self.static_burst_timer += min_interval + (max_interval - min_interval) * variation;
+            self.static_burst_counter = self.static_burst_counter.wrapping_add(1);
+            let pan = horizontal(self.pursuer.position - listener_position)
+                .normalized()
+                .dot(listener_right)
+                .clamp(-1.0, 1.0);
+            effects.push(SoundEffect::EcholocationStaticBurst {
+                pan,
+                gain,
+                variant: hash >> 16,
+            });
+        }
+    }
+
+    fn notify_pursuer_of_footstep(&mut self, foot_position: Vec3) {
+        if horizontal_distance(self.pursuer.position, foot_position)
+            <= ECHO_PURSUER_FOOTSTEP_HEARING_RANGE
+            && has_line_of_sight(
+                &self.world,
+                self.pursuer.position,
+                foot_position + Vec3::new(0.0, 0.15, 0.0),
+            )
+        {
+            self.notify_pursuer_of_noise(foot_position);
+        }
+    }
+
+    fn pursuer_target_reached(&self) -> bool {
+        self.pursuer
+            .target_position
+            .map(|target| horizontal_distance(self.pursuer.position, target) <= 0.18)
+            .unwrap_or(false)
+    }
+
+    fn next_pursuer_random(&mut self) -> u64 {
+        let mut value = self.pursuer.selection_rng;
+        value ^= value << 13;
+        value ^= value >> 7;
+        value ^= value << 17;
+        self.pursuer.selection_rng = value;
+        value
+    }
+
+    /// Selects a seeded reachable floor cell. Search destinations remain near
+    /// the remembered sound while wandering can use the whole component.
+    fn select_pursuer_destination(&mut self, nearby: Option<Vec3>) -> Option<Vec3> {
+        let navigation = NavigationField::build(
+            &self.world,
+            self.pursuer.position,
+            ECHOLOCATION_WALK_PROFILE,
+        )?;
+        let mut candidates = Vec::new();
+        for z in navigation.min_z..navigation.min_z + navigation.height as i32 {
+            for x in navigation.min_x..navigation.min_x + navigation.width as i32 {
+                let Some(distance) = navigation.distance(x, z) else {
+                    continue;
+                };
+                if distance == u16::MAX || distance < 2 {
+                    continue;
+                }
+                let position = Vec3::new(
+                    x as f32 + 0.5,
+                    ECHOLOCATION_WALK_PROFILE.eye_height,
+                    z as f32 + 0.5,
+                );
+                if nearby
+                    .map(|center| horizontal_distance(position, center) <= 6.0)
+                    .unwrap_or(true)
+                {
+                    candidates.push(position);
+                }
+            }
+        }
+        (!candidates.is_empty())
+            .then(|| candidates[self.next_pursuer_random() as usize % candidates.len()])
     }
 
     #[cfg(test)]
@@ -2187,11 +2427,14 @@ fn build_echo_wave(
     energy: f32,
     bounce_depth: u8,
     max_range: f32,
+    original_emission_position: Vec3,
 ) -> EchoWave {
     EchoWave {
         age: 0.0,
         energy,
         bounce_depth,
+        original_emission_position,
+        heard_by_pursuer: false,
         impacts: echo_impacts(world, source, max_range),
         next_impact: 0,
     }
@@ -7105,6 +7348,7 @@ fn render_echolocation_scene(
     camera: &Camera,
     mouse_captured: bool,
 ) {
+    let search_effect = echo_search_effect(echo, camera.position);
     let ping_status = if echo.ping_cooldown_remaining > 0.0 {
         format!("{:.1}s", echo.ping_cooldown_remaining)
     } else {
@@ -7122,8 +7366,20 @@ fn render_echolocation_scene(
     scene.layers.push(Layer {
         name: "reticle".to_string(),
         z: 50,
-        cells: reticle_cells(scene.viewport),
+        cells: reticle_cells_offset(scene.viewport, search_effect.reticle_offset),
     });
+    if search_effect.intensity > 0.0 {
+        scene.layers.push(Layer {
+            name: "search-twitch".to_string(),
+            z: 49,
+            cells: echo_search_twitch_cells(scene.viewport, search_effect),
+        });
+        scene.layers.push(Layer {
+            name: "search-static".to_string(),
+            z: 85,
+            cells: echo_search_static_cells(scene.viewport, search_effect),
+        });
+    }
     scene.layers.push(Layer {
         name: "footprints".to_string(),
         z: 70,
@@ -7168,10 +7424,26 @@ fn render_echolocation_scene(
         z: 120,
         text: format!(
             "Your steps make tiny echoes. Something follows: fading prints and footsteps reveal it.{}",
-            if echo.pursuer_alert_remaining > 0.0 { "  LOUD PULSE: IT IS CLOSER" } else { "" }
+            if search_effect.intensity > 0.0 { "  IT HEARD YOU — SEARCHING" } else { "" }
         ),
         style: hud_style(),
     });
+    if search_effect.intensity > 0.0 {
+        scene.overlays.push(Overlay {
+            x: 2 + search_effect.hud_offset,
+            y: 11,
+            z: 121,
+            text: if search_effect.corrupt_glyphs {
+                "IT H?ARD YOU — S?ARCHING".to_string()
+            } else {
+                "IT HEARD YOU — SEARCHING".to_string()
+            },
+            style: TextStyle {
+                fg: Some("#b8b8b8".to_string()),
+                ..hud_style()
+            },
+        });
+    }
     if echo.tuning_open {
         scene.overlays.push(Overlay {
             x: 2,
@@ -7717,6 +7989,10 @@ fn bullet_glyph(step: usize, distance: f32) -> char {
 }
 
 fn reticle_cells(viewport: Viewport) -> Vec<SceneCell> {
+    reticle_cells_offset(viewport, (0, 0))
+}
+
+fn reticle_cells_offset(viewport: Viewport, offset: (i32, i32)) -> Vec<SceneCell> {
     let center_x = viewport.width as i32 / 2;
     let center_y = viewport.height as i32 / 2;
     [
@@ -7730,12 +8006,184 @@ fn reticle_cells(viewport: Viewport) -> Vec<SceneCell> {
     ]
     .into_iter()
     .map(|(x, y, glyph)| SceneCell {
-        x: center_x + x,
-        y: center_y + y,
+        x: center_x + x + offset.0,
+        y: center_y + y + offset.1,
         glyph,
         style: TextStyle::default(),
     })
     .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EchoSearchEffect {
+    intensity: f32,
+    corruption_level: u8,
+    reticle_offset: (i32, i32),
+    hud_offset: i32,
+    corrupt_glyphs: bool,
+    phase: u32,
+}
+
+fn echo_search_effect(echo: &EchoLocationState, listener_position: Vec3) -> EchoSearchEffect {
+    let EchoPursuerMode::Investigate {
+        remaining_seconds, ..
+    } = echo.pursuer.mode
+    else {
+        return EchoSearchEffect {
+            intensity: 0.0,
+            corruption_level: 0,
+            reticle_offset: (0, 0),
+            hud_offset: 0,
+            corrupt_glyphs: false,
+            phase: 0,
+        };
+    };
+    let distance = horizontal_distance(echo.pursuer.position, listener_position);
+    let proximity = (1.0 - distance / 36.0).clamp(0.0, 1.0);
+    // Searching is the on/off gate. Distance chooses a deliberately steep
+    // corruption scale so a nearby pursuer is unmistakably invasive.
+    let corruption_level = match distance {
+        d if d <= 4.0 => 5,
+        d if d <= 9.0 => 4,
+        d if d <= 15.0 => 3,
+        d if d <= 23.0 => 2,
+        _ => 1,
+    };
+    let intensity = 0.12 + proximity * 0.88;
+    let phase = ((ECHO_PURSUER_INVESTIGATE_SECONDS - remaining_seconds).max(0.0) * 17.0) as u32
+        ^ (echo.seed as u32);
+    let twitch = if corruption_level >= 2
+        && phase % (8_u32.saturating_sub((intensity * 6.0) as u32).max(2)) == 0
+    {
+        1
+    } else {
+        0
+    };
+    EchoSearchEffect {
+        intensity,
+        corruption_level,
+        reticle_offset: (
+            twitch * ((phase >> 1 & 1) as i32 * 2 - 1),
+            twitch * ((phase >> 2 & 1) as i32 * 2 - 1),
+        ),
+        hud_offset: twitch * ((phase & 1) as i32 * 2 - 1),
+        corrupt_glyphs: corruption_level >= 3
+            && phase % (22 - corruption_level as u32 * 3).max(4) == 0
+            && intensity > 0.32,
+        phase,
+    }
+}
+
+fn echo_search_twitch_cells(viewport: Viewport, effect: EchoSearchEffect) -> Vec<SceneCell> {
+    let count = 3 + effect.corruption_level as i32 * 10;
+    (0..count)
+        .filter_map(|index| {
+            let hash = effect
+                .phase
+                .wrapping_mul(1_103_515_245)
+                .wrapping_add(index as u32 * 12_345);
+            let edge = hash % 4;
+            let (x, y) = match edge {
+                0 => ((hash % viewport.width as u32) as i32, 0),
+                1 => (
+                    (hash % viewport.width as u32) as i32,
+                    viewport.height as i32 - 1,
+                ),
+                2 => (0, (hash % viewport.height as u32) as i32),
+                _ => (
+                    viewport.width as i32 - 1,
+                    (hash % viewport.height as u32) as i32,
+                ),
+            };
+            (hash % 3 == 0 || effect.intensity > 0.65).then(|| SceneCell {
+                x,
+                y,
+                glyph: if hash & 1 == 0 { ':' } else { '.' },
+                style: TextStyle {
+                    fg: Some(
+                        if effect.corruption_level == 1 {
+                            "#25282b"
+                        } else {
+                            "#62686d"
+                        }
+                        .to_string(),
+                    ),
+                    ..TextStyle::default()
+                },
+            })
+        })
+        .collect()
+}
+
+/// Render-only glyph replacement. This intentionally sits above world layers:
+/// the closer the searching pursuer is, the more of the ASCII image becomes
+/// unreliable, without changing the simulation camera or player controls.
+fn echo_search_static_cells(viewport: Viewport, effect: EchoSearchEffect) -> Vec<SceneCell> {
+    if effect.corruption_level <= 1 {
+        return Vec::new();
+    }
+    let coverage = match effect.corruption_level {
+        2 => 0.009,
+        3 => 0.03,
+        4 => 0.075,
+        _ => 0.16,
+    };
+    let cell_count = (viewport.width * viewport.height) as f32;
+    let noise_count = (cell_count * coverage) as u32;
+    let glyphs = [
+        '.', ':', ';', '*', '#', '%', '@', '?', '/', '\\', '|', '+', '=',
+    ];
+    let mut cells = Vec::with_capacity(noise_count as usize + effect.corruption_level as usize * 8);
+    for index in 0..noise_count {
+        let hash = echo_static_hash(effect.phase, index);
+        cells.push(SceneCell {
+            x: (hash % viewport.width as u32) as i32,
+            y: ((hash >> 9) % viewport.height as u32) as i32,
+            glyph: glyphs[(hash >> 18) as usize % glyphs.len()],
+            style: TextStyle {
+                fg: Some(
+                    match (hash >> 3) & 3 {
+                        0 => "#17191b",
+                        1 => "#303438",
+                        2 => "#5e6469",
+                        _ => "#aeb3b5",
+                    }
+                    .to_string(),
+                ),
+                ..TextStyle::default()
+            },
+        });
+    }
+    // At the upper tiers, intermittent horizontal tears make the image feel
+    // broken rather than merely speckled.
+    for tear in 0..effect.corruption_level.saturating_sub(2) as u32 {
+        let hash = echo_static_hash(effect.phase ^ 0xD15E_A5E5, tear);
+        let y = (hash % viewport.height as u32) as i32;
+        let start = ((hash >> 10) % viewport.width as u32) as i32;
+        let width = 6 + ((hash >> 19) % (effect.corruption_level as u32 * 7)) as i32;
+        for x in start..(start + width).min(viewport.width as i32) {
+            cells.push(SceneCell {
+                x,
+                y,
+                glyph: if (x + y) & 1 == 0 { '=' } else { '-' },
+                style: TextStyle {
+                    fg: Some("#8b9093".to_string()),
+                    ..TextStyle::default()
+                },
+            });
+        }
+    }
+    cells
+}
+
+fn echo_static_hash(phase: u32, index: u32) -> u32 {
+    let mut value = phase
+        .wrapping_add(index.wrapping_mul(0x9E37_79B9))
+        .wrapping_add(0x7F4A_7C15);
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x85EB_CA6B);
+    value ^= value >> 13;
+    value.wrapping_mul(0xC2B2_AE35) ^ (value >> 16)
 }
 
 fn weapon_viewmodel_cells(
@@ -9626,12 +10074,22 @@ mod tests {
     }
 
     #[test]
-    fn echolocation_charged_pulse_extends_range_and_alerts_the_pursuer() {
+    fn echolocation_charged_pulse_reaches_a_pursuer_outside_normal_range() {
         let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
         echo.world = echolocation_test_room(VoxelCoord::new(200, 4, 4));
         echo.start_position = Vec3::new(2.5, WALK_EYE_HEIGHT, 2.5);
+        echo.pursuer.position = Vec3::new(112.5, WALK_EYE_HEIGHT, 2.5);
+        assert!(echo.emit_ping(echo.start_position));
+        for _ in 0..10 {
+            echo.update_with_pursuer(1.0, Vec3::new(190.5, WALK_EYE_HEIGHT, 2.5));
+        }
+        assert_eq!(echo.pursuer.mode, EchoPursuerMode::Wander);
+        echo.ping_cooldown_remaining = 0.0;
         echo.begin_pulse_charge();
-        echo.update_with_pursuer(ECHO_CHARGED_PULSE_SECONDS, echo.start_position);
+        echo.update_with_pursuer(
+            ECHO_CHARGED_PULSE_SECONDS,
+            Vec3::new(190.5, WALK_EYE_HEIGHT, 2.5),
+        );
         assert!(echo.release_pulse_charge(echo.start_position));
         let max_impact = echo.waves[0]
             .impacts
@@ -9641,11 +10099,11 @@ mod tests {
             .unwrap_or_default() as f32
             / 1000.0;
         assert!(max_impact > echo.config.max_range);
-        assert_eq!(
-            echo.pursuer_alert_remaining,
-            ECHO_CHARGED_PULSE_ALERT_SECONDS
-        );
-        assert_eq!(echo.pursuer_alert_strength, 1.0);
+        echo.update_with_pursuer(12.0, Vec3::new(190.5, WALK_EYE_HEIGHT, 2.5));
+        assert!(matches!(
+            echo.pursuer.mode,
+            EchoPursuerMode::Investigate { .. }
+        ));
     }
 
     #[test]
@@ -9665,6 +10123,152 @@ mod tests {
             .all(
                 |impact| impact.arrival_distance_milli as f32 / 1000.0 <= ECHO_STEP_WAVE_MAX_RADIUS
             ));
+    }
+
+    #[test]
+    fn echolocation_footsteps_require_range_and_line_of_sight_to_alert_pursuer() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.world = echolocation_test_room(VoxelCoord::new(20, 4, 6));
+        let step = Vec3::new(2.5, WALK_EYE_HEIGHT, 2.5);
+        echo.pursuer.position = Vec3::new(8.5, WALK_EYE_HEIGHT, 2.5);
+        echo.update_player_footsteps(ECHO_PLAYER_STEP_DISTANCE, step);
+        assert!(matches!(
+            echo.pursuer.mode,
+            EchoPursuerMode::Investigate { .. }
+        ));
+
+        echo.pursuer.mode = EchoPursuerMode::Wander;
+        echo.pursuer.target_position = None;
+        echo.pursuer.position = Vec3::new(18.5, WALK_EYE_HEIGHT, 2.5);
+        echo.update_player_footsteps(ECHO_PLAYER_STEP_DISTANCE, step);
+        assert_eq!(echo.pursuer.mode, EchoPursuerMode::Wander);
+
+        echo.pursuer.position = Vec3::new(8.5, WALK_EYE_HEIGHT, 2.5);
+        for y in 1..=3 {
+            echo.world.set(
+                VoxelCoord::new(5, y, 2),
+                VoxelCell::new(VoxelMaterial::ShipHull),
+            );
+        }
+        echo.update_player_footsteps(ECHO_PLAYER_STEP_DISTANCE, step);
+        assert_eq!(echo.pursuer.mode, EchoPursuerMode::Wander);
+    }
+
+    #[test]
+    fn echolocation_investigation_refreshes_searches_and_expires() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.world = echolocation_test_room(VoxelCoord::new(20, 4, 8));
+        echo.pursuer.position = Vec3::new(12.5, WALK_EYE_HEIGHT, 4.5);
+        let first_noise = Vec3::new(3.5, WALK_EYE_HEIGHT, 4.5);
+        echo.notify_pursuer_of_noise(first_noise);
+        echo.update_with_pursuer(1.0, Vec3::new(19.5, WALK_EYE_HEIGHT, 6.5));
+        assert!(
+            matches!(echo.pursuer.mode, EchoPursuerMode::Investigate { last_heard_position, remaining_seconds } if last_heard_position == first_noise && remaining_seconds < ECHO_PURSUER_INVESTIGATE_SECONDS)
+        );
+        let newer_noise = Vec3::new(6.5, WALK_EYE_HEIGHT, 4.5);
+        echo.notify_pursuer_of_noise(newer_noise);
+        assert!(
+            matches!(echo.pursuer.mode, EchoPursuerMode::Investigate { last_heard_position, remaining_seconds } if last_heard_position == newer_noise && remaining_seconds == ECHO_PURSUER_INVESTIGATE_SECONDS)
+        );
+        echo.update_with_pursuer(
+            ECHO_PURSUER_INVESTIGATE_SECONDS + 0.1,
+            Vec3::new(19.5, WALK_EYE_HEIGHT, 6.5),
+        );
+        assert_eq!(echo.pursuer.mode, EchoPursuerMode::Wander);
+        assert!(echo.pursuer.target_position.is_none());
+    }
+
+    #[test]
+    fn echolocation_search_hud_and_twitch_only_render_during_investigation() {
+        let mut app = AppState::new();
+        app.start_echolocation();
+        let calm = app.frame(0.0, false);
+        assert!(!calm
+            .layers
+            .iter()
+            .any(|layer| layer.name == "search-twitch"));
+        assert!(!calm
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("IT HEARD YOU")));
+        app.echolocation
+            .notify_pursuer_of_noise(app.camera.position);
+        let searching = app.frame(0.0, false);
+        assert!(searching
+            .layers
+            .iter()
+            .any(|layer| layer.name == "search-twitch"));
+        assert!(searching
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("IT HEARD YOU")));
+    }
+
+    #[test]
+    fn echolocation_search_static_escalates_with_pursuer_proximity() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let listener = echo.start_position;
+        echo.notify_pursuer_of_noise(listener);
+        echo.pursuer.position = listener + Vec3::new(30.0, 0.0, 0.0);
+        let distant = echo_search_effect(&echo, listener);
+        echo.pursuer.position = listener + Vec3::new(2.0, 0.0, 0.0);
+        let close = echo_search_effect(&echo, listener);
+
+        assert!(close.corruption_level > distant.corruption_level);
+        assert!(
+            echo_search_static_cells(VIEWPORT, close).len()
+                > echo_search_static_cells(VIEWPORT, distant).len()
+        );
+    }
+
+    #[test]
+    fn echolocation_static_is_grayscale_and_stays_below_hud() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let listener = echo.start_position;
+        echo.notify_pursuer_of_noise(listener);
+        echo.pursuer.position = listener + Vec3::new(3.0, 0.0, 0.0);
+        let effect = echo_search_effect(&echo, listener);
+        let cells = echo_search_static_cells(VIEWPORT, effect);
+        assert!(!cells.is_empty());
+        assert!(cells.iter().all(|cell| matches!(
+            cell.style.fg.as_deref(),
+            Some("#17191b" | "#303438" | "#5e6469" | "#aeb3b5" | "#8b9093")
+        )));
+
+        let mut app = AppState::new();
+        app.start_echolocation();
+        app.echolocation
+            .notify_pursuer_of_noise(app.camera.position);
+        let scene = app.frame(0.0, false);
+        let static_z = scene
+            .layers
+            .iter()
+            .find(|layer| layer.name == "search-static")
+            .unwrap()
+            .z;
+        assert!(scene.overlays.iter().all(|overlay| overlay.z > static_z));
+    }
+
+    #[test]
+    fn echolocation_static_bursts_are_seeded_and_stop_when_search_ends() {
+        let listener = Vec3::new(6.5, WALK_EYE_HEIGHT, 6.5);
+        let mut a = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let mut b = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        for echo in [&mut a, &mut b] {
+            echo.notify_pursuer_of_noise(listener);
+            echo.pursuer.position = listener + Vec3::new(8.0, 0.0, 0.0);
+        }
+        let events_a = a.update_with_pursuer(0.0, listener);
+        let events_b = b.update_with_pursuer(0.0, listener);
+        assert_eq!(events_a, events_b);
+        assert!(events_a
+            .iter()
+            .any(|effect| matches!(effect, SoundEffect::EcholocationStaticBurst { .. })));
+        a.pursuer.mode = EchoPursuerMode::Wander;
+        assert!(!a
+            .update_with_pursuer(5.0, listener)
+            .iter()
+            .any(|effect| matches!(effect, SoundEffect::EcholocationStaticBurst { .. })));
     }
 
     #[test]
@@ -9782,6 +10386,7 @@ mod tests {
                 1.0,
                 0,
                 ECHO_STEP_WAVE_MAX_RADIUS,
+                source,
             )
             .impacts,
             age: 0.2,
@@ -9813,6 +10418,7 @@ mod tests {
                 1.0,
                 0,
                 ECHO_STEP_WAVE_MAX_RADIUS,
+                source,
             )
             .impacts,
             age: 0.0,
@@ -9886,30 +10492,15 @@ mod tests {
     }
 
     #[test]
-    fn echolocation_pursuer_reaches_a_stationary_player_on_the_seeded_map() {
+    fn echolocation_pursuer_wanders_without_targeting_a_stationary_player() {
         let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let spawn = echo.pursuer.position;
         for _ in 0..600 {
             echo.update_with_pursuer(0.1, echo.start_position);
-            if echo.run_status == EchoRunStatus::Dead {
-                break;
-            }
         }
-        let nav =
-            NavigationField::build(&echo.world, echo.start_position, ECHOLOCATION_WALK_PROFILE)
-                .unwrap();
-        assert_eq!(
-            echo.run_status,
-            EchoRunStatus::Dead,
-            "pursuer {:?}, player {:?}, distance {}, cell distance {:?}, next {:?}",
-            echo.pursuer.position,
-            echo.start_position,
-            horizontal_distance(echo.pursuer.position, echo.start_position),
-            nav.distance(
-                echo.pursuer.position.x.floor() as i32,
-                echo.pursuer.position.z.floor() as i32
-            ),
-            nav.next_step(echo.pursuer.position),
-        );
+        assert_ne!(echo.pursuer.position, spawn);
+        assert_eq!(echo.pursuer.mode, EchoPursuerMode::Wander);
+        assert_ne!(echo.run_status, EchoRunStatus::Dead);
     }
 
     #[test]
@@ -10252,7 +10843,8 @@ mod tests {
         let hidden_target = VoxelCoord::new(5, 2, 2);
         echo.world
             .set(hidden_target, VoxelCell::new(VoxelMaterial::Beacon));
-        echo.emit_ping(Vec3::new(1.5, 2.5, 2.5));
+        let emission = Vec3::new(1.5, 2.5, 2.5);
+        echo.emit_ping(emission);
         echo.update(0.25);
 
         let secondary = echo
@@ -10261,6 +10853,7 @@ mod tests {
             .find(|wave| wave.bounce_depth == 1)
             .expect("wall contact spawns a secondary wave");
         assert!(secondary.energy < echo.config.initial_energy);
+        assert_eq!(secondary.original_emission_position, emission);
         for _ in 0..8 {
             echo.update(0.5);
             assert!(!echo.revealed.contains_key(&hidden_target));

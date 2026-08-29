@@ -55,11 +55,29 @@ pub enum SoundEffect {
         pan: f32,
         gain: f32,
     },
+    /// A short, pursuer-panned digital crackle during echolocation search.
+    EcholocationStaticBurst {
+        pan: f32,
+        gain: f32,
+        variant: u32,
+    },
+}
+
+/// Per-frame state for the persistent echolocation interference bed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EcholocationInterference {
+    Inactive,
+    Active {
+        intensity: f32,
+        pursuer_pan: f32,
+        corruption_level: u8,
+    },
 }
 
 pub struct GameAudio {
     backend: Option<RodioBackend>,
     ambience: Option<AmbienceKind>,
+    interference: EcholocationInterference,
 }
 
 impl GameAudio {
@@ -67,6 +85,7 @@ impl GameAudio {
         Self {
             backend: RodioBackend::open().ok(),
             ambience: None,
+            interference: EcholocationInterference::Inactive,
         }
     }
 
@@ -74,6 +93,7 @@ impl GameAudio {
         Self {
             backend: None,
             ambience: None,
+            interference: EcholocationInterference::Inactive,
         }
     }
 
@@ -131,6 +151,19 @@ impl GameAudio {
         }
     }
 
+    /// Updates the two persistent, side-isolated noise players. Inactive
+    /// immediately stops and discards them so no mode transition can leak audio.
+    pub fn set_echolocation_interference(&mut self, state: EcholocationInterference) {
+        self.interference = state;
+        if let Some(backend) = &mut self.backend {
+            backend.set_echolocation_interference(state);
+        }
+    }
+
+    pub fn echolocation_interference(&self) -> EcholocationInterference {
+        self.interference
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.backend.is_some()
     }
@@ -168,6 +201,8 @@ enum AmbienceKind {
 struct RodioBackend {
     sink: MixerDeviceSink,
     ambience: Option<Player>,
+    interference_left: Option<Player>,
+    interference_right: Option<Player>,
 }
 
 impl RodioBackend {
@@ -177,6 +212,8 @@ impl RodioBackend {
         Ok(Self {
             sink,
             ambience: None,
+            interference_left: None,
+            interference_right: None,
         })
     }
 
@@ -277,6 +314,43 @@ impl RodioBackend {
         }
     }
 
+    fn set_echolocation_interference(&mut self, state: EcholocationInterference) {
+        let EcholocationInterference::Active {
+            intensity,
+            pursuer_pan,
+            corruption_level,
+        } = state
+        else {
+            if let Some(player) = self.interference_left.take() {
+                player.stop();
+            }
+            if let Some(player) = self.interference_right.take() {
+                player.stop();
+            }
+            return;
+        };
+        if self.interference_left.is_none() || self.interference_right.is_none() {
+            let (left_samples, right_samples) = synthesize_echolocation_static_bed();
+            let left = Player::connect_new(self.sink.mixer());
+            left.append(samples_buffer(left_samples).repeat_infinite());
+            let right = Player::connect_new(self.sink.mixer());
+            right.append(samples_buffer(right_samples).repeat_infinite());
+            self.interference_left = Some(left);
+            self.interference_right = Some(right);
+        }
+        // Restrained enough that spatial footsteps remain the stronger cue.
+        let base =
+            (0.025 + intensity.clamp(0.0, 1.0) * 0.045 + corruption_level.min(5) as f32 * 0.004)
+                .min(0.085);
+        let pan = pursuer_pan.clamp(-1.0, 1.0);
+        if let Some(player) = &self.interference_left {
+            player.set_volume(base * (1.0 - pan).sqrt());
+        }
+        if let Some(player) = &self.interference_right {
+            player.set_volume(base * (1.0 + pan).sqrt());
+        }
+    }
+
     fn play_effect(&self, effect: SoundEffect) {
         let samples = match effect {
             SoundEffect::Gunshot => synthesize_gunshot(),
@@ -287,6 +361,9 @@ impl RodioBackend {
             SoundEffect::EchoPing => synthesize_echo_ping(),
             SoundEffect::PlayerFootstep => synthesize_player_footstep(),
             SoundEffect::InvisibleFootstep { pan, gain } => synthesize_spatial_footstep(pan, gain),
+            SoundEffect::EcholocationStaticBurst { pan, gain, variant } => {
+                synthesize_echolocation_static_burst(pan, gain, variant)
+            }
         };
         self.sink.mixer().add(samples_buffer(samples));
     }
@@ -592,7 +669,57 @@ pub fn synthesize_effect(effect: SoundEffect) -> Vec<f32> {
         SoundEffect::EchoPing => synthesize_echo_ping(),
         SoundEffect::PlayerFootstep => synthesize_player_footstep(),
         SoundEffect::InvisibleFootstep { .. } => synthesize_invisible_footstep(),
+        SoundEffect::EcholocationStaticBurst { pan, gain, variant } => {
+            synthesize_echolocation_static_burst(pan, gain, variant)
+        }
     }
+}
+
+/// Deterministic, low broadband radio noise. Each buffer contains energy on
+/// only one side; the persistent players supply the equal-power pan.
+pub fn synthesize_echolocation_static_bed() -> (Vec<f32>, Vec<f32>) {
+    let frames = SAMPLE_RATE as usize * 3;
+    let mut left = Vec::with_capacity(frames * CHANNELS as usize);
+    let mut right = Vec::with_capacity(frames * CHANNELS as usize);
+    let mut noise = 0xEC40_10CAu32;
+    let mut filtered = 0.0;
+    for frame in 0..frames {
+        noise = xorshift(noise);
+        let white = ((noise >> 9) as f32 / (1_u32 << 23) as f32) * 2.0 - 1.0;
+        // A low-pass blend removes bright hiss; wobble is level-only, never tonal.
+        filtered = filtered * 0.87 + white * 0.13;
+        let wobble = 0.82 + 0.18 * (TAU * 0.19 * frame as f32 / SAMPLE_RATE as f32).sin();
+        let sample = soft_clip(filtered * wobble * 0.62);
+        push_stereo(&mut left, sample, 0.0);
+        push_stereo(&mut right, 0.0, sample);
+    }
+    (left, right)
+}
+
+pub fn synthesize_echolocation_static_burst(pan: f32, gain: f32, variant: u32) -> Vec<f32> {
+    let duration = 0.060 + (variant % 4) as f32 * 0.030;
+    let frames = (duration * SAMPLE_RATE as f32) as usize;
+    let mut samples = Vec::with_capacity(frames * CHANNELS as usize);
+    let mut noise = 0x51A7_1C00u32 ^ variant.wrapping_mul(0x9E37_79B9);
+    let mut filtered = 0.0;
+    let pan = pan.clamp(-1.0, 1.0);
+    let gain = gain.clamp(0.0, 0.20);
+    let left_gain = gain * (1.0 - pan).sqrt();
+    let right_gain = gain * (1.0 + pan).sqrt();
+    for frame in 0..frames {
+        noise = xorshift(noise);
+        let white = ((noise >> 9) as f32 / (1_u32 << 23) as f32) * 2.0 - 1.0;
+        filtered = filtered * 0.58 + white * 0.42;
+        let t = frame as f32 / frames.max(1) as f32;
+        let envelope = if t < 0.08 {
+            t / 0.08
+        } else {
+            (1.0 - t).powf(1.8)
+        };
+        let sample = soft_clip(filtered * envelope * 0.8);
+        push_stereo(&mut samples, sample * left_gain, sample * right_gain);
+    }
+    samples
 }
 
 fn synthesize_gunshot() -> Vec<f32> {
@@ -934,6 +1061,16 @@ mod tests {
         assert!(footstep.len() < echo_ping.len());
         assert_eq!(footstep.len() % CHANNELS as usize, 0);
         assert!(footstep.iter().any(|sample| sample.abs() > 0.01));
+
+        let burst = synthesize_effect(SoundEffect::EcholocationStaticBurst {
+            pan: 0.75,
+            gain: 0.2,
+            variant: 3,
+        });
+        assert_eq!(burst.len() % CHANNELS as usize, 0);
+        assert!(burst.iter().all(|sample| sample.is_finite()));
+        assert!(burst.iter().any(|sample| sample.abs() > 0.001));
+        assert!(burst.iter().all(|sample| sample.abs() <= 0.29));
     }
 
     #[test]
@@ -983,5 +1120,33 @@ mod tests {
         assert!(!audio.in_corn_maze_mode());
         assert!(!audio.in_bar_mode());
         assert!(!audio.in_drone_mode());
+
+        audio.set_echolocation_interference(EcholocationInterference::Active {
+            intensity: 1.0,
+            pursuer_pan: -1.0,
+            corruption_level: 5,
+        });
+        assert!(matches!(
+            audio.echolocation_interference(),
+            EcholocationInterference::Active { .. }
+        ));
+        audio.set_echolocation_interference(EcholocationInterference::Inactive);
+        assert_eq!(
+            audio.echolocation_interference(),
+            EcholocationInterference::Inactive
+        );
+    }
+
+    #[test]
+    fn echolocation_bed_is_valid_stereo_and_burst_pans_toward_pursuer() {
+        let (left, right) = synthesize_echolocation_static_bed();
+        assert_eq!(left.len(), right.len());
+        assert_eq!(left.len() % CHANNELS as usize, 0);
+        assert!(left.chunks_exact(2).all(|frame| frame[1] == 0.0));
+        assert!(right.chunks_exact(2).all(|frame| frame[0] == 0.0));
+        let burst = synthesize_echolocation_static_burst(1.0, 0.2, 1);
+        let left_energy: f32 = burst.chunks_exact(2).map(|frame| frame[0].abs()).sum();
+        let right_energy: f32 = burst.chunks_exact(2).map(|frame| frame[1].abs()).sum();
+        assert!(right_energy > left_energy * 10.0);
     }
 }
