@@ -15,8 +15,8 @@ echolocation.
 3. Start or restart Heliocrisis. Asset discovery happens once during startup,
    so files added or edited while the application is running will not appear
    until the next launch.
-4. Press `V` to open the asset viewer. Use the left and right arrow keys to
-   browse assets and `M` to return to the simulation.
+4. Press `6` on the main menu to open the asset viewer. Use `N` and `P` to
+   browse assets and `M` to return to the menu.
 
 Valid imported assets appear after the built-in catalog in deterministic
 filename order. The viewer shows each asset's voxel scale, physical dimensions,

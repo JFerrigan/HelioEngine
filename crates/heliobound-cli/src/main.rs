@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fs;
 use std::path::Path;
@@ -102,6 +102,10 @@ const ASSET_VIEWER_DEFAULT_DISTANCE: f32 = 28.0;
 const ASSET_VIEWER_MIN_DISTANCE: f32 = 8.0;
 const ASSET_VIEWER_MAX_DISTANCE: f32 = 80.0;
 const ASSET_VIEWER_MOUSE_SENSITIVITY: f32 = 0.006;
+const MAP_VIEWER_ROLL_SPEED: f32 = 1.2;
+const MAP_VIEWER_ZOOM_SPEED: f32 = 55.0;
+const MAP_VIEWER_MOUSE_SENSITIVITY: f32 = 0.0045;
+const MAP_VIEWER_FREE_SPEED_MULTIPLIER: f32 = 2.0;
 const WEAPON_VIEW_RENDER_WIDTH: usize = 72;
 const WEAPON_VIEW_RENDER_HEIGHT: usize = 40;
 const WEAPON_VIEW_SCREEN_RIGHT_MARGIN: i32 = 1;
@@ -284,6 +288,10 @@ const ECHO_FOOTPRINT_SURFACE_Y: f32 = 1.02;
 // At normal walking speed this creates an audible footfall about four times a
 // second, while boost remains deliberately louder/more frequent.
 const ECHO_PLAYER_STEP_DISTANCE: f32 = 2.6;
+const ECHO_PUZZLE_SIGNAL_SPEED: f32 = 6.0;
+const ECHO_RECEIVER_OUTPUT_SECONDS: f32 = 3.0;
+const ECHO_RECEIVER_COORD: VoxelCoord = VoxelCoord::new(-36, 1, 0);
+const ECHO_DOOR_X: i32 = -21;
 const ECHOLOCATION_WALK_PROFILE: WalkProfile = WalkProfile {
     speed: 10.0,
     collision_radius: 0.45,
@@ -427,6 +435,7 @@ enum AppMode {
     CornMaze,
     BarScene,
     AssetViewer,
+    MapViewer,
     VoxelSandbox,
     Zombies,
     Liminal,
@@ -452,6 +461,7 @@ struct AppState {
     bar_scene: VoxelWorld,
     corn_maze: CornMazeState,
     asset_viewer: AssetViewerState,
+    map_viewer: Option<MapViewerState>,
     sandbox: VoxelSandboxState,
     zombies_map: VoxelWorld,
     zombies: ZombiesState,
@@ -461,6 +471,7 @@ struct AppState {
     weapon_asset: PreviewAsset,
     planet_builder: SceneBuilder,
     city_builder: SceneBuilder,
+    map_builder: SceneBuilder,
     camera: Camera,
     input: PlayerInput,
     city_figures: CityFigureState,
@@ -488,6 +499,7 @@ impl AppState {
             bar_scene: build_bar_scene(),
             corn_maze: CornMazeState::new(),
             asset_viewer: AssetViewerState::new(),
+            map_viewer: None,
             sandbox: VoxelSandboxState::new(),
             zombies_map: build_zombies_map(&ZombiesState::new()),
             zombies: ZombiesState::new(),
@@ -506,6 +518,13 @@ impl AppState {
                 GraphicsConfig {
                     viewport: VIEWPORT,
                     max_distance: 140.0,
+                },
+                MaterialGlyphMap,
+            ),
+            map_builder: SceneBuilder::new(
+                GraphicsConfig {
+                    viewport: VIEWPORT,
+                    max_distance: f32::INFINITY,
                 },
                 MaterialGlyphMap,
             ),
@@ -580,6 +599,10 @@ impl AppState {
                     self.start_echolocation();
                     return KeyboardAction::StartScene;
                 }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::KeyV)) => {
+                    self.start_map_viewer();
+                    return KeyboardAction::StartScene;
+                }
                 (AppMode::AssetViewer, PhysicalKey::Code(KeyCode::KeyM)) => {
                     return KeyboardAction::EnterMenu;
                 }
@@ -598,6 +621,50 @@ impl AppState {
                         }
                         PhysicalKey::Code(KeyCode::KeyP) | PhysicalKey::Code(KeyCode::Comma) => {
                             self.asset_viewer.select_previous();
+                            return KeyboardAction::None;
+                        }
+                        _ => {}
+                    }
+                }
+                (AppMode::MapViewer, PhysicalKey::Code(KeyCode::KeyM)) => {
+                    return KeyboardAction::EnterMenu;
+                }
+                (AppMode::MapViewer, PhysicalKey::Code(KeyCode::Escape)) => {
+                    return KeyboardAction::ReleaseMouse;
+                }
+                (AppMode::MapViewer, key) => {
+                    let viewer = self
+                        .map_viewer
+                        .as_mut()
+                        .expect("map viewer mode requires viewer state");
+                    if let Some(index) = asset_digit_index(key) {
+                        viewer.select(index);
+                        self.camera = viewer.camera();
+                        return KeyboardAction::None;
+                    }
+                    match key {
+                        PhysicalKey::Code(KeyCode::KeyN) | PhysicalKey::Code(KeyCode::Period) => {
+                            viewer.select_next();
+                            self.camera = viewer.camera();
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::KeyP) | PhysicalKey::Code(KeyCode::Comma) => {
+                            viewer.select_previous();
+                            self.camera = viewer.camera();
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::KeyR) => {
+                            viewer.reset_view();
+                            self.camera = viewer.camera();
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::KeyO) => {
+                            viewer.toggle_view();
+                            self.camera = viewer.camera();
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::KeyC) => {
+                            viewer.toggle_ceilings();
                             return KeyboardAction::None;
                         }
                         _ => {}
@@ -695,6 +762,9 @@ impl AppState {
     }
 
     fn enter_menu(&mut self) {
+        if self.mode == AppMode::MapViewer {
+            self.map_viewer = None;
+        }
         self.mode = AppMode::Menu;
         self.input = PlayerInput::default();
     }
@@ -737,6 +807,17 @@ impl AppState {
         self.mode = AppMode::AssetViewer;
         self.asset_viewer = AssetViewerState::new();
         self.camera = self.asset_viewer.camera();
+        self.input = PlayerInput::default();
+    }
+
+    fn start_map_viewer(&mut self) {
+        self.mode = AppMode::MapViewer;
+        self.map_viewer = Some(MapViewerState::new(build_map_catalog()));
+        self.camera = self
+            .map_viewer
+            .as_ref()
+            .expect("new map viewer has state")
+            .camera();
         self.input = PlayerInput::default();
     }
 
@@ -871,6 +952,19 @@ impl AppState {
                 render_asset_viewer_scene(&mut scene, &self.asset_viewer, mouse_captured);
                 scene
             }
+            AppMode::MapViewer => {
+                let viewer = self
+                    .map_viewer
+                    .as_mut()
+                    .expect("map viewer mode requires viewer state");
+                viewer.update(&self.input, dt);
+                self.camera = viewer.camera();
+                let mut scene =
+                    self.map_builder
+                        .build(viewer.render_world(), &self.camera, self.tick);
+                render_map_viewer_scene(&mut scene, viewer, mouse_captured);
+                scene
+            }
             AppMode::VoxelSandbox => {
                 update_sandbox_camera(&mut self.camera, &self.input, &self.sandbox.world, dt);
                 let mut scene =
@@ -954,12 +1048,15 @@ impl AppState {
                             self.camera.position,
                         ));
                 }
-                self.audio_events
-                    .extend(self.echolocation.update_with_pursuer_from_listener(
-                        dt,
-                        self.camera.position,
-                        self.camera.right(),
-                    ));
+                let echo_update = self.echolocation.update_with_pursuer_from_listener(
+                    dt,
+                    self.camera.position,
+                    self.camera.right(),
+                );
+                self.audio_events.extend(echo_update.sound_events);
+                if let Some(position) = echo_update.corrected_player_position {
+                    self.camera.position = position;
+                }
                 let mut scene = self.city_builder.build_with_visibility(
                     &self.echolocation.world,
                     &self.camera,
@@ -997,6 +1094,14 @@ impl AppState {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped)
             }
             AppMode::AssetViewer => self.asset_viewer.rotate_with_mouse(delta_x, delta_y),
+            AppMode::MapViewer => {
+                let viewer = self
+                    .map_viewer
+                    .as_mut()
+                    .expect("map viewer mode requires viewer state");
+                viewer.rotate_with_mouse(delta_x, delta_y);
+                self.camera = viewer.camera();
+            }
         }
     }
 
@@ -1072,7 +1177,7 @@ fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
         AppMode::PlanetFlight | AppMode::Liminal => audio.enter_doom_mode(),
         AppMode::DroneGateRunner => audio.enter_drone_mode(),
         AppMode::EchoLocation => audio.enter_doom_mode(),
-        AppMode::Menu | AppMode::AssetViewer => audio.leave_ambience(),
+        AppMode::Menu | AppMode::AssetViewer | AppMode::MapViewer => audio.leave_ambience(),
     }
 }
 
@@ -1196,6 +1301,10 @@ struct PlayerInput {
     down: bool,
     roll_left: bool,
     roll_right: bool,
+    pan_forward: bool,
+    pan_backward: bool,
+    pan_left: bool,
+    pan_right: bool,
     boost: bool,
 }
 
@@ -1774,6 +1883,128 @@ struct EchoPursuer {
     selection_rng: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EchoReceiver {
+    coord: VoxelCoord,
+    output_seconds: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EchoPipePoint {
+    position: Vec3,
+    distance: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct EchoPuzzleDoor {
+    voxels: Vec<VoxelCoord>,
+    normal: Vec3,
+    starting_side_anchor: Vec3,
+    far_side_anchor: Vec3,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EchoEmissionInterval {
+    start: f32,
+    end: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EchoDoorTransition {
+    Opened,
+    Closed,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct EchoPuzzle {
+    receiver: EchoReceiver,
+    pipe: Vec<EchoPipePoint>,
+    door: EchoPuzzleDoor,
+    time: f32,
+    emissions: Vec<EchoEmissionInterval>,
+    door_open: bool,
+    transitions: Vec<EchoDoorTransition>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct EchoFrameUpdate {
+    sound_events: Vec<SoundEffect>,
+    corrected_player_position: Option<Vec3>,
+}
+
+impl EchoPuzzle {
+    fn new() -> Self {
+        let pipe = (ECHO_RECEIVER_COORD.x..=ECHO_DOOR_X)
+            .map(|x| EchoPipePoint {
+                position: Vec3::new(x as f32 + 0.5, ECHO_FOOTPRINT_SURFACE_Y + 0.03, 0.5),
+                distance: (x - ECHO_RECEIVER_COORD.x) as f32,
+            })
+            .collect();
+        let mut door_voxels = Vec::new();
+        for y in 1..=4 {
+            for z in -1..=1 {
+                door_voxels.push(VoxelCoord::new(ECHO_DOOR_X, y, z));
+            }
+        }
+        Self {
+            receiver: EchoReceiver {
+                coord: ECHO_RECEIVER_COORD,
+                output_seconds: ECHO_RECEIVER_OUTPUT_SECONDS,
+            },
+            pipe,
+            door: EchoPuzzleDoor {
+                voxels: door_voxels,
+                normal: Vec3::new(1.0, 0.0, 0.0),
+                starting_side_anchor: Vec3::new(
+                    ECHO_DOOR_X as f32 - 0.5,
+                    ECHOLOCATION_WALK_PROFILE.eye_height,
+                    0.5,
+                ),
+                far_side_anchor: Vec3::new(
+                    ECHO_DOOR_X as f32 + 1.5,
+                    ECHOLOCATION_WALK_PROFILE.eye_height,
+                    0.5,
+                ),
+            },
+            time: 0.0,
+            emissions: Vec::new(),
+            door_open: false,
+            transitions: Vec::new(),
+        }
+    }
+
+    fn endpoint_distance(&self) -> f32 {
+        self.pipe.last().map(|point| point.distance).unwrap_or(0.0)
+    }
+
+    fn signal_active_at(&self, distance: f32, time: f32) -> bool {
+        let source_time = time - distance / ECHO_PUZZLE_SIGNAL_SPEED;
+        self.emissions
+            .iter()
+            .any(|interval| source_time >= interval.start && source_time < interval.end)
+    }
+
+    fn receiver_active(&self) -> bool {
+        self.signal_active_at(0.0, self.time)
+    }
+
+    fn door_powered(&self) -> bool {
+        self.signal_active_at(self.endpoint_distance(), self.time)
+    }
+
+    fn record_activation(&mut self, time: f32) {
+        let end = time + self.receiver.output_seconds;
+        if let Some(current) = self.emissions.last_mut() {
+            if time <= current.end {
+                current.end = current.end.max(end);
+                return;
+            }
+        }
+        self.emissions
+            .push(EchoEmissionInterval { start: time, end });
+    }
+}
+
 #[derive(Clone, Debug)]
 struct EchoLocationState {
     seed: u64,
@@ -1793,11 +2024,12 @@ struct EchoLocationState {
     run_status: EchoRunStatus,
     static_burst_timer: f32,
     static_burst_counter: u32,
+    puzzle: EchoPuzzle,
 }
 
 impl EchoLocationState {
     fn new_seeded(seed: u64) -> Self {
-        let (world, start_position) = build_echolocation_map(seed);
+        let (world, start_position, puzzle) = build_echolocation_map(seed);
         let pursuer_position = echo_pursuer_spawn_position(&world, start_position)
             .expect("echolocation map must contain a reachable pursuer spawn");
         Self {
@@ -1826,6 +2058,7 @@ impl EchoLocationState {
             run_status: EchoRunStatus::Active,
             static_burst_timer: 0.0,
             static_burst_counter: 0,
+            puzzle,
         }
     }
 
@@ -1921,6 +2154,7 @@ impl EchoLocationState {
     #[cfg(test)]
     fn update_with_pursuer(&mut self, dt: f32, player_position: Vec3) -> Vec<SoundEffect> {
         self.update_with_pursuer_from_listener(dt, player_position, Vec3::new(1.0, 0.0, 0.0))
+            .sound_events
     }
 
     fn update_with_pursuer_from_listener(
@@ -1928,10 +2162,10 @@ impl EchoLocationState {
         dt: f32,
         player_position: Vec3,
         listener_right: Vec3,
-    ) -> Vec<SoundEffect> {
+    ) -> EchoFrameUpdate {
         let dt = dt.max(0.0);
         if self.run_status != EchoRunStatus::Active {
-            return Vec::new();
+            return EchoFrameUpdate::default();
         }
         let mut effects = Vec::new();
         if let Some(charge) = &mut self.pulse_charge_seconds {
@@ -1939,7 +2173,10 @@ impl EchoLocationState {
         }
         self.update_pursuer(dt, player_position, listener_right, &mut effects);
         if self.run_status == EchoRunStatus::Dead {
-            return effects;
+            return EchoFrameUpdate {
+                sound_events: effects,
+                corrected_player_position: None,
+            };
         }
         self.update_static_bursts(dt, player_position, listener_right, &mut effects);
         self.ping_cooldown_remaining = (self.ping_cooldown_remaining - dt).max(0.0);
@@ -1947,12 +2184,15 @@ impl EchoLocationState {
         let mut secondary_sources = Vec::new();
         let mut reveals = Vec::new();
         let mut heard_positions = Vec::new();
+        let mut receiver_hits = Vec::new();
+        let frame_start = self.puzzle.time;
         for reveal in self.revealed.values_mut() {
             reveal.remaining_seconds -= dt;
         }
         self.revealed
             .retain(|_, reveal| reveal.remaining_seconds > 0.0);
         for wave in &mut self.waves {
+            let previous_age = wave.age;
             let previous_radius = wave.radius(config);
             wave.age += dt;
             let radius_milli = (wave.radius(config).max(0.0) * 1000.0) as u32;
@@ -1979,6 +2219,11 @@ impl EchoLocationState {
                     impact_energy,
                     impact.source_air_cell,
                 ));
+                if impact.solid_voxel == self.puzzle.receiver.coord {
+                    receiver_hits.push(
+                        frame_start + (distance / config.ping_speed - previous_age).clamp(0.0, dt),
+                    );
+                }
                 if can_reflect {
                     let reflected_energy =
                         impact_energy * echo_reflection_gain(config.echo_strength);
@@ -1999,6 +2244,7 @@ impl EchoLocationState {
         // Footsteps use the same surface-return path as the player's pulse, but
         // their range is capped tightly and they never create reflected waves.
         for wave in &mut self.step_waves {
+            let previous_age = (wave.age - dt).max(0.0);
             let radius_milli = (wave.age * ECHO_STEP_WAVE_SPEED * 1000.0) as u32;
             while let Some(impact) = wave.impacts.get(wave.next_impact).copied() {
                 if impact.arrival_distance_milli > radius_milli {
@@ -2006,6 +2252,13 @@ impl EchoLocationState {
                 }
                 wave.next_impact += 1;
                 reveals.push((impact.solid_voxel, impact.cell, 1.0, impact.source_air_cell));
+                if impact.solid_voxel == self.puzzle.receiver.coord {
+                    let distance = impact.arrival_distance_milli as f32 / 1000.0;
+                    receiver_hits.push(
+                        frame_start
+                            + (distance / ECHO_STEP_WAVE_SPEED - previous_age).clamp(0.0, dt),
+                    );
+                }
             }
         }
         for (coord, cell, strength, source_air_cell) in reveals {
@@ -2032,7 +2285,134 @@ impl EchoLocationState {
                     )
                 },
             ));
-        effects
+        let corrected_player_position = self.update_puzzle(
+            dt,
+            receiver_hits,
+            player_position,
+            listener_right,
+            &mut effects,
+        );
+        EchoFrameUpdate {
+            sound_events: effects,
+            corrected_player_position,
+        }
+    }
+
+    fn update_puzzle(
+        &mut self,
+        dt: f32,
+        mut receiver_hits: Vec<f32>,
+        player_position: Vec3,
+        listener_right: Vec3,
+        effects: &mut Vec<SoundEffect>,
+    ) -> Option<Vec3> {
+        let frame_start = self.puzzle.time;
+        let frame_end = frame_start + dt;
+        self.puzzle.transitions.clear();
+        receiver_hits.sort_by(|a, b| a.total_cmp(b));
+        for hit_time in receiver_hits {
+            self.puzzle.record_activation(hit_time);
+            effects.push(spatial_puzzle_effect(
+                PuzzleSoundEffect::Receiver,
+                echo_receiver_sound_position(self.puzzle.receiver.coord),
+                player_position,
+                listener_right,
+            ));
+        }
+
+        let delay = self.puzzle.endpoint_distance() / ECHO_PUZZLE_SIGNAL_SPEED;
+        let mut transitions = Vec::new();
+        for interval in &self.puzzle.emissions {
+            let open_time = interval.start + delay;
+            let close_time = interval.end + delay;
+            if open_time > frame_start && open_time <= frame_end {
+                transitions.push((open_time, EchoDoorTransition::Opened));
+            }
+            if close_time > frame_start && close_time <= frame_end {
+                transitions.push((close_time, EchoDoorTransition::Closed));
+            }
+        }
+        transitions.sort_by(|a, b| {
+            a.0.total_cmp(&b.0).then_with(|| match (a.1, b.1) {
+                (EchoDoorTransition::Closed, EchoDoorTransition::Opened) => {
+                    std::cmp::Ordering::Less
+                }
+                (EchoDoorTransition::Opened, EchoDoorTransition::Closed) => {
+                    std::cmp::Ordering::Greater
+                }
+                _ => std::cmp::Ordering::Equal,
+            })
+        });
+
+        let mut corrected_player = player_position;
+        let mut player_was_corrected = false;
+        for (_, transition) in transitions {
+            match transition {
+                EchoDoorTransition::Opened if !self.puzzle.door_open => {
+                    self.set_puzzle_door_open(true);
+                    effects.push(spatial_puzzle_effect(
+                        PuzzleSoundEffect::DoorOpen,
+                        echo_door_sound_position(),
+                        corrected_player,
+                        listener_right,
+                    ));
+                    self.puzzle.transitions.push(transition);
+                }
+                EchoDoorTransition::Closed if self.puzzle.door_open => {
+                    self.set_puzzle_door_open(false);
+                    if echo_door_overlaps(
+                        &self.puzzle.door,
+                        corrected_player,
+                        ECHOLOCATION_WALK_PROFILE.collision_radius,
+                    ) {
+                        corrected_player = echo_door_clear_position(
+                            &self.world,
+                            &self.puzzle.door,
+                            corrected_player,
+                            ECHOLOCATION_WALK_PROFILE,
+                        );
+                        player_was_corrected = true;
+                    }
+                    if echo_door_overlaps(
+                        &self.puzzle.door,
+                        self.pursuer.position,
+                        ECHOLOCATION_WALK_PROFILE.collision_radius,
+                    ) {
+                        self.pursuer.position = echo_door_clear_position(
+                            &self.world,
+                            &self.puzzle.door,
+                            self.pursuer.position,
+                            ECHOLOCATION_WALK_PROFILE,
+                        );
+                    }
+                    effects.push(spatial_puzzle_effect(
+                        PuzzleSoundEffect::DoorClose,
+                        echo_door_sound_position(),
+                        corrected_player,
+                        listener_right,
+                    ));
+                    self.puzzle.transitions.push(transition);
+                }
+                _ => {}
+            }
+        }
+        self.puzzle.time = frame_end;
+        self.puzzle
+            .emissions
+            .retain(|interval| interval.end + delay >= frame_end);
+        player_was_corrected.then_some(corrected_player)
+    }
+
+    fn set_puzzle_door_open(&mut self, open: bool) {
+        for coord in &self.puzzle.door.voxels {
+            if open {
+                self.world.clear(*coord);
+            } else {
+                self.world
+                    .set(*coord, VoxelCell::new(VoxelMaterial::PuzzleDoor));
+            }
+        }
+        self.puzzle.door_open = open;
     }
 
     fn update_pursuer(
@@ -2419,6 +2799,43 @@ fn for_each_voxel(world: &VoxelWorld, mut visit: impl FnMut(VoxelCoord, VoxelCel
             }
         }
     }
+}
+
+/// Removes dense horizontal layers above the world's floor. This captures the
+/// large roof/ceiling slabs used by the indoor maps while retaining sparse
+/// props, lights, and vertical structures.
+fn without_map_ceilings(world: &VoxelWorld) -> VoxelWorld {
+    let Some(bounds) = world.bounds() else {
+        return world.clone();
+    };
+
+    let mut counts_by_y = HashMap::new();
+    for_each_voxel(world, |coord, _| {
+        *counts_by_y.entry(coord.y).or_insert(0usize) += 1;
+    });
+    let densest_layer = counts_by_y.values().copied().max().unwrap_or(0);
+    let ceiling_levels: HashSet<i32> = counts_by_y
+        .into_iter()
+        .filter_map(|(y, count)| {
+            (y > bounds.min.y && count.saturating_mul(2) >= densest_layer).then_some(y)
+        })
+        .collect();
+
+    if ceiling_levels.is_empty() {
+        return world.clone();
+    }
+
+    let mut ceilingless = world.clone();
+    let mut remove = Vec::new();
+    for_each_voxel(world, |coord, _| {
+        if ceiling_levels.contains(&coord.y) {
+            remove.push(coord);
+        }
+    });
+    for coord in remove {
+        ceilingless.clear(coord);
+    }
+    ceilingless
 }
 
 fn build_echo_wave(
@@ -3153,6 +3570,222 @@ struct AssetViewerState {
     selected: usize,
     camera: Camera,
     distance: f32,
+}
+
+#[derive(Clone, Debug)]
+struct PreviewMap {
+    name: String,
+    world: VoxelWorld,
+    start_camera: Camera,
+    center: Vec3,
+    radius: f32,
+    dimensions: [i32; 3],
+    definition: &'static str,
+}
+
+impl PreviewMap {
+    fn new(
+        name: impl Into<String>,
+        world: VoxelWorld,
+        start_camera: Camera,
+        definition: &'static str,
+    ) -> Self {
+        let (center, radius) = asset_bounds(&world);
+        let dimensions = asset_dimensions(&world);
+        Self {
+            name: name.into(),
+            world,
+            start_camera,
+            center,
+            radius,
+            dimensions,
+            definition,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapViewerView {
+    FreeFlight,
+    Orbit,
+}
+
+/// Map inspection should never lose finite map geometry to a render-distance
+/// cutoff, regardless of how far the camera has flown from its start point.
+fn map_viewer_camera(mut camera: Camera) -> Camera {
+    camera.max_distance = f32::INFINITY;
+    camera
+}
+
+#[derive(Clone, Debug)]
+struct MapViewerState {
+    maps: Vec<PreviewMap>,
+    selected: usize,
+    camera: Camera,
+    target: Vec3,
+    distance: f32,
+    view: MapViewerView,
+    ceilings_hidden: bool,
+    ceilingless_world: Option<VoxelWorld>,
+}
+
+impl MapViewerState {
+    fn new(maps: Vec<PreviewMap>) -> Self {
+        assert!(!maps.is_empty(), "map viewer requires at least one map");
+        let target = maps[0].center;
+        let distance = map_viewer_default_distance(&maps[0]);
+        let camera = map_viewer_camera(maps[0].start_camera);
+        Self {
+            maps,
+            selected: 0,
+            camera,
+            target,
+            distance,
+            view: MapViewerView::FreeFlight,
+            ceilings_hidden: false,
+            ceilingless_world: None,
+        }
+    }
+
+    fn selected_map(&self) -> &PreviewMap {
+        &self.maps[self.selected]
+    }
+
+    fn select(&mut self, index: usize) {
+        if index >= self.maps.len() {
+            return;
+        }
+        self.selected = index;
+        self.rebuild_ceilingless_world();
+        self.reset_view();
+    }
+
+    fn select_next(&mut self) {
+        self.select((self.selected + 1) % self.maps.len());
+    }
+
+    fn select_previous(&mut self) {
+        self.select((self.selected + self.maps.len() - 1) % self.maps.len());
+    }
+
+    fn update(&mut self, input: &PlayerInput, dt: f32) {
+        if self.view == MapViewerView::FreeFlight {
+            update_map_viewer_free_camera(&mut self.camera, input, dt);
+            return;
+        }
+
+        let speed = if input.boost { BOOST_MULTIPLIER } else { 1.0 };
+        if input.roll_left {
+            self.camera.roll_by(MAP_VIEWER_ROLL_SPEED * speed * dt);
+        }
+        if input.roll_right {
+            self.camera.roll_by(-MAP_VIEWER_ROLL_SPEED * speed * dt);
+        }
+        if input.up {
+            self.distance -= MAP_VIEWER_ZOOM_SPEED * speed * dt;
+        }
+        if input.down {
+            self.distance += MAP_VIEWER_ZOOM_SPEED * speed * dt;
+        }
+
+        let pan_speed = (self.selected_map().radius * 0.75).max(18.0) * speed * dt;
+        let pan_forward = horizontal(self.camera.forward()).normalized();
+        let pan_forward = if pan_forward.length() <= f32::EPSILON {
+            Vec3::new(0.0, 0.0, 1.0)
+        } else {
+            pan_forward
+        };
+        let pan_right = horizontal(self.camera.right()).normalized();
+        let pan_right = if pan_right.length() <= f32::EPSILON {
+            Vec3::new(pan_forward.z, 0.0, -pan_forward.x)
+        } else {
+            pan_right
+        };
+        if input.forward || input.pan_forward {
+            self.target = self.target + pan_forward * pan_speed;
+        }
+        if input.backward || input.pan_backward {
+            self.target = self.target - pan_forward * pan_speed;
+        }
+        if input.right || input.pan_right {
+            self.target = self.target + pan_right * pan_speed;
+        }
+        if input.left || input.pan_left {
+            self.target = self.target - pan_right * pan_speed;
+        }
+
+        self.clamp_view();
+        self.sync_camera_position();
+    }
+
+    fn rotate_with_mouse(&mut self, delta_x: f32, delta_y: f32) {
+        match self.view {
+            MapViewerView::FreeFlight => {
+                apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped);
+            }
+            MapViewerView::Orbit => {
+                self.camera.rotate_local_yaw_pitch(
+                    delta_x * MAP_VIEWER_MOUSE_SENSITIVITY,
+                    delta_y * MAP_VIEWER_MOUSE_SENSITIVITY,
+                );
+                self.sync_camera_position();
+            }
+        }
+    }
+
+    fn camera(&self) -> Camera {
+        self.camera
+    }
+
+    fn reset_view(&mut self) {
+        self.target = self.selected_map().center;
+        self.distance = map_viewer_default_distance(self.selected_map());
+        self.camera = map_viewer_camera(match self.view {
+            MapViewerView::FreeFlight => map_viewer_camera(self.selected_map().start_camera),
+            MapViewerView::Orbit => {
+                map_viewer_start_camera(self.target, self.selected_map().radius, self.distance)
+            }
+        });
+    }
+
+    fn toggle_view(&mut self) {
+        self.view = match self.view {
+            MapViewerView::FreeFlight => {
+                self.reset_view();
+                MapViewerView::Orbit
+            }
+            MapViewerView::Orbit => MapViewerView::FreeFlight,
+        };
+    }
+
+    fn toggle_ceilings(&mut self) {
+        self.ceilings_hidden = !self.ceilings_hidden;
+        self.rebuild_ceilingless_world();
+    }
+
+    fn render_world(&self) -> &VoxelWorld {
+        self.ceilingless_world
+            .as_ref()
+            .unwrap_or(&self.selected_map().world)
+    }
+
+    fn rebuild_ceilingless_world(&mut self) {
+        self.ceilingless_world = self
+            .ceilings_hidden
+            .then(|| without_map_ceilings(&self.selected_map().world));
+    }
+
+    fn clamp_view(&mut self) {
+        let radius = self.selected_map().radius;
+        let min_distance = (radius * 0.12).max(6.0);
+        let max_distance = (radius * 8.0).max(120.0);
+        self.distance = self.distance.clamp(min_distance, max_distance);
+        self.camera.max_distance = f32::INFINITY;
+    }
+
+    fn sync_camera_position(&mut self) {
+        self.camera.position = self.target - self.camera.forward() * self.distance;
+    }
 }
 
 impl AssetViewerState {
@@ -4057,6 +4690,10 @@ fn handle_movement_input(input: &mut PlayerInput, key: &PhysicalKey, state: Elem
         }
         PhysicalKey::Code(KeyCode::KeyQ) => input.roll_left = pressed,
         PhysicalKey::Code(KeyCode::KeyE) => input.roll_right = pressed,
+        PhysicalKey::Code(KeyCode::ArrowUp) => input.pan_forward = pressed,
+        PhysicalKey::Code(KeyCode::ArrowDown) => input.pan_backward = pressed,
+        PhysicalKey::Code(KeyCode::ArrowLeft) => input.pan_left = pressed,
+        PhysicalKey::Code(KeyCode::ArrowRight) => input.pan_right = pressed,
         PhysicalKey::Code(KeyCode::ShiftLeft) | PhysicalKey::Code(KeyCode::ShiftRight) => {
             input.boost = pressed
         }
@@ -4214,6 +4851,44 @@ fn update_sandbox_camera(camera: &mut Camera, input: &PlayerInput, world: &Voxel
     };
     let step = movement.normalized() * speed * dt;
     camera.position = move_sandbox_with_collision(camera.position, step, world);
+}
+
+/// The map viewer follows the sandbox's first-person controls, but deliberately
+/// skips collision so every enclosed room, roof, and exterior can be inspected.
+fn update_map_viewer_free_camera(camera: &mut Camera, input: &PlayerInput, dt: f32) {
+    let mut movement = Vec3::ZERO;
+    let forward = horizontal(camera.forward());
+    let right = horizontal(camera.right());
+
+    if input.forward {
+        movement = movement + forward;
+    }
+    if input.backward {
+        movement = movement - forward;
+    }
+    if input.right {
+        movement = movement + right;
+    }
+    if input.left {
+        movement = movement - right;
+    }
+    if input.up {
+        movement = movement + Vec3::new(0.0, 1.0, 0.0);
+    }
+    if input.down {
+        movement = movement - Vec3::new(0.0, 1.0, 0.0);
+    }
+
+    if movement.length() <= f32::EPSILON {
+        return;
+    }
+
+    let speed = if input.boost {
+        SANDBOX_SPEED * MAP_VIEWER_FREE_SPEED_MULTIPLIER * WALK_BOOST_MULTIPLIER
+    } else {
+        SANDBOX_SPEED * MAP_VIEWER_FREE_SPEED_MULTIPLIER
+    };
+    camera.position = camera.position + movement.normalized() * speed * dt;
 }
 
 fn move_sandbox_with_collision(position: Vec3, step: Vec3, world: &VoxelWorld) -> Vec3 {
@@ -4400,17 +5075,97 @@ fn echo_pursuer_foot_source(position: Vec3) -> VoxelCoord {
 }
 
 fn invisible_footstep_effect(source: Vec3, listener: Vec3, listener_right: Vec3) -> SoundEffect {
-    let offset = Vec3::new(source.x - listener.x, 0.0, source.z - listener.z);
-    let distance = offset.length();
-    let right = horizontal(listener_right).normalized();
-    let pan = if distance > f32::EPSILON {
-        (offset.normalized().dot(right)).clamp(-1.0, 1.0)
+    let (pan, gain) = spatial_sound_parameters(source, listener, listener_right, 0.18, 0.70, 42.0);
+    SoundEffect::InvisibleFootstep { pan, gain }
+}
+
+#[derive(Clone, Copy)]
+enum PuzzleSoundEffect {
+    Receiver,
+    DoorOpen,
+    DoorClose,
+}
+
+fn spatial_puzzle_effect(
+    kind: PuzzleSoundEffect,
+    source: Vec3,
+    listener: Vec3,
+    listener_right: Vec3,
+) -> SoundEffect {
+    let (pan, gain) = spatial_sound_parameters(source, listener, listener_right, 0.08, 0.72, 52.0);
+    match kind {
+        PuzzleSoundEffect::Receiver => SoundEffect::ReceiverActivation { pan, gain },
+        PuzzleSoundEffect::DoorOpen => SoundEffect::PuzzleDoorOpen { pan, gain },
+        PuzzleSoundEffect::DoorClose => SoundEffect::PuzzleDoorClose { pan, gain },
+    }
+}
+
+fn spatial_sound_parameters(
+    source: Vec3,
+    listener: Vec3,
+    listener_right: Vec3,
+    minimum_gain: f32,
+    maximum_gain: f32,
+    audible_distance: f32,
+) -> (f32, f32) {
+    let offset = horizontal(source - listener);
+    let distance = Vec3::new(source.x - listener.x, 0.0, source.z - listener.z).length();
+    let right = horizontal(listener_right);
+    let pan = if distance > f32::EPSILON && right.length() > f32::EPSILON {
+        offset.dot(right).clamp(-1.0, 1.0)
     } else {
         0.0
     };
-    // Keep far steps audible but clearly quieter than those in the same room.
-    let gain = 0.18 + 0.52 * (1.0 - distance / 42.0).clamp(0.0, 1.0);
-    SoundEffect::InvisibleFootstep { pan, gain }
+    let gain = minimum_gain
+        + (maximum_gain - minimum_gain) * (1.0 - distance / audible_distance).clamp(0.0, 1.0);
+    (pan, gain.clamp(0.0, 1.0))
+}
+
+fn echo_receiver_sound_position(coord: VoxelCoord) -> Vec3 {
+    Vec3::new(
+        coord.x as f32 + 0.5,
+        coord.y as f32 + 1.05,
+        coord.z as f32 + 0.5,
+    )
+}
+
+fn echo_door_sound_position() -> Vec3 {
+    Vec3::new(ECHO_DOOR_X as f32 + 0.5, 2.5, 0.5)
+}
+
+fn echo_door_overlaps(door: &EchoPuzzleDoor, position: Vec3, radius: f32) -> bool {
+    let plane_center = door.voxels[0].x as f32 + 0.5;
+    let min_z = door.voxels.iter().map(|coord| coord.z).min().unwrap_or(0) as f32;
+    let max_z = door.voxels.iter().map(|coord| coord.z).max().unwrap_or(0) as f32 + 1.0;
+    position.x + radius > plane_center - 0.5
+        && position.x - radius < plane_center + 0.5
+        && position.z + radius > min_z
+        && position.z - radius < max_z
+}
+
+fn echo_door_clear_position(
+    world: &VoxelWorld,
+    door: &EchoPuzzleDoor,
+    position: Vec3,
+    profile: WalkProfile,
+) -> Vec3 {
+    let start_distance = horizontal_distance(position, door.starting_side_anchor);
+    let far_distance = horizontal_distance(position, door.far_side_anchor);
+    let signed_side = (position - echo_door_sound_position()).dot(door.normal);
+    let prefer_start = if (start_distance - far_distance).abs() <= 0.0001 {
+        signed_side <= 0.0
+    } else {
+        start_distance < far_distance
+    };
+    let candidates = if prefer_start {
+        [door.starting_side_anchor, door.far_side_anchor]
+    } else {
+        [door.far_side_anchor, door.starting_side_anchor]
+    };
+    candidates
+        .into_iter()
+        .find(|candidate| can_walk_to_with_profile(world, *candidate, profile))
+        .unwrap_or(candidates[0])
 }
 
 fn has_line_of_sight(city: &VoxelWorld, origin: Vec3, target: Vec3) -> bool {
@@ -4505,7 +5260,76 @@ fn build_doom_map() -> VoxelWorld {
     DoomMapGenerator::new(DoomMapConfig::default()).generate()
 }
 
-fn build_echolocation_map(seed: u64) -> (VoxelWorld, Vec3) {
+fn build_map_catalog() -> Vec<PreviewMap> {
+    let city = build_demo_city();
+    let doom_map = build_doom_map();
+    let corn_maze = CornMazeState::new();
+    let corn_start_camera = corn_maze_start_camera(&corn_maze);
+    let bar = build_bar_scene();
+    let sandbox = build_voxel_sandbox_world();
+    let zombies = ZombiesState::new();
+    let zombies_map = build_zombies_map(&zombies);
+    let liminal = LiminalState::new_seeded(LIMINAL_SEED);
+    let liminal_start_camera = liminal_start_camera(&liminal);
+    let drone_runner = DroneGateRunnerState::new_seeded(DRONE_GATE_SEED);
+    let drone_start_camera = drone_gate_runner_start_camera(&drone_runner);
+    let echolocation = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+    let echolocation_start_camera = echolocation_start_camera(&echolocation);
+
+    vec![
+        PreviewMap::new(
+            "procedural city",
+            city,
+            city_start_camera(),
+            "core generator",
+        ),
+        PreviewMap::new(
+            "doomlike arena",
+            doom_map,
+            doom_start_camera(),
+            "core generator",
+        ),
+        PreviewMap::new(
+            "corn maze",
+            corn_maze.world,
+            corn_start_camera,
+            "CLI generator",
+        ),
+        PreviewMap::new("Starhusk bar", bar, bar_start_camera(), "CLI stamps"),
+        PreviewMap::new(
+            "voxel sandbox",
+            sandbox.clone(),
+            sandbox_start_camera(&sandbox),
+            "CLI generator",
+        ),
+        PreviewMap::new(
+            "Heliobound Zombies",
+            zombies_map,
+            zombies_start_camera(),
+            "CLI stamps",
+        ),
+        PreviewMap::new(
+            "liminal office",
+            liminal.world,
+            liminal_start_camera,
+            "CLI generator",
+        ),
+        PreviewMap::new(
+            "drone gate course",
+            drone_runner.render_world(),
+            drone_start_camera,
+            "CLI generator",
+        ),
+        PreviewMap::new(
+            "echolocation",
+            echolocation.world,
+            echolocation_start_camera,
+            "CLI generator",
+        ),
+    ]
+}
+
+fn build_echolocation_map(seed: u64) -> (VoxelWorld, Vec3, EchoPuzzle) {
     let mut rng = LiminalRng::new(seed);
     let mut world = VoxelWorld::new();
     let rooms = [
@@ -4560,7 +5384,30 @@ fn build_echolocation_map(seed: u64) -> (VoxelWorld, Vec3) {
         VoxelMaterial::Wood,
     );
 
-    (world, Vec3::new(-28.5, WALK_EYE_HEIGHT, -0.5))
+    let puzzle = EchoPuzzle::new();
+    // The bulkhead spans the complete east passage. Only the aperture is
+    // mutable; its surrounding frame remains solid for the entire run.
+    fill_cuboid(
+        &mut world,
+        VoxelCoord::new(ECHO_DOOR_X, 1, -5),
+        VoxelCoord::new(ECHO_DOOR_X, 5, 5),
+        VoxelMaterial::ShipHull,
+    );
+    for coord in &puzzle.door.voxels {
+        world.set(*coord, VoxelCell::new(VoxelMaterial::PuzzleDoor));
+    }
+    for x in ECHO_RECEIVER_COORD.x..=ECHO_DOOR_X {
+        world.set(
+            VoxelCoord::new(x, 0, 0),
+            VoxelCell::new(VoxelMaterial::SignalPipe),
+        );
+    }
+    world.set(
+        puzzle.receiver.coord,
+        VoxelCell::new(VoxelMaterial::Receiver),
+    );
+
+    (world, Vec3::new(-28.5, WALK_EYE_HEIGHT, -0.5), puzzle)
 }
 
 fn stamp_echo_room(world: &mut VoxelWorld, x: i32, z: i32, width: i32, depth: i32) {
@@ -5682,6 +6529,9 @@ fn build_asset_catalog() -> (Vec<PreviewAsset>, Vec<String>) {
         ("leaf block", VoxelMaterial::Leaves),
         ("glass block", VoxelMaterial::Glass),
         ("beacon block", VoxelMaterial::Beacon),
+        ("receiver block", VoxelMaterial::Receiver),
+        ("signal pipe block", VoxelMaterial::SignalPipe),
+        ("puzzle door block", VoxelMaterial::PuzzleDoor),
     ] {
         assets.push(PreviewAsset::new(name, build_block_asset(material)));
     }
@@ -5903,6 +6753,20 @@ fn asset_viewer_start_camera(asset: &PreviewAsset, distance: f32) -> Camera {
     )
     .with_fov_y(48.0_f32.to_radians())
     .with_max_distance((distance + asset.radius * 3.0).max(60.0))
+}
+
+fn map_viewer_default_distance(map: &PreviewMap) -> f32 {
+    (map.radius * 2.55).max(32.0)
+}
+
+fn map_viewer_start_camera(target: Vec3, radius: f32, distance: f32) -> Camera {
+    let pitch = 0.62_f32;
+    look_at(
+        target + Vec3::new(0.0, pitch.sin() * distance, -pitch.cos() * distance),
+        target,
+    )
+    .with_fov_y(48.0_f32.to_radians())
+    .with_max_distance((distance + radius * 3.0).max(80.0))
 }
 
 fn build_person_asset(pose: BarPose, accent: VoxelMaterial) -> VoxelWorld {
@@ -7127,7 +7991,14 @@ fn build_menu_scene(tick: u64) -> Scene {
     });
     scene.overlays.push(Overlay {
         x: 48,
-        y: 82,
+        y: 81,
+        z: 10,
+        text: "V  MAP VIEWER".to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 48,
+        y: 86,
         z: 10,
         text: "WASD MOVE   SHIFT BOOST   Q/E ROLL   M MENU".to_string(),
         style: TextStyle::default(),
@@ -7212,6 +8083,64 @@ fn render_asset_viewer_scene(scene: &mut Scene, viewer: &AssetViewerState, mouse
     }
 }
 
+fn render_map_viewer_scene(scene: &mut Scene, viewer: &MapViewerState, mouse_captured: bool) {
+    let map = viewer.selected_map();
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "MAP VIEWER  {} / {}  {}  {}x{}x{} voxels  {} filled  {}  zoom {:.1}  mouse {}  M menu",
+            viewer.selected + 1,
+            viewer.maps.len(),
+            map.name,
+            map.dimensions[0],
+            map.dimensions[1],
+            map.dimensions[2],
+            map.world.voxel_count(),
+            map.definition,
+            viewer.distance,
+            if mouse_captured { "locked" } else { "free" }
+        ),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 5,
+        z: 120,
+        text: match viewer.view {
+            MapViewerView::FreeFlight => {
+                "FREE FLIGHT  WASD move  Space/Ctrl rise/drop  Shift boost  mouse look  O orbit"
+            }
+            MapViewerView::Orbit => {
+                "ORBIT  WASD/arrows pan  mouse orbit  Q/E roll  Space/Ctrl zoom  O free flight"
+            }
+        }
+        .to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 7,
+        z: 120,
+        text: format!(
+            "C ceilings {}  R reset  planet flight omitted: analytic terrain, not a finite voxel map",
+            if viewer.ceilings_hidden { "hidden" } else { "shown" },
+        ),
+        style: TextStyle::default(),
+    });
+    for (index, preview) in viewer.maps.iter().enumerate() {
+        let marker = if index == viewer.selected { '>' } else { ' ' };
+        scene.overlays.push(Overlay {
+            x: 2,
+            y: 11 + index as i32,
+            z: 120,
+            text: format!("{}{} {}", marker, index + 1, preview.name),
+            style: TextStyle::default(),
+        });
+    }
+}
+
 fn render_voxel_sandbox_scene(
     scene: &mut Scene,
     sandbox: &VoxelSandboxState,
@@ -7289,6 +8218,9 @@ fn material_label(material: VoxelMaterial) -> &'static str {
         VoxelMaterial::Glass => "glass",
         VoxelMaterial::Beacon => "beacon",
         VoxelMaterial::Gate => "gate",
+        VoxelMaterial::Receiver => "receiver",
+        VoxelMaterial::SignalPipe => "signal pipe",
+        VoxelMaterial::PuzzleDoor => "puzzle door",
         VoxelMaterial::Custom(_) => "asset",
     }
 }
@@ -7390,6 +8322,11 @@ fn render_echolocation_scene(
         z: 71,
         cells: echo_step_wave_cells(scene.viewport, camera, &echo.world, &echo.step_waves),
     });
+    scene.layers.push(Layer {
+        name: "receiver-signal".to_string(),
+        z: 72,
+        cells: echo_receiver_signal_cells(scene.viewport, camera, echo),
+    });
     scene.overlays.push(Overlay {
         x: 2,
         y: 2,
@@ -7486,6 +8423,106 @@ fn render_echolocation_scene(
             style,
         });
     }
+}
+
+fn echo_receiver_signal_cells(
+    viewport: Viewport,
+    camera: &Camera,
+    echo: &EchoLocationState,
+) -> Vec<SceneCell> {
+    let mut cells = Vec::new();
+    let active: Vec<_> = echo
+        .puzzle
+        .pipe
+        .iter()
+        .map(|point| {
+            echo.puzzle
+                .signal_active_at(point.distance, echo.puzzle.time)
+        })
+        .collect();
+    for (index, point) in echo.puzzle.pipe.iter().enumerate().skip(1) {
+        if !active[index]
+            || !has_line_of_sight(
+                &echo.world,
+                camera.position,
+                point.position + Vec3::new(0.0, 0.04, 0.0),
+            )
+        {
+            continue;
+        }
+        let trailing_edge = !active[index.saturating_sub(1)];
+        let leading_edge = !active.get(index + 1).copied().unwrap_or(false);
+        let edge = trailing_edge || leading_edge;
+        let glyph = match (trailing_edge, leading_edge) {
+            (true, true) => '*',
+            (true, false) => '>',
+            (false, true) => '>',
+            (false, false) => '=',
+        };
+        if let Some(projection) = project_world_point(camera, point.position, viewport) {
+            let progress = point.distance / echo.puzzle.endpoint_distance().max(1.0);
+            cells.push(SceneCell {
+                x: projection.x,
+                y: projection.y,
+                glyph,
+                style: TextStyle {
+                    fg: Some(if edge {
+                        "#7deaff".to_string()
+                    } else {
+                        format!(
+                            "#{:02x}{:02x}{:02x}",
+                            lerp_channel(0x18, 0x28, progress),
+                            lerp_channel(0x8f, 0xc8, progress),
+                            lerp_channel(0xd8, 0xff, progress),
+                        )
+                    }),
+                    bold: edge,
+                    ..TextStyle::default()
+                },
+            });
+        }
+    }
+
+    if echo.puzzle.receiver_active() {
+        let position = echo_receiver_sound_position(echo.puzzle.receiver.coord);
+        if has_line_of_sight(&echo.world, camera.position, position) {
+            if let Some(projection) = project_world_point(camera, position, viewport) {
+                cells.push(SceneCell {
+                    x: projection.x,
+                    y: projection.y,
+                    glyph: '@',
+                    style: TextStyle {
+                        fg: Some("#79efff".to_string()),
+                        bold: true,
+                        ..TextStyle::default()
+                    },
+                });
+            }
+        }
+    }
+    if echo.puzzle.door_powered() {
+        let position = echo
+            .puzzle
+            .pipe
+            .last()
+            .map(|point| point.position)
+            .unwrap_or_else(echo_door_sound_position);
+        if has_line_of_sight(&echo.world, camera.position, position) {
+            if let Some(projection) = project_world_point(camera, position, viewport) {
+                cells.push(SceneCell {
+                    x: projection.x,
+                    y: projection.y,
+                    glyph: '#',
+                    style: TextStyle {
+                        fg: Some("#93f5ff".to_string()),
+                        bold: true,
+                        ..TextStyle::default()
+                    },
+                });
+            }
+        }
+    }
+    cells
 }
 
 fn echo_footprint_cells(
@@ -8791,6 +9828,173 @@ mod tests {
             .assets
             .iter()
             .any(|asset| asset.name == "gun"));
+    }
+
+    #[test]
+    fn map_catalog_covers_every_finite_voxel_gameplay_map() {
+        let maps = build_map_catalog();
+
+        assert_eq!(maps.len(), 9);
+        assert_eq!(
+            maps.iter().map(|map| map.name.as_str()).collect::<Vec<_>>(),
+            vec![
+                "procedural city",
+                "doomlike arena",
+                "corn maze",
+                "Starhusk bar",
+                "voxel sandbox",
+                "Heliobound Zombies",
+                "liminal office",
+                "drone gate course",
+                "echolocation",
+            ]
+        );
+        assert!(maps.iter().all(|map| map.world.voxel_count() > 0));
+        assert!(maps
+            .iter()
+            .all(|map| map.dimensions.iter().all(|size| *size > 0)));
+    }
+
+    #[test]
+    fn map_viewer_defaults_to_collision_free_sandbox_style_flight() {
+        let map = PreviewMap::new(
+            "test map",
+            build_block_asset(VoxelMaterial::Stone),
+            Camera::new(Vec3::new(1.0, 2.0, 3.0)),
+            "test",
+        );
+        let center = map.center;
+        let mut viewer = MapViewerState::new(vec![map]);
+        let before = viewer.camera.position;
+        let input = PlayerInput {
+            right: true,
+            ..PlayerInput::default()
+        };
+
+        viewer.update(&input, 1.0);
+
+        assert_eq!(viewer.view, MapViewerView::FreeFlight);
+        assert!(viewer.camera.max_distance.is_infinite());
+        assert!(
+            (horizontal_distance(viewer.camera.position, before)
+                - SANDBOX_SPEED * MAP_VIEWER_FREE_SPEED_MULTIPLIER)
+                .abs()
+                < 0.001
+        );
+        assert_eq!(viewer.target, center);
+
+        viewer.reset_view();
+        assert_eq!(viewer.target, center);
+    }
+
+    #[test]
+    fn map_viewer_uses_each_mode_start_camera_when_entering_or_resetting() {
+        let maps = build_map_catalog();
+        let city_start = map_viewer_camera(maps[0].start_camera);
+        let echolocation_start = map_viewer_camera(maps[8].start_camera);
+        let mut viewer = MapViewerState::new(maps);
+
+        assert_eq!(viewer.camera(), city_start);
+
+        viewer.select(8);
+        assert_eq!(viewer.camera(), echolocation_start);
+        viewer.camera.position = Vec3::ZERO;
+        viewer.reset_view();
+        assert_eq!(viewer.camera(), echolocation_start);
+    }
+
+    #[test]
+    fn map_viewer_pan_tracks_the_current_camera_basis() {
+        let map = PreviewMap::new(
+            "test map",
+            build_block_asset(VoxelMaterial::Stone),
+            Camera::new(Vec3::new(1.0, 2.0, 3.0)),
+            "test",
+        );
+        let mut viewer = MapViewerState::new(vec![map]);
+        viewer.toggle_view();
+        viewer
+            .camera
+            .rotate_local_yaw_pitch(std::f32::consts::PI, 0.0);
+        viewer.sync_camera_position();
+        let expected_left = horizontal(viewer.camera.right()).normalized() * -1.0;
+        let before = viewer.target;
+        let input = PlayerInput {
+            pan_left: true,
+            ..PlayerInput::default()
+        };
+
+        viewer.update(&input, 1.0);
+
+        assert!(
+            horizontal(viewer.target - before)
+                .normalized()
+                .dot(expected_left)
+                > 0.999
+        );
+    }
+
+    #[test]
+    fn map_viewer_ceiling_toggle_removes_dense_overhead_layers_only() {
+        let mut world = VoxelWorld::new();
+        fill_cuboid(
+            &mut world,
+            VoxelCoord::new(0, 0, 0),
+            VoxelCoord::new(2, 0, 2),
+            VoxelMaterial::Basalt,
+        );
+        fill_cuboid(
+            &mut world,
+            VoxelCoord::new(0, 4, 0),
+            VoxelCoord::new(2, 4, 2),
+            VoxelMaterial::ShipHull,
+        );
+        world.set(
+            VoxelCoord::new(1, 5, 1),
+            VoxelCell::new(VoxelMaterial::Beacon),
+        );
+
+        let ceilingless = without_map_ceilings(&world);
+
+        assert_eq!(ceilingless.get(VoxelCoord::new(1, 4, 1)), None);
+        assert!(ceilingless.get(VoxelCoord::new(1, 0, 1)).is_some());
+        assert!(ceilingless.get(VoxelCoord::new(1, 5, 1)).is_some());
+    }
+
+    #[test]
+    fn menu_can_start_and_leave_map_viewer_mode() {
+        let mut app = AppState::new();
+
+        let action = app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyV), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::StartScene);
+        assert_eq!(app.mode, AppMode::MapViewer);
+        assert_eq!(app.map_viewer.as_ref().unwrap().maps.len(), 9);
+
+        app.enter_menu();
+        assert_eq!(app.mode, AppMode::Menu);
+        assert!(app.map_viewer.is_none());
+    }
+
+    #[test]
+    fn map_viewer_scene_draws_selected_map_and_controls() {
+        let mut app = AppState::new();
+        app.start_map_viewer();
+
+        let scene = app.frame(0.0, true);
+
+        assert!(scene
+            .layers
+            .iter()
+            .any(|layer| layer.name == "voxels" && !layer.cells.is_empty()));
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("MAP VIEWER")));
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("FREE FLIGHT")));
     }
 
     #[test]
@@ -10313,7 +11517,9 @@ mod tests {
                 echo.pursuer.position.z.floor() as i32,
             )
             .expect("spawn should be in field");
-        assert!(distance != u16::MAX && distance > 20);
+        // The initial closed bulkhead intentionally limits the spawn component
+        // to the starting-room side while still keeping the pursuer well away.
+        assert!(distance != u16::MAX && distance > 12);
     }
 
     #[test]
@@ -10714,7 +11920,7 @@ mod tests {
 
     #[test]
     fn echolocation_map_has_a_continuous_enclosing_hull() {
-        let (world, start) = build_echolocation_map(ECHOLOCATION_SEED);
+        let (world, start, _) = build_echolocation_map(ECHOLOCATION_SEED);
         let mut exposed_floor_edges = 0;
 
         for_each_voxel(&world, |coord, cell| {
@@ -10912,5 +12118,392 @@ mod tests {
         echo.waves.clear();
         echo.update(echo.config.reveal_seconds + 0.1);
         assert!(echo.visible_world(Vec3::ZERO).get(near_target).is_none());
+    }
+
+    fn receiver_impact() -> EchoImpact {
+        EchoImpact {
+            solid_voxel: ECHO_RECEIVER_COORD,
+            cell: VoxelCell::new(VoxelMaterial::Receiver),
+            source_air_cell: VoxelCoord::new(ECHO_RECEIVER_COORD.x + 1, 1, 0),
+            arrival_distance_milli: 1_000,
+        }
+    }
+
+    fn advance_puzzle(
+        echo: &mut EchoLocationState,
+        dt: f32,
+        hits: Vec<f32>,
+        player: Vec3,
+    ) -> EchoFrameUpdate {
+        let mut sound_events = Vec::new();
+        let corrected_player_position = echo.update_puzzle(
+            dt,
+            hits,
+            player,
+            Vec3::new(0.0, 0.0, 1.0),
+            &mut sound_events,
+        );
+        EchoFrameUpdate {
+            sound_events,
+            corrected_player_position,
+        }
+    }
+
+    #[test]
+    fn echolocation_map_contains_receiver_pipe_and_sealed_bulkhead() {
+        let echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let mut receiver_count = 0;
+        let mut pipe_count = 0;
+        let mut door_count = 0;
+        for_each_voxel(&echo.world, |_, cell| match cell.material {
+            VoxelMaterial::Receiver => receiver_count += 1,
+            VoxelMaterial::SignalPipe => pipe_count += 1,
+            VoxelMaterial::PuzzleDoor => door_count += 1,
+            _ => {}
+        });
+        assert_eq!(receiver_count, 1);
+        assert_eq!(pipe_count, 16);
+        assert_eq!(door_count, 12);
+        assert_eq!(echo.puzzle.endpoint_distance(), 15.0);
+        for point in &echo.puzzle.pipe {
+            let coord = VoxelCoord::new(point.position.x.floor() as i32, 0, 0);
+            assert_eq!(
+                echo.world.get(coord),
+                Some(VoxelCell::new(VoxelMaterial::SignalPipe))
+            );
+        }
+        for y in 1..=5 {
+            for z in -5..=5 {
+                let coord = VoxelCoord::new(ECHO_DOOR_X, y, z);
+                let in_aperture = y <= 4 && (-1..=1).contains(&z);
+                assert_eq!(
+                    echo.world.get(coord).map(|cell| cell.material),
+                    Some(if in_aperture {
+                        VoxelMaterial::PuzzleDoor
+                    } else {
+                        VoxelMaterial::ShipHull
+                    })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn primary_and_reflected_impacts_each_activate_receiver_once() {
+        for bounce_depth in [0, 1] {
+            let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+            echo.pursuer.position = Vec3::new(-30.5, WALK_EYE_HEIGHT, 7.5);
+            echo.waves = vec![EchoWave {
+                age: 0.0,
+                energy: 1.0,
+                bounce_depth,
+                original_emission_position: echo.start_position,
+                heard_by_pursuer: true,
+                impacts: vec![receiver_impact()],
+                next_impact: 0,
+            }];
+            let effects = echo.update_with_pursuer(0.2, echo.start_position);
+            assert_eq!(echo.puzzle.emissions.len(), 1);
+            assert_eq!(
+                effects
+                    .iter()
+                    .filter(|effect| matches!(effect, SoundEffect::ReceiverActivation { .. }))
+                    .count(),
+                1
+            );
+            echo.update_with_pursuer(0.2, echo.start_position);
+            assert_eq!(echo.puzzle.emissions.len(), 1);
+        }
+    }
+
+    #[test]
+    fn player_and_pursuer_step_impacts_activate_receiver() {
+        let player = Vec3::new(-34.5, WALK_EYE_HEIGHT, 0.5);
+        let mut player_echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        player_echo.pursuer.position = Vec3::new(-24.5, WALK_EYE_HEIGHT, 7.5);
+        player_echo.pursuer.step_timer = 10.0;
+        player_echo.update_player_footsteps(ECHO_PLAYER_STEP_DISTANCE, player);
+        player_echo.update_with_pursuer(0.3, player);
+        assert_eq!(player_echo.puzzle.emissions.len(), 1);
+
+        let mut pursuer_echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        pursuer_echo.pursuer.position = player;
+        pursuer_echo.pursuer.step_timer = 0.0;
+        let mut effects = Vec::new();
+        pursuer_echo.update_pursuer_footsteps(
+            0.0,
+            Vec3::new(-24.5, WALK_EYE_HEIGHT, 7.5),
+            Vec3::new(1.0, 0.0, 0.0),
+            &mut effects,
+        );
+        pursuer_echo.pursuer.step_timer = 10.0;
+        pursuer_echo.update_with_pursuer(0.3, Vec3::new(-24.5, WALK_EYE_HEIGHT, 7.5));
+        assert_eq!(pursuer_echo.puzzle.emissions.len(), 1);
+    }
+
+    #[test]
+    fn waves_without_receiver_contact_do_not_activate_it() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.pursuer.step_timer = 10.0;
+        echo.waves = vec![EchoWave {
+            age: 0.0,
+            energy: 1.0,
+            bounce_depth: 0,
+            original_emission_position: echo.start_position,
+            heard_by_pursuer: true,
+            impacts: Vec::new(),
+            next_impact: 0,
+        }];
+        echo.update_with_pursuer(1.0, echo.start_position);
+        assert!(echo.puzzle.emissions.is_empty());
+    }
+
+    #[test]
+    fn receiver_signal_opens_after_two_and_a_half_seconds_then_closes_three_later() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let player = echo.start_position;
+        advance_puzzle(&mut echo, 0.0, vec![0.0], player);
+        assert!(!echo.puzzle.door_open);
+        advance_puzzle(&mut echo, 2.49, Vec::new(), player);
+        assert!(!echo.puzzle.door_open);
+        advance_puzzle(&mut echo, 0.01, Vec::new(), player);
+        assert!(echo.puzzle.door_open);
+        assert_eq!(echo.puzzle.transitions, vec![EchoDoorTransition::Opened]);
+        advance_puzzle(&mut echo, 2.99, Vec::new(), player);
+        assert!(echo.puzzle.door_open);
+        advance_puzzle(&mut echo, 0.01, Vec::new(), player);
+        assert!(!echo.puzzle.door_open);
+        assert_eq!(echo.puzzle.transitions, vec![EchoDoorTransition::Closed]);
+    }
+
+    #[test]
+    fn receiver_signal_head_advances_at_six_voxels_per_second() {
+        let mut puzzle = EchoPuzzle::new();
+        puzzle.emissions = vec![EchoEmissionInterval {
+            start: 0.0,
+            end: ECHO_RECEIVER_OUTPUT_SECONDS,
+        }];
+        let energized_head = |puzzle: &EchoPuzzle, time: f32| {
+            puzzle
+                .pipe
+                .iter()
+                .filter(|point| puzzle.signal_active_at(point.distance, time))
+                .map(|point| point.distance)
+                .fold(0.0_f32, f32::max)
+        };
+        let half_second = energized_head(&puzzle, 0.5);
+        let one_second = energized_head(&puzzle, 1.0);
+        let two_seconds = energized_head(&puzzle, 2.0);
+        assert_eq!((half_second, one_second, two_seconds), (3.0, 6.0, 12.0));
+        assert!(half_second < one_second && one_second < two_seconds);
+    }
+
+    #[test]
+    fn puzzle_materials_have_public_display_labels() {
+        assert_eq!(material_label(VoxelMaterial::Receiver), "receiver");
+        assert_eq!(material_label(VoxelMaterial::SignalPipe), "signal pipe");
+        assert_eq!(material_label(VoxelMaterial::PuzzleDoor), "puzzle door");
+        let (assets, _) = build_asset_catalog();
+        for name in ["receiver block", "signal pipe block", "puzzle door block"] {
+            assert!(assets.iter().any(|asset| asset.name == name));
+        }
+    }
+
+    #[test]
+    fn receiver_retrigger_extends_emission_but_post_shutoff_hit_preserves_gap() {
+        let mut continuous = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let player = continuous.start_position;
+        advance_puzzle(&mut continuous, 0.0, vec![0.0], player);
+        advance_puzzle(&mut continuous, 2.0, Vec::new(), player);
+        advance_puzzle(&mut continuous, 0.0, vec![2.0], player);
+        assert_eq!(continuous.puzzle.emissions.len(), 1);
+        assert_eq!(continuous.puzzle.emissions[0].end, 5.0);
+
+        let mut gapped = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        advance_puzzle(&mut gapped, 0.0, vec![0.0], player);
+        advance_puzzle(&mut gapped, 4.0, Vec::new(), player);
+        advance_puzzle(&mut gapped, 0.0, vec![4.0], player);
+        assert_eq!(gapped.puzzle.emissions.len(), 2);
+        assert!(!gapped.puzzle.signal_active_at(15.0, 6.0));
+        assert!(gapped.puzzle.signal_active_at(0.0, 6.0));
+    }
+
+    #[test]
+    fn large_frame_consumes_all_door_edges_deterministically() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let player = echo.start_position;
+        advance_puzzle(&mut echo, 0.0, vec![0.0], player);
+        advance_puzzle(&mut echo, 6.0, Vec::new(), player);
+        assert_eq!(
+            echo.puzzle.transitions,
+            vec![EchoDoorTransition::Opened, EchoDoorTransition::Closed]
+        );
+        assert!(!echo.puzzle.door_open);
+        assert!(echo.puzzle.emissions.is_empty());
+    }
+
+    #[test]
+    fn puzzle_door_controls_collision_navigation_sight_and_new_sound_paths() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let west = Vec3::new(-22.5, WALK_EYE_HEIGHT, 0.5);
+        let doorway = Vec3::new(-20.5, WALK_EYE_HEIGHT, 0.5);
+        let east = Vec3::new(-18.5, WALK_EYE_HEIGHT, 0.5);
+        let target = VoxelCoord::new(-17, 2, 0);
+        echo.world
+            .set(target, VoxelCell::new(VoxelMaterial::Beacon));
+        assert!(!can_walk_to_with_profile(
+            &echo.world,
+            doorway,
+            ECHOLOCATION_WALK_PROFILE
+        ));
+        let closed_navigation =
+            NavigationField::build(&echo.world, east, ECHOLOCATION_WALK_PROFILE).unwrap();
+        assert_eq!(closed_navigation.distance(-23, 0), Some(u16::MAX));
+        assert!(!has_line_of_sight(&echo.world, west, east));
+        assert!(!echo_impacts(&echo.world, voxel_coord_at(west), 12.0)
+            .iter()
+            .any(|impact| impact.solid_voxel == target));
+
+        echo.set_puzzle_door_open(true);
+        assert!(can_walk_to_with_profile(
+            &echo.world,
+            doorway,
+            ECHOLOCATION_WALK_PROFILE
+        ));
+        let open_navigation =
+            NavigationField::build(&echo.world, east, ECHOLOCATION_WALK_PROFILE).unwrap();
+        assert_ne!(open_navigation.distance(-23, 0), Some(u16::MAX));
+        assert!(has_line_of_sight(&echo.world, west, east));
+        assert!(echo_impacts(&echo.world, voxel_coord_at(west), 12.0)
+            .iter()
+            .any(|impact| impact.solid_voxel == target));
+    }
+
+    #[test]
+    fn closing_door_pushes_occupants_to_deterministic_nearest_sides() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.set_puzzle_door_open(true);
+        echo.puzzle.time = 5.49;
+        echo.puzzle.emissions = vec![EchoEmissionInterval {
+            start: 0.0,
+            end: 3.0,
+        }];
+        echo.pursuer.position = Vec3::new(-20.2, WALK_EYE_HEIGHT, 0.5);
+        let update = advance_puzzle(
+            &mut echo,
+            0.02,
+            Vec::new(),
+            Vec3::new(-20.8, WALK_EYE_HEIGHT, 0.5),
+        );
+        assert_eq!(
+            update.corrected_player_position,
+            Some(echo.puzzle.door.starting_side_anchor)
+        );
+        assert_eq!(echo.pursuer.position, echo.puzzle.door.far_side_anchor);
+        assert!(echo.pursuer.target_position.is_none());
+    }
+
+    #[test]
+    fn unoccupied_door_close_does_not_move_entities() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.set_puzzle_door_open(true);
+        echo.puzzle.time = 5.49;
+        echo.puzzle.emissions = vec![EchoEmissionInterval {
+            start: 0.0,
+            end: 3.0,
+        }];
+        let player = echo.start_position;
+        let pursuer = echo.pursuer.position;
+        let update = advance_puzzle(&mut echo, 0.02, Vec::new(), player);
+        assert_eq!(update.corrected_player_position, None);
+        assert_eq!(echo.pursuer.position, pursuer);
+    }
+
+    #[test]
+    fn active_signal_is_self_lit_but_line_of_sight_occluded() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.world = VoxelWorld::new();
+        echo.revealed.clear();
+        echo.puzzle.time = 5.0;
+        echo.puzzle.emissions = vec![EchoEmissionInterval {
+            start: 0.0,
+            end: 10.0,
+        }];
+        let camera = look_at(Vec3::new(-28.5, 3.0, 8.5), Vec3::new(-28.5, 1.0, 0.5));
+        let visible = echo_receiver_signal_cells(VIEWPORT, &camera, &echo);
+        assert!(!visible.is_empty());
+        fill_cuboid(
+            &mut echo.world,
+            VoxelCoord::new(-40, 0, 4),
+            VoxelCoord::new(-15, 5, 4),
+            VoxelMaterial::ShipHull,
+        );
+        assert!(echo_receiver_signal_cells(VIEWPORT, &camera, &echo).is_empty());
+    }
+
+    #[test]
+    fn receiver_signal_layer_sits_above_footprints_and_below_static_and_hud() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.notify_pursuer_of_noise(echo.start_position);
+        let camera = echolocation_start_camera(&echo);
+        let mut scene = Scene::new(VIEWPORT);
+        render_echolocation_scene(&mut scene, &echo, &camera, false);
+        let signal_z = scene
+            .layers
+            .iter()
+            .find(|layer| layer.name == "receiver-signal")
+            .unwrap()
+            .z;
+        let footprint_z = scene
+            .layers
+            .iter()
+            .find(|layer| layer.name == "footprints")
+            .unwrap()
+            .z;
+        let static_z = scene
+            .layers
+            .iter()
+            .find(|layer| layer.name == "search-static")
+            .unwrap()
+            .z;
+        assert!(signal_z > footprint_z && signal_z < static_z);
+        assert!(scene.overlays.iter().all(|overlay| overlay.z > signal_z));
+    }
+
+    #[test]
+    fn puzzle_time_freezes_on_death_and_restart_rebuilds_closed_state() {
+        let mut app = AppState::new();
+        app.start_echolocation();
+        let player = app.camera.position;
+        advance_puzzle(&mut app.echolocation, 1.0, vec![0.0], player);
+        let frozen_time = app.echolocation.puzzle.time;
+        app.echolocation.run_status = EchoRunStatus::Dead;
+        app.echolocation
+            .update_with_pursuer_from_listener(3.0, player, Vec3::new(1.0, 0.0, 0.0));
+        assert_eq!(app.echolocation.puzzle.time, frozen_time);
+        app.start_echolocation();
+        assert_eq!(app.echolocation.puzzle.time, 0.0);
+        assert!(app.echolocation.puzzle.emissions.is_empty());
+        assert!(!app.echolocation.puzzle.door_open);
+        assert!(app.echolocation.puzzle.door.voxels.iter().all(|coord| app
+            .echolocation
+            .world
+            .get(*coord)
+            == Some(VoxelCell::new(VoxelMaterial::PuzzleDoor))));
+    }
+
+    #[test]
+    fn puzzle_spatial_parameters_are_finite_limited_and_pan_consistently() {
+        let listener = Vec3::ZERO;
+        let right = Vec3::new(1.0, 0.0, 0.0);
+        let (left_pan, near_gain) =
+            spatial_sound_parameters(Vec3::new(-2.0, 0.0, 0.0), listener, right, 0.08, 0.72, 52.0);
+        let (right_pan, far_gain) =
+            spatial_sound_parameters(Vec3::new(40.0, 0.0, 0.0), listener, right, 0.08, 0.72, 52.0);
+        assert!(left_pan < 0.0 && right_pan > 0.0);
+        assert!(near_gain > far_gain);
+        assert!([left_pan, right_pan, near_gain, far_gain]
+            .iter()
+            .all(|value| value.is_finite() && (-1.0..=1.0).contains(value)));
     }
 }

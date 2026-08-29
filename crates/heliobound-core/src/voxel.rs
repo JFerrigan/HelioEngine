@@ -51,6 +51,9 @@ pub enum VoxelMaterial {
     Glass,
     Beacon,
     Gate,
+    Receiver,
+    SignalPipe,
+    PuzzleDoor,
     /// A color supplied by an imported voxel asset's palette.
     Custom([u8; 3]),
 }

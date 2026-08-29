@@ -40,6 +40,9 @@ For the voxel asset viewer and drop-in `*.hbasset.json` authoring workflow, see
 the dedicated [voxel asset usage guide](docs/voxel-assets.md). Assets belong in
 [`assets/voxel-assets`](assets/voxel-assets) and are discovered at startup.
 
+For the pan-and-orbit gameplay map viewer and an overview of how maps are
+currently represented, see [maps and the map viewer](docs/maps.md).
+
 ## Controls
 
 - Click the window to capture mouse look.

@@ -8,6 +8,18 @@ Echolocation is an open-ended first-person exploration mode in a dark voxel envi
 
 There is no victory condition. The purpose is to keep moving, orient from sound, and avoid being found.
 
+## Sound-activated receiver door
+
+The first interactive puzzle occupies the starting room. A closed bulkhead at `x = -21` seals its east passage except for a three-voxel-wide, four-voxel-high doorway filled by a movable door. A one-voxel floor receiver at approximately `(-36, 1, 0)` is 15 voxels from the door plane. A straight signal pipe replaces the floor blocks between them without obstructing the walking route.
+
+- Activation requires a propagated sound impact on the receiver voxel. Primary and reflected player pulses, player step waves, and pursuer step waves can all trigger it; merely standing nearby cannot.
+- A hit makes the receiver emit for 3 seconds. A new hit while it is emitting extends that interval to at least 3 seconds after the new hit. A hit after shutoff creates a separate interval, so the already-travelling gap is preserved.
+- The signal moves along the ordered pipe at 6 voxels per second. Each pipe sample is powered when the receiver was emitting at `current time - distance / 6`, producing visible leading and trailing edges. The 15-voxel route therefore delays the door by 2.5 seconds and preserves the 3-second crossing window.
+- The door clears from the shared voxel world on the delayed rising edge and is restored on the falling edge. When restored over the player or pursuer, that entity moves to the nearer predefined clear position; equal distances use its current side, then the starting-room side.
+- Closed door voxels block walking, pursuer navigation, sight, and newly emitted waves. Opening removes those voxels for all four systems. Waves cache their path at emission, so waves already in flight retain the path computed before a transition.
+- Idle receiver, pipe, and door geometry follows ordinary echo reveal and full-map debug rules. Powered pipe samples, the emitting receiver, and the powered endpoint are cyan-blue and self-lit, but still require direct line of sight. Their colored layer sits above geometry and footprints and below searching static and HUD overlays.
+- Receiver clicks and door mechanisms use the same listener-relative pan and distance attenuation convention as pursuer footsteps.
+
 ## Player experience
 
 - Move through the map using the normal first-person walking controls and mouse look.
@@ -45,7 +57,7 @@ YOU WERE FOUND
 R restart   M menu
 ```
 
-`R` starts a fresh run with the same deterministic Echolocation seed, resetting the player camera, input state, world reveals, pursuer behavior and remembered noise, footprints, waves, and search effect. `M` returns to the mode menu.
+`R` starts a fresh run with the same deterministic Echolocation seed, resetting the player camera, input state, world reveals, pursuer behavior and remembered noise, footprints, waves, search effect, and the closed inactive receiver puzzle. `M` returns to the mode menu. Puzzle simulation time freezes on death and mode exit discards the run state normally.
 
 ## Technical model
 
@@ -53,6 +65,7 @@ R restart   M menu
 - Echo impacts temporarily populate a reveal table keyed by voxel coordinate. Rendering consults that table but draws only faces adjacent to air.
 - Player pulse reflections use the normal echo-wave system; pursuer step waves have a separate short-lived record and never reflect.
 - Footprint decals and step-wave markers are rendered in overlay layers, independently of the hidden voxel body, while still respecting direct line of sight.
+- Receiver output is stored as emission intervals. Intervals are pruned only after their delayed trailing edges pass the door, allowing multiple independent signal bands to coexist on the route.
 - The navigation field is shared infrastructure also used by zombie movement. It is built against the Echolocation walking profile and supplies valid corridor-following steps.
 
 ## Guardrails for future changes

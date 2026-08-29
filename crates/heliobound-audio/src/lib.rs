@@ -55,6 +55,18 @@ pub enum SoundEffect {
         pan: f32,
         gain: f32,
     },
+    ReceiverActivation {
+        pan: f32,
+        gain: f32,
+    },
+    PuzzleDoorOpen {
+        pan: f32,
+        gain: f32,
+    },
+    PuzzleDoorClose {
+        pan: f32,
+        gain: f32,
+    },
     /// A short, pursuer-panned digital crackle during echolocation search.
     EcholocationStaticBurst {
         pan: f32,
@@ -361,6 +373,15 @@ impl RodioBackend {
             SoundEffect::EchoPing => synthesize_echo_ping(),
             SoundEffect::PlayerFootstep => synthesize_player_footstep(),
             SoundEffect::InvisibleFootstep { pan, gain } => synthesize_spatial_footstep(pan, gain),
+            SoundEffect::ReceiverActivation { pan, gain } => {
+                synthesize_spatial_puzzle_effect(PuzzleSound::Receiver, pan, gain)
+            }
+            SoundEffect::PuzzleDoorOpen { pan, gain } => {
+                synthesize_spatial_puzzle_effect(PuzzleSound::DoorOpen, pan, gain)
+            }
+            SoundEffect::PuzzleDoorClose { pan, gain } => {
+                synthesize_spatial_puzzle_effect(PuzzleSound::DoorClose, pan, gain)
+            }
             SoundEffect::EcholocationStaticBurst { pan, gain, variant } => {
                 synthesize_echolocation_static_burst(pan, gain, variant)
             }
@@ -669,6 +690,15 @@ pub fn synthesize_effect(effect: SoundEffect) -> Vec<f32> {
         SoundEffect::EchoPing => synthesize_echo_ping(),
         SoundEffect::PlayerFootstep => synthesize_player_footstep(),
         SoundEffect::InvisibleFootstep { .. } => synthesize_invisible_footstep(),
+        SoundEffect::ReceiverActivation { pan, gain } => {
+            synthesize_spatial_puzzle_effect(PuzzleSound::Receiver, pan, gain)
+        }
+        SoundEffect::PuzzleDoorOpen { pan, gain } => {
+            synthesize_spatial_puzzle_effect(PuzzleSound::DoorOpen, pan, gain)
+        }
+        SoundEffect::PuzzleDoorClose { pan, gain } => {
+            synthesize_spatial_puzzle_effect(PuzzleSound::DoorClose, pan, gain)
+        }
         SoundEffect::EcholocationStaticBurst { pan, gain, variant } => {
             synthesize_echolocation_static_burst(pan, gain, variant)
         }
@@ -792,6 +822,40 @@ fn synthesize_spatial_footstep(pan: f32, gain: f32) -> Vec<f32> {
     for frame in samples.chunks_exact_mut(CHANNELS as usize) {
         frame[0] *= left_gain;
         frame[1] *= right_gain;
+    }
+    samples
+}
+
+#[derive(Clone, Copy)]
+enum PuzzleSound {
+    Receiver,
+    DoorOpen,
+    DoorClose,
+}
+
+fn synthesize_spatial_puzzle_effect(kind: PuzzleSound, pan: f32, gain: f32) -> Vec<f32> {
+    let (duration, base_frequency, sweep, noise_gain): (f32, f32, f32, f32) = match kind {
+        PuzzleSound::Receiver => (0.11, 1_350.0, 480.0, 0.05),
+        PuzzleSound::DoorOpen => (0.42, 105.0, 85.0, 0.14),
+        PuzzleSound::DoorClose => (0.34, 155.0, -75.0, 0.18),
+    };
+    let frames = (SAMPLE_RATE as f32 * duration) as usize;
+    let mut samples = Vec::with_capacity(frames * CHANNELS as usize);
+    let mut noise = 0xD00F_C11Cu32 ^ base_frequency.to_bits();
+    let pan = pan.clamp(-1.0, 1.0);
+    let gain = gain.clamp(0.0, 1.0);
+    let left_gain = gain * (1.0 - pan).sqrt();
+    let right_gain = gain * (1.0 + pan).sqrt();
+    for frame in 0..frames {
+        let t = frame as f32 / SAMPLE_RATE as f32;
+        let progress = frame as f32 / frames.max(1) as f32;
+        noise = xorshift(noise);
+        let white = ((noise >> 9) as f32 / (1_u32 << 23) as f32) * 2.0 - 1.0;
+        let frequency = base_frequency + sweep * progress;
+        let envelope = (1.0 - progress).powf(1.4) * (progress / 0.035).min(1.0);
+        let body = (TAU * frequency * t).sin() * 0.48 + (TAU * frequency * 0.51 * t).sin() * 0.24;
+        let sample = soft_clip((body + white * noise_gain) * envelope);
+        push_stereo(&mut samples, sample * left_gain, sample * right_gain);
     }
     samples
 }
@@ -1071,6 +1135,38 @@ mod tests {
         assert!(burst.iter().all(|sample| sample.is_finite()));
         assert!(burst.iter().any(|sample| sample.abs() > 0.001));
         assert!(burst.iter().all(|sample| sample.abs() <= 0.29));
+
+        for effect in [
+            SoundEffect::ReceiverActivation {
+                pan: -0.7,
+                gain: 0.6,
+            },
+            SoundEffect::PuzzleDoorOpen {
+                pan: 0.4,
+                gain: 0.6,
+            },
+            SoundEffect::PuzzleDoorClose {
+                pan: 0.4,
+                gain: 0.6,
+            },
+        ] {
+            let samples = synthesize_effect(effect);
+            assert!(!samples.is_empty());
+            assert_eq!(samples.len() % CHANNELS as usize, 0);
+            assert!(samples.iter().all(|sample| sample.is_finite()));
+            assert!(samples.iter().all(|sample| sample.abs() <= 1.0));
+        }
+    }
+
+    #[test]
+    fn puzzle_effects_pan_toward_their_source() {
+        let samples = synthesize_effect(SoundEffect::PuzzleDoorOpen {
+            pan: 1.0,
+            gain: 0.7,
+        });
+        let left_energy: f32 = samples.chunks_exact(2).map(|frame| frame[0].abs()).sum();
+        let right_energy: f32 = samples.chunks_exact(2).map(|frame| frame[1].abs()).sum();
+        assert!(right_energy > left_energy * 10.0);
     }
 
     #[test]

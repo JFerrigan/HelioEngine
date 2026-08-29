@@ -96,6 +96,9 @@ impl MaterialGlyphMap {
             VoxelMaterial::Glass => shade(intensity, "'.oO"),
             VoxelMaterial::Beacon => shade(intensity, "i!*@"),
             VoxelMaterial::Gate => shade(intensity, "()0@"),
+            VoxelMaterial::Receiver => shade(intensity, ".:rR"),
+            VoxelMaterial::SignalPipe => shade(intensity, ".-=+"),
+            VoxelMaterial::PuzzleDoor => shade(intensity, "|#HM"),
             VoxelMaterial::Custom(_) => shade(intensity, ".:+#@"),
         }
     }
@@ -134,6 +137,9 @@ fn material_base_color(material: VoxelMaterial) -> [u8; 3] {
         VoxelMaterial::Glass => [0x9f, 0xf5, 0xff],
         VoxelMaterial::Beacon => [0xff, 0xda, 0x63],
         VoxelMaterial::Gate => [0xff, 0x74, 0x39],
+        VoxelMaterial::Receiver => [0x54, 0x68, 0x72],
+        VoxelMaterial::SignalPipe => [0x3d, 0x54, 0x61],
+        VoxelMaterial::PuzzleDoor => [0x65, 0x70, 0x78],
         VoxelMaterial::Custom(color) => color,
     }
 }
@@ -350,7 +356,7 @@ pub fn raycast(world: &VoxelWorld, ray: Ray, max_distance: f32) -> Option<VoxelH
         return None;
     }
 
-    let start_distance = match world.bounds() {
+    let (start_distance, end_distance) = match world.bounds() {
         Some(bounds) => intersect_bounds(bounds, ray, max_distance)?,
         None => return None,
     };
@@ -383,7 +389,9 @@ pub fn raycast(world: &VoxelWorld, ray: Ray, max_distance: f32) -> Option<VoxelH
     let mut distance = start_distance;
     let mut normal = Vec3::ZERO;
 
-    while distance <= max_distance {
+    // The world is finite, so its bounds are an intrinsic endpoint even when
+    // the caller intentionally supplies an unlimited view distance.
+    while distance <= end_distance {
         if let Some(cell) = world.get(coord) {
             return Some(VoxelHit {
                 coord,
@@ -414,7 +422,7 @@ pub fn raycast(world: &VoxelWorld, ray: Ray, max_distance: f32) -> Option<VoxelH
     None
 }
 
-fn intersect_bounds(bounds: VoxelBounds, ray: Ray, max_distance: f32) -> Option<f32> {
+fn intersect_bounds(bounds: VoxelBounds, ray: Ray, max_distance: f32) -> Option<(f32, f32)> {
     let min = Vec3::new(
         bounds.min.x as f32,
         bounds.min.y as f32,
@@ -436,7 +444,7 @@ fn intersect_bounds(bounds: VoxelBounds, ray: Ray, max_distance: f32) -> Option<
     if exit < 0.0 || enter > exit || enter > max_distance {
         None
     } else {
-        Some(enter.max(0.0))
+        Some((enter.max(0.0), exit.min(max_distance)))
     }
 }
 
@@ -723,6 +731,29 @@ mod tests {
             .unwrap_or_default()
             .starts_with('#'));
         assert_ne!(voxel.style.fg, Some("#dfe8db".to_string()));
+    }
+
+    #[test]
+    fn puzzle_materials_have_distinct_glyphs_and_subdued_idle_colors() {
+        let materials = MaterialGlyphMap;
+        let normal = Vec3::new(0.0, 1.0, 0.0);
+        let glyphs = [
+            materials.glyph_for_material(VoxelMaterial::Receiver, normal, 4.0),
+            materials.glyph_for_material(VoxelMaterial::SignalPipe, normal, 4.0),
+            materials.glyph_for_material(VoxelMaterial::PuzzleDoor, normal, 4.0),
+        ];
+        assert!(glyphs.iter().all(|glyph| !glyph.is_whitespace()));
+        assert_ne!(glyphs[0], glyphs[1]);
+        assert_ne!(glyphs[1], glyphs[2]);
+        for material in [
+            VoxelMaterial::Receiver,
+            VoxelMaterial::SignalPipe,
+            VoxelMaterial::PuzzleDoor,
+        ] {
+            let color = material_base_color(material);
+            assert!(color.iter().all(|channel| *channel < 0x80));
+            assert!(materials.style_for_material(material, normal).fg.is_some());
+        }
     }
 
     #[test]
