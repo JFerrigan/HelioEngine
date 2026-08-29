@@ -36,6 +36,10 @@ cargo run --release -p heliobound-cli
 
 The current planet is rendered as a virtual procedural body at 1000x the original prototype scale. Local voxel shells are still supported for smaller bodies and future landing-zone detail, but planet-scale rendering does not materialize billions of surface voxels.
 
+For the voxel asset viewer and drop-in `*.hbasset.json` authoring workflow, see
+the dedicated [voxel asset usage guide](docs/voxel-assets.md). Assets belong in
+[`assets/voxel-assets`](assets/voxel-assets) and are discovered at startup.
+
 ## Controls
 
 - Click the window to capture mouse look.

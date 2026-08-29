@@ -96,6 +96,7 @@ impl MaterialGlyphMap {
             VoxelMaterial::Glass => shade(intensity, "'.oO"),
             VoxelMaterial::Beacon => shade(intensity, "i!*@"),
             VoxelMaterial::Gate => shade(intensity, "()0@"),
+            VoxelMaterial::Custom(_) => shade(intensity, ".:+#@"),
         }
     }
 
@@ -133,6 +134,7 @@ fn material_base_color(material: VoxelMaterial) -> [u8; 3] {
         VoxelMaterial::Glass => [0x9f, 0xf5, 0xff],
         VoxelMaterial::Beacon => [0xff, 0xda, 0x63],
         VoxelMaterial::Gate => [0xff, 0x74, 0x39],
+        VoxelMaterial::Custom(color) => color,
     }
 }
 
@@ -162,6 +164,19 @@ impl SceneBuilder {
     }
 
     pub fn build(&self, world: &VoxelWorld, camera: &Camera, tick: u64) -> Scene {
+        self.build_with_visibility(world, camera, tick, |_| true)
+    }
+
+    /// Builds against the complete voxel world while allowing a caller to hide
+    /// individual hit faces. Hidden hits remain blank occluders, so geometry
+    /// behind them cannot leak into view.
+    pub fn build_with_visibility(
+        &self,
+        world: &VoxelWorld,
+        camera: &Camera,
+        tick: u64,
+        is_visible: impl Fn(VoxelHit) -> bool,
+    ) -> Scene {
         let mut scene = Scene::new(self.config.viewport);
         let height = self.config.viewport.height as i32;
 
@@ -183,7 +198,7 @@ impl SceneBuilder {
                 background.cells.push(SceneCell {
                     x: x as i32,
                     y: y as i32,
-                    glyph: star_for_direction(ray.direction),
+                    glyph: background_glyph_for_direction(ray.direction),
                     style: TextStyle::default(),
                 });
                 if let Some(hit) = raycast(
@@ -191,11 +206,20 @@ impl SceneBuilder {
                     ray,
                     self.config.max_distance.min(camera.max_distance),
                 ) {
+                    let visible = is_visible(hit);
                     voxels.cells.push(SceneCell {
                         x: x as i32,
                         y: y as i32,
-                        glyph: self.materials.glyph_for(hit),
-                        style: self.materials.style_for(hit),
+                        glyph: if visible {
+                            self.materials.glyph_for(hit)
+                        } else {
+                            ' '
+                        },
+                        style: if visible {
+                            self.materials.style_for(hit)
+                        } else {
+                            TextStyle::default()
+                        },
                     });
                 }
             }
@@ -244,7 +268,7 @@ impl SceneBuilder {
                 background.cells.push(SceneCell {
                     x: x as i32,
                     y: y as i32,
-                    glyph: star_for_direction(ray.direction),
+                    glyph: background_glyph_for_direction(ray.direction),
                     style: TextStyle::default(),
                 });
                 if let Some(hit) =
@@ -513,6 +537,16 @@ fn star_for_direction(direction: Vec3) -> char {
     closest.map(|(_, glyph)| glyph).unwrap_or(' ')
 }
 
+/// The starfield represents the sky, rather than a backdrop behind the world.
+/// Rays at or below the horizon intentionally receive an empty background.
+fn background_glyph_for_direction(direction: Vec3) -> char {
+    if direction.y > 0.0 {
+        star_for_direction(direction)
+    } else {
+        ' '
+    }
+}
+
 fn sky_angles(direction: Vec3) -> (f32, f32) {
     let direction = direction.normalized();
     let yaw = direction.x.atan2(direction.z);
@@ -623,6 +657,39 @@ mod tests {
     }
 
     #[test]
+    fn face_filtered_builder_keeps_hidden_hits_as_blank_occluders() {
+        let mut world = VoxelWorld::new();
+        world.set(
+            VoxelCoord::new(0, 0, 4),
+            VoxelCell::new(VoxelMaterial::Habitat),
+        );
+        world.set(
+            VoxelCoord::new(0, 0, 8),
+            VoxelCell::new(VoxelMaterial::Beacon),
+        );
+        let camera = Camera::new(Vec3::new(0.5, 0.5, 0.5));
+        let builder = SceneBuilder::new(
+            GraphicsConfig {
+                viewport: Viewport {
+                    width: 9,
+                    height: 9,
+                },
+                max_distance: 20.0,
+            },
+            MaterialGlyphMap,
+        );
+
+        let scene = builder.build_with_visibility(&world, &camera, 0, |_| false);
+        let voxels = scene
+            .layers
+            .iter()
+            .find(|layer| layer.name == "voxels")
+            .expect("voxel layer exists");
+        assert!(!voxels.cells.is_empty());
+        assert!(voxels.cells.iter().all(|cell| cell.glyph == ' '));
+    }
+
+    #[test]
     fn builder_colors_voxels_by_material() {
         let mut world = VoxelWorld::new();
         world.set(
@@ -680,6 +747,24 @@ mod tests {
         assert_eq!(
             star_for_direction(Vec3::new(0.1, 0.2, 1.0)),
             star_for_direction(Vec3::new(0.1, 0.2, 1.0))
+        );
+    }
+
+    #[test]
+    fn starfield_is_hidden_at_and_below_the_horizon() {
+        let upward = Vec3::new(0.1, 0.2, 1.0);
+
+        assert_eq!(
+            background_glyph_for_direction(upward),
+            star_for_direction(upward)
+        );
+        assert_eq!(
+            background_glyph_for_direction(Vec3::new(0.1, 0.0, 1.0)),
+            ' '
+        );
+        assert_eq!(
+            background_glyph_for_direction(Vec3::new(0.1, -0.2, 1.0)),
+            ' '
         );
     }
 

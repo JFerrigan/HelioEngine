@@ -40,13 +40,19 @@ pub struct AbcTune {
     pub events: Vec<NoteEvent>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SoundEffect {
     Gunshot,
     EnemyHit,
     EnemyDeath,
     PlayerHurt,
     GateSuccess,
+    EchoPing,
+    /// Stereo pan (-1 left to 1 right) and volume multiplier for the hidden pursuer.
+    InvisibleFootstep {
+        pan: f32,
+        gain: f32,
+    },
 }
 
 pub struct GameAudio {
@@ -276,6 +282,8 @@ impl RodioBackend {
             SoundEffect::EnemyDeath => synthesize_enemy_death(),
             SoundEffect::PlayerHurt => synthesize_player_hurt(),
             SoundEffect::GateSuccess => synthesize_gate_success(),
+            SoundEffect::EchoPing => synthesize_echo_ping(),
+            SoundEffect::InvisibleFootstep { pan, gain } => synthesize_spatial_footstep(pan, gain),
         };
         self.sink.mixer().add(samples_buffer(samples));
     }
@@ -578,6 +586,8 @@ pub fn synthesize_effect(effect: SoundEffect) -> Vec<f32> {
         SoundEffect::EnemyDeath => synthesize_enemy_death(),
         SoundEffect::PlayerHurt => synthesize_player_hurt(),
         SoundEffect::GateSuccess => synthesize_gate_success(),
+        SoundEffect::EchoPing => synthesize_echo_ping(),
+        SoundEffect::InvisibleFootstep { .. } => synthesize_invisible_footstep(),
     }
 }
 
@@ -614,6 +624,98 @@ fn synthesize_gate_success() -> Vec<f32> {
         }
     }
     samples
+}
+
+/// A muted, close footfall: deliberately less sharp and much shorter than an
+/// echolocation ping so it reads as a nearby presence rather than a signal.
+fn synthesize_invisible_footstep() -> Vec<f32> {
+    let frames = (SAMPLE_RATE as f32 * 0.13) as usize;
+    let mut samples = Vec::with_capacity(frames * CHANNELS as usize);
+    let mut noise = 0xF007_571Eu32;
+    for frame in 0..frames {
+        let t = frame as f32 / SAMPLE_RATE as f32;
+        noise = xorshift(noise);
+        let white = ((noise >> 9) as f32 / (1_u32 << 23) as f32) * 2.0 - 1.0;
+        let envelope = (-t * 26.0).exp() * (1.0 - t / 0.13).max(0.0);
+        let thump = (TAU * 74.0 * t).sin() * (-t * 34.0).exp();
+        let sample = soft_clip((thump * 0.32 + white * 0.10) * envelope);
+        push_stereo(&mut samples, sample * 0.86, sample * 0.78);
+    }
+    samples
+}
+
+fn synthesize_spatial_footstep(pan: f32, gain: f32) -> Vec<f32> {
+    let mut samples = synthesize_invisible_footstep();
+    let pan = pan.clamp(-1.0, 1.0);
+    let gain = gain.clamp(0.0, 1.0);
+    let left_gain = gain * (1.0 - pan).sqrt();
+    let right_gain = gain * (1.0 + pan).sqrt();
+    for frame in samples.chunks_exact_mut(CHANNELS as usize) {
+        frame[0] *= left_gain;
+        frame[1] *= right_gain;
+    }
+    samples
+}
+
+fn synthesize_echo_ping() -> Vec<f32> {
+    const DURATION_SECONDS: f32 = 1.8;
+    const DRY_SECONDS: f32 = 0.055;
+    let total_frames = (DURATION_SECONDS * SAMPLE_RATE as f32) as usize;
+    let dry_frames = (DRY_SECONDS * SAMPLE_RATE as f32) as usize;
+    let mut dry = Vec::with_capacity(dry_frames);
+    let mut noise = 0xEC40_10CAu32;
+
+    for frame in 0..dry_frames {
+        let t = frame as f32 / SAMPLE_RATE as f32;
+        noise = xorshift(noise);
+        let white = ((noise >> 9) as f32 / (1_u32 << 23) as f32) * 2.0 - 1.0;
+        let transient = (-t * 210.0).exp();
+        let resonant_body = (-t * 48.0).exp();
+        let pop = (TAU * (760.0 - t * 5_800.0).max(310.0) * t).sin();
+        let click = (white * 0.78 * transient + pop * 0.48 * resonant_body)
+            * (1.0 - frame as f32 / dry_frames as f32);
+        dry.push(soft_clip(click));
+    }
+
+    let left_reverb = synthesize_comb_reverb(
+        &dry,
+        total_frames,
+        &[(1_309, 0.86), (1_637, 0.84), (1_819, 0.82), (2_053, 0.80)],
+    );
+    let right_reverb = synthesize_comb_reverb(
+        &dry,
+        total_frames,
+        &[(1_379, 0.85), (1_583, 0.83), (1_751, 0.81), (2_087, 0.79)],
+    );
+    let mut samples = Vec::with_capacity(total_frames * CHANNELS as usize);
+    for frame in 0..total_frames {
+        let direct = dry.get(frame).copied().unwrap_or(0.0) * 0.58;
+        let left = direct + left_reverb[frame] * 0.72 + right_reverb[frame] * 0.12;
+        let right = direct * 0.94 + right_reverb[frame] * 0.72 + left_reverb[frame] * 0.12;
+        push_stereo(&mut samples, left, right);
+    }
+    samples
+}
+
+fn synthesize_comb_reverb(
+    dry: &[f32],
+    total_frames: usize,
+    delay_lines: &[(usize, f32)],
+) -> Vec<f32> {
+    let mut wet = vec![0.0; total_frames];
+    for &(delay_frames, feedback) in delay_lines {
+        let mut comb = vec![0.0; total_frames];
+        for frame in 0..total_frames {
+            let input = dry.get(frame).copied().unwrap_or(0.0);
+            let echo = frame
+                .checked_sub(delay_frames)
+                .map(|delayed| comb[delayed] * feedback)
+                .unwrap_or(0.0);
+            comb[frame] = input + echo;
+            wet[frame] += comb[frame] / delay_lines.len() as f32;
+        }
+    }
+    wet
 }
 
 fn synthesize_burst(duration_seconds: f32, low_hz: f32, high_hz: f32, gain: f32) -> Vec<f32> {
@@ -801,12 +903,39 @@ mod tests {
         let gunshot = synthesize_effect(SoundEffect::Gunshot);
         let hurt = synthesize_effect(SoundEffect::PlayerHurt);
         let gate = synthesize_effect(SoundEffect::GateSuccess);
+        let echo_ping = synthesize_effect(SoundEffect::EchoPing);
+        let footstep = synthesize_effect(SoundEffect::InvisibleFootstep {
+            pan: 0.0,
+            gain: 1.0,
+        });
 
         assert!(gunshot.len() > hurt.len() / 2);
         assert_eq!(gunshot.len() % CHANNELS as usize, 0);
         assert!(gunshot.iter().any(|sample| sample.abs() > 0.01));
         assert!(!gate.is_empty());
         assert_eq!(gate.len() % CHANNELS as usize, 0);
+        assert!(echo_ping.len() >= SAMPLE_RATE as usize * CHANNELS as usize);
+        assert_eq!(echo_ping.len() % CHANNELS as usize, 0);
+        assert!(footstep.len() < echo_ping.len());
+        assert_eq!(footstep.len() % CHANNELS as usize, 0);
+        assert!(footstep.iter().any(|sample| sample.abs() > 0.01));
+    }
+
+    #[test]
+    fn echolocation_ping_has_a_sharp_click_and_long_stereo_reverb_tail() {
+        let samples = synthesize_effect(SoundEffect::EchoPing);
+        let early_frames = (SAMPLE_RATE as f32 * 0.08) as usize * CHANNELS as usize;
+        let tail_start = (SAMPLE_RATE as f32 * 0.45) as usize * CHANNELS as usize;
+
+        assert!(samples[..early_frames]
+            .iter()
+            .any(|sample| sample.abs() > 0.2));
+        assert!(samples[tail_start..]
+            .iter()
+            .any(|sample| sample.abs() > 0.001));
+        assert!(samples[tail_start..]
+            .chunks_exact(CHANNELS as usize)
+            .any(|frame| (frame[0] - frame[1]).abs() > 0.001));
     }
 
     #[test]

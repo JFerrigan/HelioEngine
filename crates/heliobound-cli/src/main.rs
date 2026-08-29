@@ -1,5 +1,8 @@
-use std::collections::{HashMap, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::error::Error;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -14,6 +17,7 @@ use heliobound_gfx::{
     TextStyle, Viewport,
 };
 use pixels::{PixelsBuilder, SurfaceTexture};
+use serde::Deserialize;
 use winit::{
     dpi::LogicalSize,
     event::{DeviceEvent, ElementState, Event, MouseButton, WindowEvent},
@@ -51,10 +55,11 @@ const CITY_FIGURE_EYE_HEIGHT: f32 = WALK_EYE_HEIGHT;
 const CITY_FIGURE_SPEED: f32 = 4.0;
 const CITY_FIGURE_GAZE_DISTANCE: f32 = 70.0;
 const CITY_FIGURE_GAZE_DOT: f32 = 0.93;
+#[cfg(test)]
 const ENEMY_EYE_HEIGHT: f32 = WALK_EYE_HEIGHT;
-const ENEMY_SPEED: f32 = 5.5;
-const ENEMY_ATTACK_RANGE: f32 = 2.4;
-const ENEMY_ATTACK_DAMAGE: i32 = 8;
+const CLOWN_SPEED: f32 = 5.5;
+const CLOWN_ATTACK_RANGE: f32 = 2.4;
+const CLOWN_ATTACK_DAMAGE: i32 = 8;
 const WEAPON_RANGE: f32 = 95.0;
 const WEAPON_DAMAGE: i32 = 55;
 const SHOT_FLASH_TIME: f32 = 0.12;
@@ -66,7 +71,6 @@ const ZOMBIE_SPRINT_RECHARGE: f32 = 0.20;
 const ZOMBIE_EYE_HEIGHT: f32 = 2.5;
 const ZOMBIE_COLLISION_RADIUS: f32 = 0.24;
 const ZOMBIE_SPAWN_CLEARANCE_RADIUS: i32 = 2;
-const ZOMBIE_ATTACK_RANGE: f32 = 2.1;
 const ZOMBIE_ATTACK_COOLDOWN: f32 = 1.05;
 const ZOMBIE_MAX_HITS: i32 = 3;
 const ZOMBIE_HIT_FLASH_TIME: f32 = 0.32;
@@ -182,6 +186,59 @@ const ZOMBIE_BODY_OFFSETS: [(i32, i32, i32, VoxelMaterial); 18] = [
     (1, 2, -1, VoxelMaterial::Beacon),
     (0, 5, 0, VoxelMaterial::Beacon),
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EnemyType {
+    Clown,
+    Zombie,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EnemyProfile {
+    eye_height: f32,
+    speed: f32,
+    collision_radius: f32,
+    attack_range: f32,
+    attack_damage: i32,
+    attack_cooldown: f32,
+    base_health: i32,
+    health_per_round: i32,
+}
+
+impl EnemyType {
+    fn profile(self) -> EnemyProfile {
+        match self {
+            Self::Clown => EnemyProfile {
+                eye_height: WALK_EYE_HEIGHT,
+                speed: CLOWN_SPEED,
+                collision_radius: WALK_COLLISION_RADIUS,
+                attack_range: CLOWN_ATTACK_RANGE,
+                attack_damage: CLOWN_ATTACK_DAMAGE,
+                attack_cooldown: 1.1,
+                base_health: 100,
+                health_per_round: 0,
+            },
+            Self::Zombie => EnemyProfile {
+                eye_height: ZOMBIE_EYE_HEIGHT,
+                speed: ZOMBIE_WALK_SPEED,
+                collision_radius: ZOMBIE_COLLISION_RADIUS,
+                attack_range: 2.1,
+                attack_damage: 0,
+                attack_cooldown: ZOMBIE_ATTACK_COOLDOWN,
+                base_health: 90,
+                health_per_round: 34,
+            },
+        }
+    }
+
+    #[cfg(test)]
+    fn label(self) -> &'static str {
+        match self {
+            Self::Clown => "clown",
+            Self::Zombie => "zombie",
+        }
+    }
+}
 const DRONE_GATE_SEED: u64 = 0xD20A_6A7E_2026_0826;
 const DRONE_GATE_VIEW_DISTANCE: f32 = 900.0;
 const DRONE_GATE_START_BACK: f32 = 42.0;
@@ -208,11 +265,17 @@ const DRONE_GATE_COURSE_LOOKAHEAD: usize = 12;
 const DRONE_GATE_COURSE_APPEND_COUNT: usize = 16;
 const DRONE_GATE_RENDER_PAST: usize = 4;
 const ECHOLOCATION_SEED: u64 = 0xEC40_10CA_7100_0001;
-const ECHOLOCATION_PING_SPEED: f32 = 42.0;
+const ECHOLOCATION_PING_SPEED: f32 = 10.0;
 const ECHOLOCATION_PING_MAX_RANGE: f32 = 92.0;
-const ECHOLOCATION_PING_BASE_THICKNESS: f32 = 2.2;
-const ECHOLOCATION_PING_THICKNESS_VARIATION: f32 = 1.4;
-const ECHOLOCATION_PING_FADE_SECONDS: f32 = 2.8;
+const ECHOLOCATION_PING_COOLDOWN_SECONDS: f32 = 1.0;
+const ECHO_PURSUER_SPEED: f32 = 3.0;
+const ECHO_PURSUER_CONTACT_RADIUS: f32 = 0.72;
+const ECHO_PURSUER_STEP_SECONDS: f32 = 0.52;
+// Prints need to remain long enough for the player to round a corner and see
+// a recently traversed corridor, but are still transient rather than a map.
+const ECHO_FOOTPRINT_LIFETIME: f32 = 4.0;
+const ECHO_STEP_WAVE_SPEED: f32 = 5.0;
+const ECHO_STEP_WAVE_MAX_RADIUS: f32 = 2.2;
 const ECHOLOCATION_WALK_PROFILE: WalkProfile = WalkProfile {
     speed: 10.0,
     collision_radius: 0.45,
@@ -543,6 +606,42 @@ impl AppState {
                 (AppMode::EchoLocation, PhysicalKey::Code(KeyCode::Space)) => {
                     return KeyboardAction::Fire;
                 }
+                (AppMode::EchoLocation, PhysicalKey::Code(KeyCode::KeyR))
+                    if self.echolocation.run_status == EchoRunStatus::Dead =>
+                {
+                    self.start_echolocation();
+                    return KeyboardAction::StartScene;
+                }
+                (AppMode::EchoLocation, PhysicalKey::Code(KeyCode::Tab)) => {
+                    self.echolocation.toggle_tuning();
+                    return KeyboardAction::None;
+                }
+                (AppMode::EchoLocation, PhysicalKey::Code(KeyCode::KeyV)) => {
+                    self.echolocation.toggle_full_map();
+                    return KeyboardAction::None;
+                }
+                (AppMode::EchoLocation, PhysicalKey::Code(KeyCode::KeyM)) => {
+                    return KeyboardAction::EnterMenu;
+                }
+                (AppMode::EchoLocation, PhysicalKey::Code(KeyCode::Escape)) => {
+                    return KeyboardAction::ReleaseMouse;
+                }
+                (AppMode::EchoLocation, PhysicalKey::Code(key)) => {
+                    let action = match key {
+                        KeyCode::BracketRight => Some(EchoTuningAction::IncreaseRange),
+                        KeyCode::BracketLeft => Some(EchoTuningAction::DecreaseRange),
+                        KeyCode::Equal => Some(EchoTuningAction::IncreaseSpeed),
+                        KeyCode::Minus => Some(EchoTuningAction::DecreaseSpeed),
+                        KeyCode::Period => Some(EchoTuningAction::IncreaseStrength),
+                        KeyCode::Comma => Some(EchoTuningAction::DecreaseStrength),
+                        KeyCode::KeyR => Some(EchoTuningAction::ResetDefaults),
+                        _ => None,
+                    };
+                    if let Some(action) = action {
+                        self.echolocation.apply_tuning(action);
+                        return KeyboardAction::None;
+                    }
+                }
                 (AppMode::Zombies, PhysicalKey::Code(KeyCode::KeyR)) => {
                     self.zombies.reload();
                     return KeyboardAction::None;
@@ -822,17 +921,33 @@ impl AppState {
                 scene
             }
             AppMode::EchoLocation => {
-                update_walking_camera_with_profile(
-                    &mut self.camera,
-                    &self.input,
+                if self.echolocation.run_status == EchoRunStatus::Active {
+                    update_walking_camera_with_profile(
+                        &mut self.camera,
+                        &self.input,
+                        &self.echolocation.world,
+                        ECHOLOCATION_WALK_PROFILE,
+                        dt,
+                    );
+                }
+                self.audio_events
+                    .extend(self.echolocation.update_with_pursuer_from_listener(
+                        dt,
+                        self.camera.position,
+                        self.camera.right(),
+                    ));
+                let mut scene = self.city_builder.build_with_visibility(
                     &self.echolocation.world,
-                    ECHOLOCATION_WALK_PROFILE,
-                    dt,
+                    &self.camera,
+                    self.tick,
+                    |hit| self.echolocation.face_is_revealed(hit.coord, hit.normal),
                 );
-                self.echolocation.update(dt);
-                let visible_world = self.echolocation.visible_world(self.camera.position);
-                let mut scene = self.city_builder.build(&visible_world, &self.camera, self.tick);
-                render_echolocation_scene(&mut scene, &self.echolocation, mouse_captured);
+                render_echolocation_scene(
+                    &mut scene,
+                    &self.echolocation,
+                    &self.camera,
+                    mouse_captured,
+                );
                 scene
             }
         }
@@ -880,7 +995,9 @@ impl AppState {
             self.audio_events
                 .extend(self.zombies.fire(&self.zombies_map, &self.camera));
         } else if self.mode == AppMode::EchoLocation {
-            self.echolocation.emit_ping(self.camera.position);
+            if self.echolocation.emit_ping(self.camera.position) {
+                self.audio_events.push(SoundEffect::EchoPing);
+            }
         }
     }
 
@@ -1488,9 +1605,12 @@ impl DroneGateRunnerState {
 struct EchoLocationConfig {
     ping_speed: f32,
     max_range: f32,
-    base_thickness: f32,
-    thickness_variation: f32,
-    fade_seconds: f32,
+    initial_energy: f32,
+    minimum_visible_energy: f32,
+    echo_strength: f32,
+    distance_attenuation: f32,
+    max_active_waves: usize,
+    reveal_seconds: f32,
 }
 
 impl Default for EchoLocationConfig {
@@ -1498,39 +1618,88 @@ impl Default for EchoLocationConfig {
         Self {
             ping_speed: ECHOLOCATION_PING_SPEED,
             max_range: ECHOLOCATION_PING_MAX_RANGE,
-            base_thickness: ECHOLOCATION_PING_BASE_THICKNESS,
-            thickness_variation: ECHOLOCATION_PING_THICKNESS_VARIATION,
-            fade_seconds: ECHOLOCATION_PING_FADE_SECONDS,
+            initial_energy: 1.0,
+            minimum_visible_energy: 0.08,
+            echo_strength: 0.0,
+            distance_attenuation: 0.055,
+            max_active_waves: 24,
+            reveal_seconds: 1.2,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct EchoPing {
-    origin: Vec3,
-    age: f32,
-    phase: f32,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EchoImpact {
+    solid_voxel: VoxelCoord,
+    cell: VoxelCell,
+    source_air_cell: VoxelCoord,
+    arrival_distance_milli: u32,
 }
 
-impl EchoPing {
+#[derive(Clone, Debug, PartialEq)]
+struct EchoWave {
+    age: f32,
+    energy: f32,
+    bounce_depth: u8,
+    impacts: Vec<EchoImpact>,
+    next_impact: usize,
+}
+
+impl EchoWave {
     fn radius(&self, config: EchoLocationConfig) -> f32 {
         self.age * config.ping_speed
     }
 
-    fn thickness_at(&self, distance: f32, config: EchoLocationConfig) -> f32 {
-        let wave = (distance * 0.19 + self.phase).sin() * 0.5 + 0.5;
-        config.base_thickness + config.thickness_variation * wave
+    fn energy_at(&self, distance: f32, config: EchoLocationConfig) -> f32 {
+        self.energy / (1.0 + config.distance_attenuation * distance.max(0.0))
     }
+}
 
-    fn illuminates(&self, point: Vec3, config: EchoLocationConfig) -> bool {
-        let distance = (point - self.origin).length();
-        let radius = self.radius(config);
-        if radius > config.max_range || distance > config.max_range {
-            return false;
-        }
-        let thickness = self.thickness_at(distance, config);
-        (distance - radius).abs() <= thickness
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EchoTuningAction {
+    IncreaseRange,
+    DecreaseRange,
+    IncreaseSpeed,
+    DecreaseSpeed,
+    IncreaseStrength,
+    DecreaseStrength,
+    ResetDefaults,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EchoReveal {
+    cell: VoxelCell,
+    strength: f32,
+    remaining_seconds: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EchoRunStatus {
+    Active,
+    Dead,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EchoFootprint {
+    position: Vec3,
+    remaining_seconds: f32,
+    left: bool,
+    travel_direction: Vec3,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct EchoStepWave {
+    origin: Vec3,
+    age: f32,
+    impacts: Vec<EchoImpact>,
+    next_impact: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EchoPursuer {
+    position: Vec3,
+    step_timer: f32,
+    travel_direction: Vec3,
 }
 
 #[derive(Clone, Debug)]
@@ -1539,67 +1708,533 @@ struct EchoLocationState {
     config: EchoLocationConfig,
     world: VoxelWorld,
     start_position: Vec3,
-    pings: Vec<EchoPing>,
-    emitted_pings: u64,
+    waves: Vec<EchoWave>,
+    revealed: HashMap<VoxelCoord, EchoReveal>,
+    ping_cooldown_remaining: f32,
+    tuning_open: bool,
+    show_full_map: bool,
+    pursuer: EchoPursuer,
+    footprints: Vec<EchoFootprint>,
+    step_waves: Vec<EchoStepWave>,
+    run_status: EchoRunStatus,
 }
 
 impl EchoLocationState {
     fn new_seeded(seed: u64) -> Self {
         let (world, start_position) = build_echolocation_map(seed);
+        let pursuer_position = echo_pursuer_spawn_position(&world, start_position)
+            .expect("echolocation map must contain a reachable pursuer spawn");
         Self {
             seed,
             config: EchoLocationConfig::default(),
             world,
             start_position,
-            pings: Vec::new(),
-            emitted_pings: 0,
+            waves: Vec::new(),
+            revealed: HashMap::new(),
+            ping_cooldown_remaining: 0.0,
+            tuning_open: false,
+            show_full_map: false,
+            pursuer: EchoPursuer {
+                position: pursuer_position,
+                step_timer: 0.0,
+                travel_direction: Vec3::new(0.0, 0.0, 1.0),
+            },
+            footprints: Vec::new(),
+            step_waves: Vec::new(),
+            run_status: EchoRunStatus::Active,
         }
     }
 
-    fn emit_ping(&mut self, origin: Vec3) {
-        let phase = ((self.seed ^ self.emitted_pings).wrapping_mul(0x9E37_79B9) as f32).sin();
-        self.pings.push(EchoPing {
-            origin,
-            age: 0.0,
-            phase,
-        });
-        self.emitted_pings += 1;
+    fn emit_ping(&mut self, origin: Vec3) -> bool {
+        if self.run_status != EchoRunStatus::Active || self.ping_cooldown_remaining > 0.0 {
+            return false;
+        }
+        if self.waves.len() >= self.config.max_active_waves {
+            let drop_index = self
+                .waves
+                .iter()
+                .position(|wave| wave.bounce_depth > 0)
+                .unwrap_or(0);
+            self.waves.remove(drop_index);
+        }
+        let source = voxel_coord_at(origin);
+        self.waves.push(build_echo_wave(
+            &self.world,
+            source,
+            self.config.initial_energy,
+            0,
+            self.config.max_range,
+        ));
+        self.ping_cooldown_remaining = ECHOLOCATION_PING_COOLDOWN_SECONDS;
+        true
     }
 
+    /// Retained for deterministic echo-wave tests; gameplay supplies the live player position.
+    #[cfg(test)]
     fn update(&mut self, dt: f32) {
-        for ping in &mut self.pings {
-            ping.age += dt;
-        }
-        let max_age = self.config.max_range / self.config.ping_speed + self.config.fade_seconds;
-        self.pings.retain(|ping| ping.age <= max_age);
+        let _ = self.update_with_pursuer(dt, self.start_position);
     }
 
-    fn visible_world(&self, _player_position: Vec3) -> VoxelWorld {
-        let mut visible = VoxelWorld::new();
-        let Some(bounds) = self.world.bounds() else {
-            return visible;
-        };
+    #[cfg(test)]
+    fn update_with_pursuer(&mut self, dt: f32, player_position: Vec3) -> Vec<SoundEffect> {
+        self.update_with_pursuer_from_listener(dt, player_position, Vec3::new(1.0, 0.0, 0.0))
+    }
 
-        for y in bounds.min.y..=bounds.max.y {
-            for z in bounds.min.z..=bounds.max.z {
-                for x in bounds.min.x..=bounds.max.x {
-                    let coord = VoxelCoord::new(x, y, z);
-                    let Some(cell) = self.world.get(coord) else {
-                        continue;
-                    };
-                    let center = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
-                    if self
-                        .pings
-                        .iter()
-                        .any(|ping| ping.illuminates(center, self.config))
-                    {
-                        visible.set(coord, cell);
+    fn update_with_pursuer_from_listener(
+        &mut self,
+        dt: f32,
+        player_position: Vec3,
+        listener_right: Vec3,
+    ) -> Vec<SoundEffect> {
+        let dt = dt.max(0.0);
+        if self.run_status != EchoRunStatus::Active {
+            return Vec::new();
+        }
+        let mut effects = Vec::new();
+        self.update_pursuer(dt, player_position, listener_right, &mut effects);
+        if self.run_status == EchoRunStatus::Dead {
+            return effects;
+        }
+        self.ping_cooldown_remaining = (self.ping_cooldown_remaining - dt).max(0.0);
+        let config = self.config;
+        let mut secondary_sources = Vec::new();
+        let mut reveals = Vec::new();
+        for reveal in self.revealed.values_mut() {
+            reveal.remaining_seconds -= dt;
+        }
+        self.revealed
+            .retain(|_, reveal| reveal.remaining_seconds > 0.0);
+        for wave in &mut self.waves {
+            wave.age += dt;
+            let radius_milli = (wave.radius(config).max(0.0) * 1000.0) as u32;
+            let can_reflect = wave.bounce_depth < echo_bounce_limit(config.echo_strength);
+            while let Some(impact) = wave.impacts.get(wave.next_impact).copied() {
+                if impact.arrival_distance_milli > radius_milli {
+                    break;
+                }
+                wave.next_impact += 1;
+                let distance = impact.arrival_distance_milli as f32 / 1000.0;
+                let impact_energy = wave.energy_at(distance, config);
+                reveals.push((
+                    impact.solid_voxel,
+                    impact.cell,
+                    impact_energy,
+                    impact.source_air_cell,
+                ));
+                if can_reflect {
+                    let reflected_energy =
+                        impact_energy * echo_reflection_gain(config.echo_strength);
+                    if reflected_energy >= config.minimum_visible_energy {
+                        secondary_sources.push((
+                            impact.source_air_cell,
+                            reflected_energy,
+                            wave.bounce_depth + 1,
+                        ));
                     }
                 }
             }
         }
+        // Footsteps use the same surface-return path as the player's pulse, but
+        // their range is capped tightly and they never create reflected waves.
+        for wave in &mut self.step_waves {
+            let radius_milli = (wave.age * ECHO_STEP_WAVE_SPEED * 1000.0) as u32;
+            while let Some(impact) = wave.impacts.get(wave.next_impact).copied() {
+                if impact.arrival_distance_milli > radius_milli {
+                    break;
+                }
+                wave.next_impact += 1;
+                reveals.push((impact.solid_voxel, impact.cell, 1.0, impact.source_air_cell));
+            }
+        }
+        for (coord, cell, strength, source_air_cell) in reveals {
+            self.record_reveal(coord, cell, strength, source_air_cell);
+        }
+        self.step_waves.retain(|wave| {
+            wave.age * ECHO_STEP_WAVE_SPEED < ECHO_STEP_WAVE_MAX_RADIUS
+                && wave.next_impact < wave.impacts.len()
+        });
+        self.waves
+            .retain(|wave| wave.next_impact < wave.impacts.len());
+        let slots = config.max_active_waves.saturating_sub(self.waves.len());
+        self.waves
+            .extend(secondary_sources.into_iter().take(slots).map(
+                |(source, energy, bounce_depth)| {
+                    let range = config.max_range * energy.clamp(0.2, 1.0);
+                    build_echo_wave(&self.world, source, energy, bounce_depth, range)
+                },
+            ));
+        effects
+    }
 
+    fn update_pursuer(
+        &mut self,
+        dt: f32,
+        player_position: Vec3,
+        listener_right: Vec3,
+        effects: &mut Vec<SoundEffect>,
+    ) {
+        let Some(navigation) =
+            NavigationField::build(&self.world, player_position, ECHOLOCATION_WALK_PROFILE)
+        else {
+            return;
+        };
+        if let Some(step) = navigation.next_step(self.pursuer.position) {
+            // Never overshoot a navigation-cell center: a long render frame
+            // otherwise can push the pursuer into a wall-adjacent collision zone
+            // where it oscillates instead of entering the next corridor.
+            let candidate = approach_vec3(
+                self.pursuer.position,
+                Vec3::new(step.x, self.pursuer.position.y, step.z),
+                ECHO_PURSUER_SPEED * dt,
+            );
+            let previous = self.pursuer.position;
+            self.pursuer.position = move_walking_with_collision(
+                self.pursuer.position,
+                candidate - self.pursuer.position,
+                &self.world,
+                ECHOLOCATION_WALK_PROFILE,
+            );
+            let moved = horizontal(self.pursuer.position - previous);
+            if moved.length() > f32::EPSILON {
+                self.pursuer.travel_direction = moved.normalized();
+            }
+        }
+        self.pursuer.step_timer -= dt;
+        while self.pursuer.step_timer <= 0.0 {
+            self.pursuer.step_timer += ECHO_PURSUER_STEP_SECONDS;
+            let side = Vec3::new(
+                -self.pursuer.travel_direction.z,
+                0.0,
+                self.pursuer.travel_direction.x,
+            );
+            for (foot_offset, left) in [(-0.13, true), (0.13, false)] {
+                let foot_position = self.pursuer.position + side * foot_offset
+                    - self.pursuer.travel_direction * 0.1
+                    + Vec3::new(0.0, -ECHOLOCATION_WALK_PROFILE.eye_height + 0.08, 0.0);
+                self.footprints.push(EchoFootprint {
+                    position: foot_position,
+                    remaining_seconds: ECHO_FOOTPRINT_LIFETIME,
+                    left,
+                    travel_direction: self.pursuer.travel_direction,
+                });
+                self.step_waves.push(EchoStepWave {
+                    origin: foot_position,
+                    age: 0.0,
+                    impacts: build_echo_wave(
+                        &self.world,
+                        echo_pursuer_foot_source(foot_position),
+                        1.0,
+                        0,
+                        ECHO_STEP_WAVE_MAX_RADIUS,
+                    )
+                    .impacts,
+                    next_impact: 0,
+                });
+            }
+            effects.push(invisible_footstep_effect(
+                self.pursuer.position,
+                player_position,
+                listener_right,
+            ));
+        }
+        for footprint in &mut self.footprints {
+            footprint.remaining_seconds -= dt;
+        }
+        self.footprints
+            .retain(|print| print.remaining_seconds > 0.0);
+        for wave in &mut self.step_waves {
+            wave.age += dt;
+        }
+        if horizontal_distance(self.pursuer.position, player_position)
+            <= ECHO_PURSUER_CONTACT_RADIUS
+        {
+            self.run_status = EchoRunStatus::Dead;
+        }
+    }
+
+    #[cfg(test)]
+    fn visible_world(&self, _player_position: Vec3) -> VoxelWorld {
+        if self.show_full_map {
+            return self.world.clone();
+        }
+        let mut visible = VoxelWorld::new();
+        for (coord, reveal) in &self.revealed {
+            if reveal.strength >= self.config.minimum_visible_energy {
+                visible.set(*coord, reveal.cell);
+            }
+        }
         visible
+    }
+
+    fn record_reveal(
+        &mut self,
+        coord: VoxelCoord,
+        cell: VoxelCell,
+        strength: f32,
+        _source_air_cell: VoxelCoord,
+    ) {
+        if strength < self.config.minimum_visible_energy {
+            return;
+        }
+        self.revealed
+            .entry(coord)
+            .and_modify(|reveal| {
+                reveal.cell = cell;
+                reveal.strength = reveal.strength.max(strength);
+                reveal.remaining_seconds = self.config.reveal_seconds;
+            })
+            .or_insert(EchoReveal {
+                cell,
+                strength,
+                remaining_seconds: self.config.reveal_seconds,
+            });
+    }
+
+    fn face_is_revealed(&self, coord: VoxelCoord, normal: Vec3) -> bool {
+        if self.show_full_map {
+            return true;
+        }
+        let voxel_revealed = self
+            .revealed
+            .get(&coord)
+            .map(|reveal| reveal.strength >= self.config.minimum_visible_energy)
+            .unwrap_or(false);
+        let neighbor = VoxelCoord::new(
+            coord.x + normal.x.round() as i32,
+            coord.y + normal.y.round() as i32,
+            coord.z + normal.z.round() as i32,
+        );
+        voxel_revealed && self.world.get(neighbor).is_none()
+    }
+
+    fn reflected_pulse_count(&self) -> usize {
+        self.waves
+            .iter()
+            .filter(|wave| wave.bounce_depth > 0)
+            .count()
+    }
+
+    fn toggle_tuning(&mut self) {
+        self.tuning_open = !self.tuning_open;
+    }
+
+    fn toggle_full_map(&mut self) {
+        self.show_full_map = !self.show_full_map;
+    }
+
+    fn apply_tuning(&mut self, action: EchoTuningAction) {
+        match action {
+            EchoTuningAction::IncreaseRange => {
+                self.config.max_range = (self.config.max_range + 4.0).min(160.0)
+            }
+            EchoTuningAction::DecreaseRange => {
+                self.config.max_range = (self.config.max_range - 4.0).max(12.0)
+            }
+            EchoTuningAction::IncreaseSpeed => {
+                self.config.ping_speed = (self.config.ping_speed + 2.0).min(100.0)
+            }
+            EchoTuningAction::DecreaseSpeed => {
+                self.config.ping_speed = (self.config.ping_speed - 2.0).max(6.0)
+            }
+            EchoTuningAction::IncreaseStrength => {
+                self.config.echo_strength = (self.config.echo_strength + 0.05).min(1.0)
+            }
+            EchoTuningAction::DecreaseStrength => {
+                self.config.echo_strength = (self.config.echo_strength - 0.05).max(0.0)
+            }
+            EchoTuningAction::ResetDefaults => self.config = EchoLocationConfig::default(),
+        }
+    }
+}
+
+fn voxel_coord_at(point: Vec3) -> VoxelCoord {
+    VoxelCoord::new(
+        point.x.floor() as i32,
+        point.y.floor() as i32,
+        point.z.floor() as i32,
+    )
+}
+
+fn for_each_voxel(world: &VoxelWorld, mut visit: impl FnMut(VoxelCoord, VoxelCell)) {
+    let Some(bounds) = world.bounds() else {
+        return;
+    };
+    for y in bounds.min.y..=bounds.max.y {
+        for z in bounds.min.z..=bounds.max.z {
+            for x in bounds.min.x..=bounds.max.x {
+                let coord = VoxelCoord::new(x, y, z);
+                if let Some(cell) = world.get(coord) {
+                    visit(coord, cell);
+                }
+            }
+        }
+    }
+}
+
+fn build_echo_wave(
+    world: &VoxelWorld,
+    source: VoxelCoord,
+    energy: f32,
+    bounce_depth: u8,
+    max_range: f32,
+) -> EchoWave {
+    EchoWave {
+        age: 0.0,
+        energy,
+        bounce_depth,
+        impacts: echo_impacts(world, source, max_range),
+        next_impact: 0,
+    }
+}
+
+fn echo_impacts(world: &VoxelWorld, source: VoxelCoord, max_range: f32) -> Vec<EchoImpact> {
+    let Some(bounds) = world.bounds() else {
+        return Vec::new();
+    };
+    if !echo_coord_in_bounds(source, bounds.min, bounds.max) || world.get(source).is_some() {
+        return Vec::new();
+    }
+
+    let max_distance = (max_range.max(0.0) * 1000.0).floor() as u32;
+    let mut queue = BinaryHeap::new();
+    let mut distances = HashMap::new();
+    let mut impacts = HashMap::<VoxelCoord, EchoImpact>::new();
+    distances.insert(source, 0_u32);
+    queue.push((Reverse(0_u32), source));
+
+    while let Some((Reverse(distance), air_cell)) = queue.pop() {
+        if distances.get(&air_cell).copied() != Some(distance) {
+            continue;
+        }
+
+        for (dx, dy, dz) in [
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ] {
+            let solid_voxel = echo_offset_coord(air_cell, dx, dy, dz);
+            let arrival_distance_milli = distance.saturating_add(1000);
+            if arrival_distance_milli > max_distance {
+                continue;
+            }
+            let Some(cell) = world.get(solid_voxel) else {
+                continue;
+            };
+            let candidate = EchoImpact {
+                solid_voxel,
+                cell,
+                source_air_cell: air_cell,
+                arrival_distance_milli,
+            };
+            if impacts.get(&solid_voxel).map_or(true, |current| {
+                arrival_distance_milli < current.arrival_distance_milli
+            }) {
+                impacts.insert(solid_voxel, candidate);
+            }
+        }
+
+        for dx in -1_i32..=1 {
+            for dy in -1_i32..=1 {
+                for dz in -1_i32..=1 {
+                    if dx == 0 && dy == 0 && dz == 0 {
+                        continue;
+                    }
+                    let neighbor = echo_offset_coord(air_cell, dx, dy, dz);
+                    if !echo_coord_in_bounds(neighbor, bounds.min, bounds.max)
+                        || world.get(neighbor).is_some()
+                        || !echo_diagonal_move_is_clear(world, air_cell, dx, dy, dz)
+                    {
+                        continue;
+                    }
+                    let changed_axes = dx.unsigned_abs() + dy.unsigned_abs() + dz.unsigned_abs();
+                    let step_cost = match changed_axes {
+                        1 => 1000,
+                        2 => 1414,
+                        3 => 1732,
+                        _ => unreachable!(),
+                    };
+                    let next_distance = distance + step_cost;
+                    if next_distance > max_distance
+                        || distances
+                            .get(&neighbor)
+                            .is_some_and(|known| *known <= next_distance)
+                    {
+                        continue;
+                    }
+                    distances.insert(neighbor, next_distance);
+                    queue.push((Reverse(next_distance), neighbor));
+                }
+            }
+        }
+    }
+
+    let mut impacts: Vec<_> = impacts.into_values().collect();
+    impacts.sort_by_key(|impact| (impact.arrival_distance_milli, impact.solid_voxel));
+    impacts
+}
+
+fn echo_coord_in_bounds(coord: VoxelCoord, min: VoxelCoord, max: VoxelCoord) -> bool {
+    (min.x..=max.x).contains(&coord.x)
+        && (min.y..=max.y).contains(&coord.y)
+        && (min.z..=max.z).contains(&coord.z)
+}
+
+fn echo_offset_coord(coord: VoxelCoord, dx: i32, dy: i32, dz: i32) -> VoxelCoord {
+    VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz)
+}
+
+fn echo_diagonal_move_is_clear(
+    world: &VoxelWorld,
+    source: VoxelCoord,
+    dx: i32,
+    dy: i32,
+    dz: i32,
+) -> bool {
+    let mut axes = [(0, 0, 0); 3];
+    let mut axis_count = 0;
+    for axis in [(dx, 0, 0), (0, dy, 0), (0, 0, dz)] {
+        if axis != (0, 0, 0) {
+            axes[axis_count] = axis;
+            axis_count += 1;
+        }
+    }
+    if axis_count <= 1 {
+        return true;
+    }
+
+    let full_mask = (1_usize << axis_count) - 1;
+    for mask in 1..full_mask {
+        let mut offset = (0, 0, 0);
+        for (index, axis) in axes[..axis_count].iter().enumerate() {
+            if mask & (1 << index) != 0 {
+                offset.0 += axis.0;
+                offset.1 += axis.1;
+                offset.2 += axis.2;
+            }
+        }
+        if world
+            .get(echo_offset_coord(source, offset.0, offset.1, offset.2))
+            .is_some()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn echo_reflection_gain(strength: f32) -> f32 {
+    0.15 + strength.clamp(0.0, 1.0) * 0.85
+}
+
+fn echo_bounce_limit(strength: f32) -> u8 {
+    match strength {
+        strength if strength < 0.25 => 0,
+        strength if strength < 0.65 => 1,
+        strength if strength < 0.90 => 2,
+        _ => 3,
     }
 }
 
@@ -2067,10 +2702,19 @@ impl LiminalState {
 
 #[derive(Clone, Debug)]
 struct PreviewAsset {
-    name: &'static str,
+    name: String,
     world: VoxelWorld,
     center: Vec3,
     radius: f32,
+    voxel_size: f32,
+    dimensions: [i32; 3],
+    source: AssetSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AssetSource {
+    BuiltIn,
+    Imported,
 }
 
 #[derive(Clone, Debug)]
@@ -2134,13 +2778,17 @@ impl VoxelSandboxState {
 }
 
 impl PreviewAsset {
-    fn new(name: &'static str, world: VoxelWorld) -> Self {
+    fn new(name: impl Into<String>, world: VoxelWorld) -> Self {
         let (center, radius) = asset_bounds(&world);
+        let dimensions = asset_dimensions(&world);
         Self {
-            name,
+            name: name.into(),
             world,
             center,
             radius,
+            voxel_size: 1.0,
+            dimensions,
+            source: AssetSource::BuiltIn,
         }
     }
 }
@@ -2148,6 +2796,7 @@ impl PreviewAsset {
 #[derive(Clone, Debug)]
 struct AssetViewerState {
     assets: Vec<PreviewAsset>,
+    load_errors: Vec<String>,
     selected: usize,
     camera: Camera,
     distance: f32,
@@ -2155,10 +2804,11 @@ struct AssetViewerState {
 
 impl AssetViewerState {
     fn new() -> Self {
-        let assets = build_asset_catalog();
+        let (assets, load_errors) = build_asset_catalog();
         let camera = asset_viewer_start_camera(&assets[0], ASSET_VIEWER_DEFAULT_DISTANCE);
         let mut viewer = Self {
             assets,
+            load_errors,
             selected: 0,
             camera,
             distance: ASSET_VIEWER_DEFAULT_DISTANCE,
@@ -2291,19 +2941,20 @@ impl ShooterState {
                 continue;
             }
 
+            let profile = enemy.profile();
             enemy.attack_cooldown = (enemy.attack_cooldown - dt).max(0.0);
             let to_player = horizontal(player_position - enemy.position);
             let distance = horizontal_distance(enemy.position, player_position);
 
-            if distance <= ENEMY_ATTACK_RANGE {
+            if distance <= profile.attack_range {
                 if enemy.attack_cooldown <= 0.0 {
-                    self.health = (self.health - ENEMY_ATTACK_DAMAGE).max(0);
-                    enemy.attack_cooldown = 1.1;
+                    self.health = (self.health - profile.attack_damage).max(0);
+                    enemy.attack_cooldown = profile.attack_cooldown;
                     player_hurt = true;
                 }
             } else if distance < 80.0 && to_player.length() > f32::EPSILON {
-                let candidate = enemy.position + to_player * ENEMY_SPEED * dt;
-                let candidate = Vec3::new(candidate.x, WALK_EYE_HEIGHT, candidate.z);
+                let candidate = enemy.position + to_player * profile.speed * dt;
+                let candidate = Vec3::new(candidate.x, profile.eye_height, candidate.z);
                 if can_walk_to(city, candidate) {
                     enemy.position.x = candidate.x;
                     enemy.position.z = candidate.z;
@@ -2333,8 +2984,7 @@ impl ShooterState {
         };
 
         let enemy = &mut self.enemies[index];
-        enemy.health = (enemy.health - WEAPON_DAMAGE).max(0);
-        if enemy.health == 0 {
+        if enemy.take_damage(WEAPON_DAMAGE) {
             self.kills += 1;
             effects.push(SoundEffect::EnemyDeath);
         } else {
@@ -2375,18 +3025,35 @@ impl BulletTrace {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Enemy {
+    enemy_type: EnemyType,
     position: Vec3,
     health: i32,
+    max_health: i32,
     attack_cooldown: f32,
 }
 
 impl Enemy {
-    fn new(x: f32, z: f32) -> Self {
+    fn new(enemy_type: EnemyType, position: Vec3, round: u32) -> Self {
+        let profile = enemy_type.profile();
+        let max_health =
+            profile.base_health + profile.health_per_round * round.saturating_sub(1) as i32;
         Self {
-            position: Vec3::new(x, 0.0, z),
-            health: 100,
+            enemy_type,
+            position,
+            health: max_health,
+            max_health,
             attack_cooldown: 0.0,
         }
+    }
+
+    fn profile(self) -> EnemyProfile {
+        self.enemy_type.profile()
+    }
+
+    fn take_damage(&mut self, amount: i32) -> bool {
+        let was_alive = self.is_alive();
+        self.health = (self.health - amount.max(0)).max(0);
+        was_alive && !self.is_alive()
     }
 
     fn is_alive(self) -> bool {
@@ -2394,18 +3061,18 @@ impl Enemy {
     }
 
     fn contains_voxel(self, coord: VoxelCoord) -> bool {
-        npc_body_contains_voxel(self.position, coord)
+        enemy_body_contains_voxel(self.enemy_type, self.position, coord)
     }
 }
 
 fn spawn_enemies() -> Vec<Enemy> {
     vec![
-        Enemy::new(0.5, -34.5),
-        Enemy::new(-42.5, -22.5),
-        Enemy::new(39.5, -5.5),
-        Enemy::new(-18.5, 39.5),
-        Enemy::new(22.5, 42.5),
-        Enemy::new(0.5, 53.5),
+        Enemy::new(EnemyType::Clown, Vec3::new(0.5, 0.0, -34.5), 1),
+        Enemy::new(EnemyType::Clown, Vec3::new(-42.5, 0.0, -22.5), 1),
+        Enemy::new(EnemyType::Clown, Vec3::new(39.5, 0.0, -5.5), 1),
+        Enemy::new(EnemyType::Clown, Vec3::new(-18.5, 0.0, 39.5), 1),
+        Enemy::new(EnemyType::Clown, Vec3::new(22.5, 0.0, 42.5), 1),
+        Enemy::new(EnemyType::Clown, Vec3::new(0.5, 0.0, 53.5), 1),
     ]
 }
 
@@ -2457,37 +3124,9 @@ struct WallWeapon {
     bought: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Zombie {
-    position: Vec3,
-    health: i32,
-    max_health: i32,
-    attack_cooldown: f32,
-}
-
-impl Zombie {
-    fn new(position: Vec3, round: u32) -> Self {
-        let max_health = 90 + (round.saturating_sub(1) as i32 * 34);
-        Self {
-            position,
-            health: max_health,
-            max_health,
-            attack_cooldown: 0.0,
-        }
-    }
-
-    fn is_alive(self) -> bool {
-        self.health > 0
-    }
-
-    fn contains_voxel(self, coord: VoxelCoord) -> bool {
-        zombie_body_contains_voxel(self.position, coord)
-    }
-}
-
 #[derive(Clone, Debug)]
 struct ZombiesState {
-    zombies: Vec<Zombie>,
+    zombies: Vec<Enemy>,
     bullet_traces: Vec<BulletTrace>,
     round: u32,
     queued_spawns: u32,
@@ -2628,8 +3267,7 @@ impl ZombiesState {
             }
         }
 
-        let navigation =
-            ZombieNavigationField::build(world, player_position, zombie_walk_profile());
+        let navigation = NavigationField::build(world, player_position, zombie_walk_profile());
         self.spawn_timer -= dt;
         while self.queued_spawns > 0 && self.spawn_timer <= 0.0 {
             if !self.spawn_one(world) {
@@ -2646,8 +3284,9 @@ impl ZombiesState {
             }
 
             zombie.attack_cooldown = (zombie.attack_cooldown - dt).max(0.0);
+            let profile = zombie.profile();
             let distance = horizontal_distance(zombie.position, player_position);
-            if distance <= ZOMBIE_ATTACK_RANGE {
+            if distance <= profile.attack_range {
                 if zombie.attack_cooldown <= 0.0 {
                     self.player_hits += 1;
                     self.damage_flash_timer = ZOMBIE_HIT_FLASH_TIME;
@@ -2665,8 +3304,8 @@ impl ZombiesState {
                 .and_then(|field| field.next_step(zombie.position))
             {
                 let candidate =
-                    zombie.position + horizontal(step - zombie.position) * ZOMBIE_WALK_SPEED * dt;
-                let candidate = Vec3::new(candidate.x, ZOMBIE_EYE_HEIGHT, candidate.z);
+                    zombie.position + horizontal(step - zombie.position) * profile.speed * dt;
+                let candidate = Vec3::new(candidate.x, profile.eye_height, candidate.z);
                 if can_walk_to_on_ground(world, candidate, zombie_walk_profile()) {
                     zombie.position.x = candidate.x;
                     zombie.position.z = candidate.z;
@@ -2704,10 +3343,10 @@ impl ZombiesState {
         };
 
         let zombie = &mut self.zombies[index];
-        zombie.health = (zombie.health - self.weapon.damage()).max(0);
+        let killed = zombie.take_damage(self.weapon.damage());
         self.points += ZOMBIE_HIT_POINTS;
         self.total_points += ZOMBIE_HIT_POINTS;
-        if zombie.health == 0 {
+        if killed {
             self.points += ZOMBIE_KILL_POINTS;
             self.total_points += ZOMBIE_KILL_POINTS;
             self.kills += 1;
@@ -2770,7 +3409,8 @@ impl ZombiesState {
             return false;
         }
         let index = (self.zombies.len() + self.round as usize * 3) % spawns.len();
-        self.zombies.push(Zombie::new(spawns[index], self.round));
+        self.zombies
+            .push(Enemy::new(EnemyType::Zombie, spawns[index], self.round));
         true
     }
 
@@ -2807,10 +3447,11 @@ fn moving_on_ground(input: &PlayerInput) -> bool {
 }
 
 fn zombie_walk_profile() -> WalkProfile {
+    let profile = EnemyType::Zombie.profile();
     WalkProfile {
-        eye_height: ZOMBIE_EYE_HEIGHT,
-        speed: ZOMBIE_WALK_SPEED,
-        collision_radius: ZOMBIE_COLLISION_RADIUS,
+        eye_height: profile.eye_height,
+        speed: profile.speed,
+        collision_radius: profile.collision_radius,
     }
 }
 
@@ -2909,15 +3550,44 @@ fn zombie_spawn_points(state: &ZombiesState, world: &VoxelWorld) -> Vec<Vec3> {
     zombie_spawn_candidates(state, world)
 }
 
-struct ZombieNavigationField {
+/// Select the farthest cell in the player's connected walkable component.
+/// This makes the invisible pursuer deterministic and prevents impossible
+/// starts across a sealed wall.
+fn echo_pursuer_spawn_position(world: &VoxelWorld, start: Vec3) -> Option<Vec3> {
+    let navigation = NavigationField::build(world, start, ECHOLOCATION_WALK_PROFILE)?;
+    let mut farthest = None;
+    for z in navigation.min_z..navigation.min_z + navigation.height as i32 {
+        for x in navigation.min_x..navigation.min_x + navigation.width as i32 {
+            let Some(distance) = navigation.distance(x, z) else {
+                continue;
+            };
+            if distance == u16::MAX {
+                continue;
+            }
+            if farthest.map(|(best, _, _)| distance > best).unwrap_or(true) {
+                farthest = Some((distance, x, z));
+            }
+        }
+    }
+    farthest.map(|(_, x, z)| {
+        Vec3::new(
+            x as f32 + 0.5,
+            ECHOLOCATION_WALK_PROFILE.eye_height,
+            z as f32 + 0.5,
+        )
+    })
+}
+
+struct NavigationField {
     min_x: i32,
     min_z: i32,
     width: usize,
     height: usize,
     distances: Vec<u16>,
+    eye_height: f32,
 }
 
-impl ZombieNavigationField {
+impl NavigationField {
     fn build(world: &VoxelWorld, target: Vec3, profile: WalkProfile) -> Option<Self> {
         let bounds = world.bounds()?;
         let min_x = bounds.min.x - 2;
@@ -2930,7 +3600,7 @@ impl ZombieNavigationField {
         let start_x = target.x.floor() as i32;
         let start_z = target.z.floor() as i32;
 
-        if !zombie_cell_is_walkable(world, start_x, start_z, profile) {
+        if !navigation_cell_is_walkable(world, start_x, start_z, profile) {
             return None;
         }
 
@@ -2944,7 +3614,7 @@ impl ZombieNavigationField {
             let current_distance = distances[current_index];
 
             for (nx, nz) in [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)] {
-                if !zombie_cell_is_walkable(world, nx, nz, profile) {
+                if !navigation_cell_is_walkable(world, nx, nz, profile) {
                     continue;
                 }
 
@@ -2965,6 +3635,7 @@ impl ZombieNavigationField {
             width,
             height,
             distances,
+            eye_height: profile.eye_height,
         })
     }
 
@@ -2973,7 +3644,7 @@ impl ZombieNavigationField {
         let z = position.z.floor() as i32;
         let current = self.distance(x, z)?;
         if current == 0 {
-            return Some(Vec3::new(x as f32 + 0.5, ZOMBIE_EYE_HEIGHT, z as f32 + 0.5));
+            return Some(Vec3::new(x as f32 + 0.5, self.eye_height, z as f32 + 0.5));
         }
 
         let mut best: Option<(u16, i32, i32)> = None;
@@ -2990,7 +3661,7 @@ impl ZombieNavigationField {
             }
         }
 
-        best.map(|(_, nx, nz)| Vec3::new(nx as f32 + 0.5, ZOMBIE_EYE_HEIGHT, nz as f32 + 0.5))
+        best.map(|(_, nx, nz)| Vec3::new(nx as f32 + 0.5, self.eye_height, nz as f32 + 0.5))
     }
 
     fn distance(&self, x: i32, z: i32) -> Option<u16> {
@@ -3015,7 +3686,7 @@ impl ZombieNavigationField {
     }
 }
 
-fn zombie_cell_is_walkable(world: &VoxelWorld, x: i32, z: i32, profile: WalkProfile) -> bool {
+fn navigation_cell_is_walkable(world: &VoxelWorld, x: i32, z: i32, profile: WalkProfile) -> bool {
     let position = Vec3::new(x as f32 + 0.5, profile.eye_height, z as f32 + 0.5);
     can_walk_to_on_ground(world, position, profile)
 }
@@ -3370,6 +4041,25 @@ fn horizontal_distance(a: Vec3, b: Vec3) -> f32 {
     Vec3::new(a.x - b.x, 0.0, a.z - b.z).length()
 }
 
+fn echo_pursuer_foot_source(position: Vec3) -> VoxelCoord {
+    // Floor is y=0 in the mode; y=1 is the walkable air cell directly above it.
+    VoxelCoord::new(position.x.floor() as i32, 1, position.z.floor() as i32)
+}
+
+fn invisible_footstep_effect(source: Vec3, listener: Vec3, listener_right: Vec3) -> SoundEffect {
+    let offset = Vec3::new(source.x - listener.x, 0.0, source.z - listener.z);
+    let distance = offset.length();
+    let right = horizontal(listener_right).normalized();
+    let pan = if distance > f32::EPSILON {
+        (offset.normalized().dot(right)).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+    // Keep far steps audible but clearly quieter than those in the same room.
+    let gain = 0.18 + 0.52 * (1.0 - distance / 42.0).clamp(0.0, 1.0);
+    SoundEffect::InvisibleFootstep { pan, gain }
+}
+
 fn has_line_of_sight(city: &VoxelWorld, origin: Vec3, target: Vec3) -> bool {
     let delta = target - origin;
     let distance = delta.length();
@@ -3378,6 +4068,19 @@ fn has_line_of_sight(city: &VoxelWorld, origin: Vec3, target: Vec3) -> bool {
     }
 
     raycast(city, Ray::new(origin, delta), distance - 0.35).is_none()
+}
+
+fn has_line_of_sight_to_voxel(
+    world: &VoxelWorld,
+    origin: Vec3,
+    target: Vec3,
+    target_voxel: VoxelCoord,
+) -> bool {
+    let delta = target - origin;
+    let distance = delta.length();
+    raycast(world, Ray::new(origin, delta), distance + 0.01)
+        .map(|hit| hit.coord == target_voxel)
+        .unwrap_or(true)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3468,41 +4171,7 @@ fn build_echolocation_map(seed: u64) -> (VoxelWorld, Vec3) {
     stamp_echo_corridor(&mut world, -2, -14, 4, 18);
     stamp_echo_corridor(&mut world, 4, -14, 20, -14);
     stamp_echo_corridor(&mut world, -8, 18, 18, 22);
-    clear_cuboid(
-        &mut world,
-        VoxelCoord::new(-22, 1, -2),
-        VoxelCoord::new(-22, 4, 2),
-    );
-    clear_cuboid(
-        &mut world,
-        VoxelCoord::new(-8, 1, -2),
-        VoxelCoord::new(-8, 4, 2),
-    );
-    clear_cuboid(
-        &mut world,
-        VoxelCoord::new(2, 1, -16),
-        VoxelCoord::new(6, 4, -16),
-    );
-    clear_cuboid(
-        &mut world,
-        VoxelCoord::new(18, 1, -16),
-        VoxelCoord::new(18, 4, -12),
-    );
-    clear_cuboid(
-        &mut world,
-        VoxelCoord::new(0, 1, -2),
-        VoxelCoord::new(4, 4, -2),
-    );
-    clear_cuboid(
-        &mut world,
-        VoxelCoord::new(-10, 1, 16),
-        VoxelCoord::new(-6, 4, 16),
-    );
-    clear_cuboid(
-        &mut world,
-        VoxelCoord::new(16, 1, 20),
-        VoxelCoord::new(16, 4, 24),
-    );
+    seal_echolocation_hull(&mut world);
 
     for _ in 0..8 {
         let x = rng.range_i32(-30, 30);
@@ -3554,30 +4223,6 @@ fn stamp_echo_room(world: &mut VoxelWorld, x: i32, z: i32, width: i32, depth: i3
         VoxelCoord::new(x + width, 6, z + depth),
         VoxelMaterial::ShipHull,
     );
-    fill_cuboid(
-        world,
-        VoxelCoord::new(x, 1, z),
-        VoxelCoord::new(x + width, 5, z),
-        VoxelMaterial::Stone,
-    );
-    fill_cuboid(
-        world,
-        VoxelCoord::new(x, 1, z + depth),
-        VoxelCoord::new(x + width, 5, z + depth),
-        VoxelMaterial::Stone,
-    );
-    fill_cuboid(
-        world,
-        VoxelCoord::new(x, 1, z),
-        VoxelCoord::new(x, 5, z + depth),
-        VoxelMaterial::Stone,
-    );
-    fill_cuboid(
-        world,
-        VoxelCoord::new(x + width, 1, z),
-        VoxelCoord::new(x + width, 5, z + depth),
-        VoxelMaterial::Stone,
-    );
 }
 
 fn stamp_echo_corridor(world: &mut VoxelWorld, x1: i32, z1: i32, x2: i32, z2: i32) {
@@ -3597,6 +4242,36 @@ fn stamp_echo_corridor(world: &mut VoxelWorld, x1: i32, z1: i32, x2: i32, z2: i3
         VoxelCoord::new(max_x, 6, max_z),
         VoxelMaterial::ShipHull,
     );
+}
+
+/// Seal the perimeter of the combined room-and-corridor floor plan once all
+/// of its pieces are stamped. This avoids gaps where overlapping pieces used
+/// to overwrite one another's partial walls.
+fn seal_echolocation_hull(world: &mut VoxelWorld) {
+    let mut floor_tiles = Vec::new();
+    for_each_voxel(world, |coord, cell| {
+        if coord.y == 0 && cell.material == VoxelMaterial::Basalt {
+            floor_tiles.push(coord);
+        }
+    });
+
+    for floor in floor_tiles {
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let neighbor = VoxelCoord::new(floor.x + dx, 0, floor.z + dz);
+            if world.get(neighbor).is_none() {
+                fill_cuboid(
+                    world,
+                    VoxelCoord::new(neighbor.x, 1, neighbor.z),
+                    VoxelCoord::new(neighbor.x, 5, neighbor.z),
+                    VoxelMaterial::Stone,
+                );
+                world.set(
+                    VoxelCoord::new(neighbor.x, 6, neighbor.z),
+                    VoxelCell::new(VoxelMaterial::ShipHull),
+                );
+            }
+        }
+    }
 }
 
 fn runtime_seed_nonce() -> u64 {
@@ -3698,25 +4373,27 @@ impl DroneGateCourseCursor {
 }
 
 fn generate_drone_gate_course(seed: u64, config: DroneGateRunnerConfig) -> DroneGateCourse {
-    generate_drone_gate_course_with_cursor(seed, config).0
+    let mut cursor = DroneGateCourseCursor::new(seed, config);
+    let positions: Vec<Vec3> = (0..config.course.gate_count)
+        .map(|_| cursor.next_position(config))
+        .collect();
+    DroneGateCourse {
+        seed,
+        name: "Relay Spine",
+        gates: drone_gate_targets_from_positions(&positions),
+    }
 }
 
 fn generate_drone_gate_course_with_cursor(
     seed: u64,
     config: DroneGateRunnerConfig,
 ) -> (DroneGateCourse, DroneGateCourseCursor) {
+    let course = generate_drone_gate_course(seed, config);
     let mut cursor = DroneGateCourseCursor::new(seed, config);
-    let positions: Vec<Vec3> = (0..config.course.gate_count)
-        .map(|_| cursor.next_position(config))
-        .collect();
-    (
-        DroneGateCourse {
-            seed,
-            name: "Relay Spine",
-            gates: drone_gate_targets_from_positions(&positions),
-        },
-        cursor,
-    )
+    for _ in 0..course.gates.len() {
+        cursor.next_position(config);
+    }
+    (course, cursor)
 }
 
 fn drone_gate_targets_from_positions(positions: &[Vec3]) -> Vec<DroneGateTarget> {
@@ -4624,7 +5301,7 @@ fn build_bar_scene() -> VoxelWorld {
     world
 }
 
-fn build_asset_catalog() -> Vec<PreviewAsset> {
+fn build_asset_catalog() -> (Vec<PreviewAsset>, Vec<String>) {
     let mut assets = vec![
         PreviewAsset::new(
             "standing bar patron",
@@ -4662,7 +5339,191 @@ fn build_asset_catalog() -> Vec<PreviewAsset> {
         build_drone_gate_asset(),
     ));
 
-    assets
+    let (imported, errors) = load_imported_assets();
+    assets.extend(imported);
+    (assets, errors)
+}
+
+#[derive(Debug, Deserialize)]
+struct VoxelAssetFile {
+    format_version: u32,
+    id: String,
+    name: String,
+    voxel_size: f32,
+    dimensions: [i32; 3],
+    #[serde(default)]
+    pivot: Option<[f32; 3]>,
+    palette: HashMap<String, String>,
+    layers: Vec<Vec<String>>,
+}
+
+fn load_imported_assets() -> (Vec<PreviewAsset>, Vec<String>) {
+    let Some(directory) = asset_directory() else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut files = match fs::read_dir(&directory) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            return (
+                Vec::new(),
+                vec![format!("{}: {}", directory.display(), error)],
+            )
+        }
+    };
+    files.sort();
+    let mut assets = Vec::new();
+    let mut errors = Vec::new();
+    let mut ids = HashMap::new();
+    for path in files {
+        match load_asset_file(&path) {
+            Ok((id, asset)) => {
+                if ids.insert(id.clone(), path.clone()).is_some() {
+                    errors.push(format!("{}: duplicate asset id '{}'", path.display(), id));
+                } else {
+                    assets.push(asset);
+                }
+            }
+            Err(error) => errors.push(format!("{}: {}", path.display(), error)),
+        }
+    }
+    (assets, errors)
+}
+
+fn asset_directory() -> Option<std::path::PathBuf> {
+    let candidates = [
+        std::env::current_dir()
+            .ok()
+            .map(|path| path.join("assets/voxel-assets")),
+        Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/voxel-assets")),
+    ];
+    candidates.into_iter().flatten().find(|path| path.is_dir())
+}
+
+fn load_asset_file(path: &Path) -> Result<(String, PreviewAsset), String> {
+    const MAX_DIMENSION: i32 = 128;
+    const MAX_VOXELS: usize = 262_144;
+    let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    if text.len() > 8 * 1024 * 1024 {
+        return Err("file exceeds 8 MiB limit".into());
+    }
+    let file: VoxelAssetFile = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    if file.format_version != 1 {
+        return Err("format_version must be 1".into());
+    }
+    if file.id.trim().is_empty() || file.name.trim().is_empty() {
+        return Err("id and name are required".into());
+    }
+    if ![1.0, 0.5, 0.25, 0.125].contains(&file.voxel_size) {
+        return Err("voxel_size must be 1, 0.5, 0.25, or 0.125".into());
+    }
+    if file
+        .dimensions
+        .iter()
+        .any(|&dimension| !(1..=MAX_DIMENSION).contains(&dimension))
+    {
+        return Err("dimensions must be between 1 and 128".into());
+    }
+    let pivot = file.pivot.unwrap_or([
+        file.dimensions[0] as f32 / 2.0,
+        0.0,
+        file.dimensions[2] as f32 / 2.0,
+    ]);
+    if pivot.iter().any(|value| !value.is_finite()) {
+        return Err("pivot must contain finite numbers".into());
+    }
+    let voxel_count =
+        file.dimensions[0] as usize * file.dimensions[1] as usize * file.dimensions[2] as usize;
+    if voxel_count > MAX_VOXELS {
+        return Err("asset exceeds 262144 voxels".into());
+    }
+    if file.layers.len() != file.dimensions[1] as usize {
+        return Err("layers count must equal dimensions[1]".into());
+    }
+    if file.palette.is_empty() || file.palette.len() > 64 {
+        return Err("palette must contain 1 to 64 entries".into());
+    }
+    let mut palette = HashMap::new();
+    for (symbol, color) in &file.palette {
+        let mut chars = symbol.chars();
+        let Some(symbol) = chars.next() else {
+            return Err("palette symbols must be one alphanumeric character".into());
+        };
+        if chars.next().is_some() || !symbol.is_ascii_alphanumeric() {
+            return Err("palette symbols must be one alphanumeric character".into());
+        }
+        palette.insert(symbol, parse_asset_hex_color(color)?);
+    }
+    let mut world = VoxelWorld::new();
+    let mut filled = 0;
+    for (y, layer) in file.layers.iter().enumerate() {
+        if layer.len() != file.dimensions[2] as usize {
+            return Err(format!("layer {} row count is incorrect", y));
+        }
+        for (z, row) in layer.iter().enumerate() {
+            if row.chars().count() != file.dimensions[0] as usize {
+                return Err(format!("layer {} row {} width is incorrect", y, z));
+            }
+            for (x, symbol) in row.chars().enumerate() {
+                if symbol == '.' {
+                    continue;
+                }
+                let color = *palette
+                    .get(&symbol)
+                    .ok_or_else(|| format!("undefined palette symbol '{}'", symbol))?;
+                world.set(
+                    VoxelCoord::new(
+                        (x as f32 - pivot[0]).round() as i32,
+                        (y as f32 - pivot[1]).round() as i32,
+                        (z as f32 - pivot[2]).round() as i32,
+                    ),
+                    VoxelCell::new(VoxelMaterial::Custom(color)),
+                );
+                filled += 1;
+            }
+        }
+    }
+    if filled == 0 {
+        return Err("asset must contain at least one voxel".into());
+    }
+    let (center, radius) = asset_bounds(&world);
+    let asset = PreviewAsset {
+        name: file.name,
+        world,
+        center,
+        radius,
+        voxel_size: file.voxel_size,
+        dimensions: file.dimensions,
+        source: AssetSource::Imported,
+    };
+    Ok((file.id, asset))
+}
+
+fn parse_asset_hex_color(value: &str) -> Result<[u8; 3], String> {
+    if value.len() != 7 || !value.starts_with('#') {
+        return Err(format!("invalid color '{}'", value));
+    }
+    Ok([
+        u8::from_str_radix(&value[1..3], 16).map_err(|_| format!("invalid color '{}'", value))?,
+        u8::from_str_radix(&value[3..5], 16).map_err(|_| format!("invalid color '{}'", value))?,
+        u8::from_str_radix(&value[5..7], 16).map_err(|_| format!("invalid color '{}'", value))?,
+    ])
+}
+
+fn asset_dimensions(world: &VoxelWorld) -> [i32; 3] {
+    world
+        .bounds()
+        .map(|bounds| {
+            [
+                bounds.max.x - bounds.min.x + 1,
+                bounds.max.y - bounds.min.y + 1,
+                bounds.max.z - bounds.min.z + 1,
+            ]
+        })
+        .unwrap_or([0; 3])
 }
 
 fn asset_bounds(world: &VoxelWorld) -> (Vec3, f32) {
@@ -5703,7 +6564,7 @@ fn shooter_world_with_enemies(base: &VoxelWorld, shooter: &ShooterState) -> Voxe
     let mut world = base.clone();
     for enemy in &shooter.enemies {
         if enemy.is_alive() {
-            stamp_shooter_enemy(&mut world, enemy);
+            stamp_enemy(&mut world, enemy);
         }
     }
     world
@@ -5713,7 +6574,7 @@ fn zombies_world_with_zombies(base: &VoxelWorld, zombies: &ZombiesState) -> Voxe
     let mut world = base.clone();
     for zombie in &zombies.zombies {
         if zombie.is_alive() {
-            stamp_zombie(&mut world, zombie);
+            stamp_enemy(&mut world, zombie);
         }
     }
     world
@@ -5728,23 +6589,24 @@ fn stamp_city_figure(world: &mut VoxelWorld, figure: &CityFigure) {
     stamp_npc_body(world, figure.position, VoxelMaterial::CarbonLife, accent);
 }
 
-fn stamp_shooter_enemy(world: &mut VoxelWorld, enemy: &Enemy) {
-    stamp_npc_body(
-        world,
-        enemy.position,
-        VoxelMaterial::SiliconLife,
-        VoxelMaterial::Beacon,
-    );
-}
-
-fn stamp_zombie(world: &mut VoxelWorld, zombie: &Zombie) {
-    let wounded = zombie.health * 2 < zombie.max_health;
-    let accent = if wounded {
-        VoxelMaterial::Beacon
-    } else {
-        VoxelMaterial::CarbonLife
-    };
-    stamp_zombie_body(world, zombie.position, accent);
+fn stamp_enemy(world: &mut VoxelWorld, enemy: &Enemy) {
+    match enemy.enemy_type {
+        EnemyType::Clown => stamp_npc_body(
+            world,
+            enemy.position,
+            VoxelMaterial::SiliconLife,
+            VoxelMaterial::Beacon,
+        ),
+        EnemyType::Zombie => {
+            let wounded = enemy.health * 2 < enemy.max_health;
+            let accent = if wounded {
+                VoxelMaterial::Beacon
+            } else {
+                VoxelMaterial::CarbonLife
+            };
+            stamp_zombie_body(world, enemy.position, accent);
+        }
+    }
 }
 
 fn stamp_zombie_body(world: &mut VoxelWorld, position: Vec3, accent: VoxelMaterial) {
@@ -5767,6 +6629,13 @@ fn zombie_body_contains_voxel(position: Vec3, coord: VoxelCoord) -> bool {
     ZOMBIE_BODY_OFFSETS
         .iter()
         .any(|(x, y, z, _)| VoxelCoord::new(origin.x + *x, origin.y + *y, origin.z + *z) == coord)
+}
+
+fn enemy_body_contains_voxel(enemy_type: EnemyType, position: Vec3, coord: VoxelCoord) -> bool {
+    match enemy_type {
+        EnemyType::Clown => npc_body_contains_voxel(position, coord),
+        EnemyType::Zombie => zombie_body_contains_voxel(position, coord),
+    }
 }
 
 fn stamp_npc_body(
@@ -5948,18 +6817,32 @@ fn render_asset_viewer_scene(scene: &mut Scene, viewer: &AssetViewerState, mouse
         y: 2,
         z: 120,
         text: format!(
-            "ASSET VIEWER  {} / {}  {}  zoom {:.1}  mouse {}  M menu",
+            "ASSET VIEWER  {} / {}  {}  {:.3}m voxels  {:.1}x{:.1}x{:.1}m  {}  zoom {:.1}  mouse {}  M menu",
             viewer.selected + 1,
             viewer.assets.len(),
             asset.name,
+            asset.voxel_size,
+            asset.dimensions[0] as f32 * asset.voxel_size,
+            asset.dimensions[1] as f32 * asset.voxel_size,
+            asset.dimensions[2] as f32 * asset.voxel_size,
+            match asset.source { AssetSource::BuiltIn => "built-in", AssetSource::Imported => "imported" },
             viewer.distance,
             if mouse_captured { "locked" } else { "free" }
         ),
         style: TextStyle::default(),
     });
+    for (index, error) in viewer.load_errors.iter().take(3).enumerate() {
+        scene.overlays.push(Overlay {
+            x: 2,
+            y: 6 + index as i32,
+            z: 120,
+            text: format!("ASSET ERROR: {}", error),
+            style: TextStyle::default(),
+        });
+    }
     scene.overlays.push(Overlay {
         x: 2,
-        y: 5,
+        y: 10 + viewer.load_errors.len().min(3) as i32,
         z: 120,
         text: "1-9 select  N/P cycle  A/D yaw  W/S pitch  Q/E roll  Space/Ctrl zoom".to_string(),
         style: TextStyle::default(),
@@ -5968,7 +6851,7 @@ fn render_asset_viewer_scene(scene: &mut Scene, viewer: &AssetViewerState, mouse
         let marker = if index == viewer.selected { '>' } else { ' ' };
         scene.overlays.push(Overlay {
             x: 2,
-            y: 9 + index as i32,
+            y: 14 + viewer.load_errors.len().min(3) as i32 + index as i32,
             z: 120,
             text: format!("{}{} {}", marker, index + 1, preview.name),
             style: TextStyle::default(),
@@ -6053,6 +6936,7 @@ fn material_label(material: VoxelMaterial) -> &'static str {
         VoxelMaterial::Glass => "glass",
         VoxelMaterial::Beacon => "beacon",
         VoxelMaterial::Gate => "gate",
+        VoxelMaterial::Custom(_) => "asset",
     }
 }
 
@@ -6108,21 +6992,38 @@ fn render_drone_gate_runner_scene(
 fn render_echolocation_scene(
     scene: &mut Scene,
     echo: &EchoLocationState,
+    camera: &Camera,
     mouse_captured: bool,
 ) {
+    let ping_status = if echo.ping_cooldown_remaining > 0.0 {
+        format!("{:.1}s", echo.ping_cooldown_remaining)
+    } else {
+        "READY".to_string()
+    };
     scene.layers.push(Layer {
         name: "reticle".to_string(),
         z: 50,
         cells: reticle_cells(scene.viewport),
+    });
+    scene.layers.push(Layer {
+        name: "footprints".to_string(),
+        z: 70,
+        cells: echo_footprint_cells(scene.viewport, camera, &echo.world, &echo.footprints),
+    });
+    scene.layers.push(Layer {
+        name: "step-waves".to_string(),
+        z: 71,
+        cells: echo_step_wave_cells(scene.viewport, camera, &echo.world, &echo.step_waves),
     });
     scene.overlays.push(Overlay {
         x: 2,
         y: 2,
         z: 120,
         text: format!(
-            "ECHOLOCATION  seed {:016x}  active pings {}  mouse {}  M menu",
+            "ECHOLOCATION  seed {:016x}  pulses {} ({} reflected)  mouse {}  M menu",
             echo.seed,
-            echo.pings.len(),
+            echo.waves.len(),
+            echo.reflected_pulse_count(),
             if mouse_captured { "locked" } else { "free" }
         ),
         style: hud_style(),
@@ -6132,14 +7033,181 @@ fn render_echolocation_scene(
         y: 5,
         z: 120,
         text: format!(
-            "Space/click ping  speed {:.0}  range {:.0}  thickness {:.1}+{:.1}",
+            "Space/click ping [{}]  V full map [{}]  speed {:.0}  range {:.0}  TAB tuning [{}]",
+            ping_status,
+            if echo.show_full_map { "ON" } else { "off" },
             echo.config.ping_speed,
             echo.config.max_range,
-            echo.config.base_thickness,
-            echo.config.thickness_variation
+            if echo.tuning_open { "open" } else { "closed" },
         ),
         style: hud_style(),
     });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 8,
+        z: 120,
+        text: "Something follows: only fading footprints and footsteps reveal it.".to_string(),
+        style: hud_style(),
+    });
+    if echo.tuning_open {
+        scene.overlays.push(Overlay {
+            x: 2,
+            y: 11,
+            z: 120,
+            text: format!(
+                "[ ] range {:.0}   - = speed {:.0}   , . echo strength {:.2}",
+                echo.config.max_range, echo.config.ping_speed, echo.config.echo_strength,
+            ),
+            style: hud_style(),
+        });
+        scene.overlays.push(Overlay {
+            x: 2,
+            y: 14,
+            z: 120,
+            text: format!(
+                "all surfaces return equally; bounce depth is derived from strength  R defaults"
+            ),
+            style: hud_style(),
+        });
+    }
+    if echo.run_status == EchoRunStatus::Dead {
+        let style = TextStyle {
+            fg: Some("#ff4d5a".to_string()),
+            bg: Some("#080b10".to_string()),
+            ..TextStyle::default()
+        };
+        scene.overlays.push(Overlay {
+            x: scene.viewport.width as i32 / 2 - 8,
+            y: scene.viewport.height as i32 / 2 - 2,
+            z: 250,
+            text: "YOU WERE FOUND".to_string(),
+            style: style.clone(),
+        });
+        scene.overlays.push(Overlay {
+            x: scene.viewport.width as i32 / 2 - 9,
+            y: scene.viewport.height as i32 / 2 + 2,
+            z: 250,
+            text: "R restart   M menu".to_string(),
+            style,
+        });
+    }
+}
+
+fn echo_footprint_cells(
+    viewport: Viewport,
+    camera: &Camera,
+    world: &VoxelWorld,
+    footprints: &[EchoFootprint],
+) -> Vec<SceneCell> {
+    footprints
+        .iter()
+        .filter_map(|print| {
+            // The decal is projected on the floor, but an LOS ray to that point
+            // enters the floor voxel just before arriving. Aim at its top surface
+            // for occlusion, then retain the floor position for projection.
+            let sight_target = print.position + Vec3::new(0.0, 0.94, 0.0);
+            if !has_line_of_sight(world, camera.position, sight_target) {
+                return None;
+            }
+            let (glyph, color) = echo_footprint_visual(*print);
+            project_world_point(camera, print.position, viewport).map(|projection| SceneCell {
+                x: projection.x,
+                y: projection.y,
+                // Pair spacing carries the travel direction; these larger glyphs
+                // remain visible at the deliberately low terminal resolution.
+                glyph,
+                style: TextStyle {
+                    fg: Some(color),
+                    ..TextStyle::default()
+                },
+            })
+        })
+        .collect()
+}
+
+fn echo_step_wave_cells(
+    viewport: Viewport,
+    camera: &Camera,
+    world: &VoxelWorld,
+    waves: &[EchoStepWave],
+) -> Vec<SceneCell> {
+    let mut cells = Vec::new();
+    for wave in waves {
+        let radius = wave.age * ECHO_STEP_WAVE_SPEED;
+        let strength = (1.0 - radius / ECHO_STEP_WAVE_MAX_RADIUS).clamp(0.0, 1.0);
+        let color = format!(
+            "#{:02x}{:02x}{:02x}",
+            lerp_channel(0x3c, 0x9f, strength),
+            lerp_channel(0x58, 0xe9, strength),
+            lerp_channel(0x65, 0xff, strength),
+        );
+        if radius < 0.45
+            && has_line_of_sight(
+                world,
+                camera.position,
+                wave.origin + Vec3::new(0.0, 0.94, 0.0),
+            )
+        {
+            if let Some(projection) = project_world_point(camera, wave.origin, viewport) {
+                cells.push(SceneCell {
+                    x: projection.x,
+                    y: projection.y,
+                    glyph: '*',
+                    style: TextStyle {
+                        fg: Some(color.clone()),
+                        ..TextStyle::default()
+                    },
+                });
+            }
+        }
+        for impact in &wave.impacts {
+            let arrival = impact.arrival_distance_milli as f32 / 1000.0;
+            if (arrival - radius).abs() > 0.34 {
+                continue;
+            }
+            let point = Vec3::new(
+                impact.solid_voxel.x as f32 + 0.5,
+                impact.solid_voxel.y as f32 + 0.5,
+                impact.solid_voxel.z as f32 + 0.5,
+            );
+            if !has_line_of_sight_to_voxel(world, camera.position, point, impact.solid_voxel) {
+                continue;
+            }
+            if let Some(projection) = project_world_point(camera, point, viewport) {
+                cells.push(SceneCell {
+                    x: projection.x,
+                    y: projection.y,
+                    glyph: '~',
+                    style: TextStyle {
+                        fg: Some(color.clone()),
+                        ..TextStyle::default()
+                    },
+                });
+            }
+        }
+    }
+    cells
+}
+
+fn echo_footprint_visual(print: EchoFootprint) -> (char, String) {
+    let strength = (print.remaining_seconds / ECHO_FOOTPRINT_LIFETIME).clamp(0.0, 1.0);
+    let (r, g, b) = (
+        lerp_channel(0x50, 0xd5, strength),
+        lerp_channel(0x3d, 0xa7, strength),
+        lerp_channel(0x2b, 0x5a, strength),
+    );
+    let glyph = if strength < 0.22 {
+        '.'
+    } else if print.left && strength > 0.60 {
+        'O'
+    } else {
+        'o'
+    };
+    (glyph, format!("#{r:02x}{g:02x}{b:02x}"))
+}
+
+fn lerp_channel(dim: u8, bright: u8, strength: f32) -> u8 {
+    (dim as f32 + (bright as f32 - dim as f32) * strength).round() as u8
 }
 
 fn render_corn_maze_scene(
@@ -6688,7 +7756,7 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
         let opaque_cells = layer_cells_are_opaque(layer.name.as_str());
 
         for cell in &layer.cells {
-            if opaque_cells && cell.glyph != ' ' {
+            if opaque_cells {
                 fill_rect(
                     frame,
                     width,
@@ -7017,6 +8085,31 @@ mod tests {
     }
 
     #[test]
+    fn enemy_types_supply_distinct_extensible_profiles() {
+        let clown = EnemyType::Clown.profile();
+        let zombie = EnemyType::Zombie.profile();
+
+        assert_eq!(EnemyType::Clown.label(), "clown");
+        assert_eq!(EnemyType::Zombie.label(), "zombie");
+        assert_ne!(clown.eye_height, zombie.eye_height);
+        assert_ne!(clown.speed, zombie.speed);
+        assert_ne!(clown.base_health, zombie.base_health);
+    }
+
+    #[test]
+    fn enemy_instances_share_health_and_type_specific_hitboxes() {
+        let clown = Enemy::new(EnemyType::Clown, Vec3::ZERO, 1);
+        let zombie = Enemy::new(EnemyType::Zombie, Vec3::ZERO, 2);
+
+        assert!(clown.is_alive());
+        assert!(zombie.is_alive());
+        assert!(clown.contains_voxel(VoxelCoord::new(0, 2, 0)));
+        assert!(zombie.contains_voxel(VoxelCoord::new(0, 5, 0)));
+        assert!(!clown.contains_voxel(VoxelCoord::new(0, 5, 0)));
+        assert!(zombie.max_health > Enemy::new(EnemyType::Zombie, Vec3::ZERO, 1).max_health);
+    }
+
+    #[test]
     fn city_figures_are_inserted_as_voxel_objects() {
         let mut app = AppState::new();
         app.start_city();
@@ -7183,6 +8276,22 @@ mod tests {
             drone_course_seed(0xD00D, 1)
         );
         assert!(app.camera.max_distance >= DRONE_GATE_VIEW_DISTANCE);
+    }
+
+    #[test]
+    fn drone_gate_runner_menu_selection_reaches_the_render_path() {
+        let mut app = AppState::new_with_drone_course_nonce(0xD00D, false);
+
+        let action =
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit0), ElementState::Pressed);
+        let scene = app.frame(1.0 / 60.0, false);
+
+        assert_eq!(action, KeyboardAction::StartScene);
+        assert_eq!(app.mode, AppMode::DroneGateRunner);
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| { overlay.text.starts_with("DRONE GATE RUNNER") }));
     }
 
     #[test]
@@ -8075,7 +9184,7 @@ mod tests {
     fn zombies_fire_awards_hit_and_kill_points_with_ammo() {
         let mut app = AppState::new();
         app.start_zombies();
-        app.zombies.zombies = vec![Zombie::new(Vec3::new(0.5, 0.0, -38.5), 1)];
+        app.zombies.zombies = vec![Enemy::new(EnemyType::Zombie, Vec3::new(0.5, 0.0, -38.5), 1)];
         app.zombies.zombies[0].health = app.zombies.weapon.damage();
         let ammo_before = app.zombies.ammo_in_mag;
 
@@ -8109,7 +9218,9 @@ mod tests {
         assert_eq!(zombies.round, 2);
         assert_eq!(zombies.queued_spawns, 10);
         assert_eq!(zombies.zombies.len(), 1);
-        assert!(zombies.zombies[0].max_health > Zombie::new(Vec3::ZERO, 1).max_health);
+        assert!(
+            zombies.zombies[0].max_health > Enemy::new(EnemyType::Zombie, Vec3::ZERO, 1).max_health
+        );
     }
 
     #[test]
@@ -8145,7 +9256,7 @@ mod tests {
     #[test]
     fn zombies_take_three_hits_to_end_game() {
         let mut zombies = ZombiesState::new();
-        zombies.zombies = vec![Zombie::new(Vec3::new(0.7, 0.0, -66.5), 1)];
+        zombies.zombies = vec![Enemy::new(EnemyType::Zombie, Vec3::new(0.7, 0.0, -66.5), 1)];
         let world = build_zombies_map(&zombies);
         let player = zombies_start_camera().position;
 
@@ -8193,7 +9304,7 @@ mod tests {
         );
 
         let player = Vec3::new(4.5, ZOMBIE_EYE_HEIGHT, 4.5);
-        let nav = ZombieNavigationField::build(&world, player, zombie_walk_profile())
+        let nav = NavigationField::build(&world, player, zombie_walk_profile())
             .expect("navigation field should exist");
         let next = nav
             .next_step(Vec3::new(-1.5, ZOMBIE_EYE_HEIGHT, 4.5))
@@ -8288,7 +9399,7 @@ mod tests {
     fn zombies_are_inserted_as_voxel_objects() {
         let mut app = AppState::new();
         app.start_zombies();
-        app.zombies.zombies = vec![Zombie::new(Vec3::new(0.5, 0.0, -38.5), 1)];
+        app.zombies.zombies = vec![Enemy::new(EnemyType::Zombie, Vec3::new(0.5, 0.0, -38.5), 1)];
         let world = zombies_world_with_zombies(&app.zombies_map, &app.zombies);
 
         assert_eq!(
@@ -8325,5 +9436,711 @@ mod tests {
 
         assert!(q_camera.roll_radians > 0.0);
         assert!(e_camera.roll_radians < 0.0);
+    }
+
+    #[test]
+    fn echolocation_tuning_panel_changes_live_config_and_is_rendered() {
+        let mut app = AppState::new();
+        app.start_echolocation();
+        let initial_range = app.echolocation.config.max_range;
+
+        // Tuning keys are global to the mode, like M: opening the drawer is
+        // only needed to inspect the values, not to change them.
+        app.handle_keyboard(
+            &PhysicalKey::Code(KeyCode::BracketRight),
+            ElementState::Pressed,
+        );
+        assert!(app.echolocation.config.max_range > initial_range);
+        assert_eq!(
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Tab), ElementState::Pressed),
+            KeyboardAction::None
+        );
+        assert!(app.echolocation.tuning_open);
+
+        let scene = app.frame(0.0, false);
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("echo strength")));
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyV), ElementState::Pressed);
+        assert!(app.echolocation.show_full_map);
+        let scene = app.frame(0.0, false);
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("V full map [ON]")));
+    }
+
+    #[test]
+    fn echolocation_global_tuning_does_not_consume_movement_keys() {
+        let mut app = AppState::new();
+        app.start_echolocation();
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyW), ElementState::Pressed);
+        assert!(app.input.forward);
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyW), ElementState::Released);
+        assert!(!app.input.forward);
+    }
+
+    #[test]
+    fn echolocation_ping_audio_respects_one_second_cooldown() {
+        let mut app = AppState::new();
+        app.start_echolocation();
+
+        app.fire_weapon();
+        assert_eq!(app.drain_audio_events(), vec![SoundEffect::EchoPing]);
+
+        app.fire_weapon();
+        assert!(app.drain_audio_events().is_empty());
+
+        app.echolocation.update(0.99);
+        app.fire_weapon();
+        assert!(app.drain_audio_events().is_empty());
+
+        app.echolocation.update(0.01);
+        app.fire_weapon();
+        assert_eq!(app.drain_audio_events(), vec![SoundEffect::EchoPing]);
+    }
+
+    #[test]
+    fn echolocation_preserves_global_menu_and_escape_controls() {
+        let mut app = AppState::new();
+        app.start_echolocation();
+        assert_eq!(
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyM), ElementState::Pressed),
+            KeyboardAction::EnterMenu
+        );
+
+        app.start_echolocation();
+        assert_eq!(
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Escape), ElementState::Pressed),
+            KeyboardAction::ReleaseMouse
+        );
+    }
+
+    #[test]
+    fn echolocation_pursuer_spawns_walkable_reachable_and_far_from_start() {
+        let echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        assert!(can_walk_to_on_ground(
+            &echo.world,
+            echo.pursuer.position,
+            ECHOLOCATION_WALK_PROFILE
+        ));
+        let navigation =
+            NavigationField::build(&echo.world, echo.start_position, ECHOLOCATION_WALK_PROFILE)
+                .expect("start should produce a navigation field");
+        let distance = navigation
+            .distance(
+                echo.pursuer.position.x.floor() as i32,
+                echo.pursuer.position.z.floor() as i32,
+            )
+            .expect("spawn should be in field");
+        assert!(distance != u16::MAX && distance > 20);
+    }
+
+    #[test]
+    fn echolocation_pursuer_routes_and_emits_expiring_footsteps() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.world = echolocation_test_room(VoxelCoord::new(8, 6, 8));
+        echo.pursuer.position = Vec3::new(1.5, WALK_EYE_HEIGHT, 1.5);
+        let player = Vec3::new(7.5, WALK_EYE_HEIGHT, 7.5);
+        let before = horizontal_distance(echo.pursuer.position, player);
+        let effects = echo.update_with_pursuer(0.2, player);
+        assert!(horizontal_distance(echo.pursuer.position, player) < before);
+        assert_eq!(echo.footprints.len(), 2);
+        assert_eq!(echo.step_waves.len(), 2);
+        assert_eq!(echo.step_waves[0].origin, echo.footprints[0].position);
+        assert_eq!(echo.step_waves[1].origin, echo.footprints[1].position);
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, SoundEffect::InvisibleFootstep { .. })));
+        echo.update_with_pursuer(ECHO_FOOTPRINT_LIFETIME + 0.1, player);
+        assert!(echo.footprints.is_empty());
+        assert!(echo.step_waves.is_empty());
+    }
+
+    #[test]
+    fn echolocation_footprints_require_direct_line_of_sight() {
+        let camera = look_at(Vec3::new(0.5, 2.5, 0.5), Vec3::new(0.5, 0.1, 4.5));
+        let prints = [EchoFootprint {
+            position: Vec3::new(0.5, 0.08, 4.5),
+            remaining_seconds: ECHO_FOOTPRINT_LIFETIME,
+            left: true,
+            travel_direction: Vec3::new(0.0, 0.0, 1.0),
+        }];
+        let clear_world = VoxelWorld::new();
+        assert_eq!(
+            echo_footprint_cells(VIEWPORT, &camera, &clear_world, &prints).len(),
+            1
+        );
+
+        let mut blocked_world = VoxelWorld::new();
+        blocked_world.set(
+            VoxelCoord::new(0, 1, 2),
+            VoxelCell::new(VoxelMaterial::Stone),
+        );
+        assert!(echo_footprint_cells(VIEWPORT, &camera, &blocked_world, &prints).is_empty());
+    }
+
+    #[test]
+    fn echolocation_footprints_visibly_fade_with_age() {
+        let fresh = EchoFootprint {
+            position: Vec3::ZERO,
+            remaining_seconds: ECHO_FOOTPRINT_LIFETIME,
+            left: true,
+            travel_direction: Vec3::new(0.0, 0.0, 1.0),
+        };
+        let old = EchoFootprint {
+            remaining_seconds: ECHO_FOOTPRINT_LIFETIME * 0.1,
+            ..fresh
+        };
+        let (fresh_glyph, fresh_color) = echo_footprint_visual(fresh);
+        let (old_glyph, old_color) = echo_footprint_visual(old);
+        assert_eq!(fresh_glyph, 'O');
+        assert_eq!(old_glyph, '.');
+        assert_ne!(fresh_color, old_color);
+    }
+
+    #[test]
+    fn echolocation_step_waves_render_as_tiny_surface_echoes() {
+        let world = echolocation_test_room(VoxelCoord::new(6, 6, 6));
+        let source = Vec3::new(1.5, WALK_EYE_HEIGHT, 3.5);
+        let camera = look_at(
+            Vec3::new(4.5, WALK_EYE_HEIGHT, 3.5),
+            Vec3::new(0.5, 3.5, 3.5),
+        );
+        let waves = [EchoStepWave {
+            origin: source + Vec3::new(0.0, -WALK_EYE_HEIGHT + 0.08, 0.0),
+            impacts: build_echo_wave(
+                &world,
+                echo_pursuer_foot_source(source),
+                1.0,
+                0,
+                ECHO_STEP_WAVE_MAX_RADIUS,
+            )
+            .impacts,
+            age: 0.2,
+            next_impact: 0,
+        }];
+        let cells = echo_step_wave_cells(VIEWPORT, &camera, &world, &waves);
+        assert!(
+            !cells.is_empty(),
+            "impact distances: {:?}",
+            waves[0]
+                .impacts
+                .iter()
+                .map(|impact| impact.arrival_distance_milli)
+                .collect::<Vec<_>>()
+        );
+        assert!(cells.iter().all(|cell| cell.glyph == '~'));
+    }
+
+    #[test]
+    fn echolocation_step_waves_reveal_only_nearby_surfaces() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.world = echolocation_test_room(VoxelCoord::new(6, 6, 6));
+        let source = Vec3::new(1.5, WALK_EYE_HEIGHT, 3.5);
+        echo.step_waves.push(EchoStepWave {
+            origin: source + Vec3::new(0.0, -WALK_EYE_HEIGHT + 0.08, 0.0),
+            impacts: build_echo_wave(
+                &echo.world,
+                echo_pursuer_foot_source(source),
+                1.0,
+                0,
+                ECHO_STEP_WAVE_MAX_RADIUS,
+            )
+            .impacts,
+            age: 0.0,
+            next_impact: 0,
+        });
+        echo.pursuer.position = source;
+        echo.update_with_pursuer(0.25, Vec3::new(4.5, WALK_EYE_HEIGHT, 3.5));
+        assert!(echo.revealed.contains_key(&VoxelCoord::new(0, 1, 3)));
+        assert!(!echo.revealed.contains_key(&VoxelCoord::new(6, 1, 3)));
+    }
+
+    #[test]
+    fn echolocation_scene_draws_a_directly_visible_print_in_the_starting_room() {
+        let echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let camera = echolocation_start_camera(&echo);
+        let prints = [EchoFootprint {
+            position: Vec3::new(echo.start_position.x, 0.08, echo.start_position.z + 6.0),
+            remaining_seconds: ECHO_FOOTPRINT_LIFETIME,
+            left: true,
+            travel_direction: Vec3::new(0.0, 0.0, 1.0),
+        }];
+        assert!(has_line_of_sight(
+            &echo.world,
+            camera.position,
+            prints[0].position + Vec3::new(0.0, 0.94, 0.0)
+        ));
+        assert_eq!(
+            echo_footprint_cells(VIEWPORT, &camera, &echo.world, &prints).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn echolocation_footsteps_pan_and_fade_by_relative_position() {
+        let listener = Vec3::ZERO;
+        let right = Vec3::new(1.0, 0.0, 0.0);
+        let left_step = invisible_footstep_effect(Vec3::new(-8.0, 0.0, 0.0), listener, right);
+        let right_step = invisible_footstep_effect(Vec3::new(8.0, 0.0, 0.0), listener, right);
+        let near_step = invisible_footstep_effect(Vec3::new(2.0, 0.0, 0.0), listener, right);
+        let far_step = invisible_footstep_effect(Vec3::new(38.0, 0.0, 0.0), listener, right);
+        let SoundEffect::InvisibleFootstep {
+            pan: left_pan,
+            gain: left_gain,
+        } = left_step
+        else {
+            unreachable!();
+        };
+        let SoundEffect::InvisibleFootstep {
+            pan: right_pan,
+            gain: right_gain,
+        } = right_step
+        else {
+            unreachable!();
+        };
+        let SoundEffect::InvisibleFootstep {
+            gain: near_gain, ..
+        } = near_step
+        else {
+            unreachable!();
+        };
+        let SoundEffect::InvisibleFootstep { gain: far_gain, .. } = far_step else {
+            unreachable!();
+        };
+        assert!(left_pan < 0.0 && right_pan > 0.0);
+        assert_eq!(left_gain, right_gain);
+        assert!(near_gain > far_gain, "near {near_gain}, far {far_gain}");
+    }
+
+    #[test]
+    fn echolocation_pursuer_reaches_a_stationary_player_on_the_seeded_map() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        for _ in 0..600 {
+            echo.update_with_pursuer(0.1, echo.start_position);
+            if echo.run_status == EchoRunStatus::Dead {
+                break;
+            }
+        }
+        let nav =
+            NavigationField::build(&echo.world, echo.start_position, ECHOLOCATION_WALK_PROFILE)
+                .unwrap();
+        assert_eq!(
+            echo.run_status,
+            EchoRunStatus::Dead,
+            "pursuer {:?}, player {:?}, distance {}, cell distance {:?}, next {:?}",
+            echo.pursuer.position,
+            echo.start_position,
+            horizontal_distance(echo.pursuer.position, echo.start_position),
+            nav.distance(
+                echo.pursuer.position.x.floor() as i32,
+                echo.pursuer.position.z.floor() as i32
+            ),
+            nav.next_step(echo.pursuer.position),
+        );
+    }
+
+    #[test]
+    fn echolocation_pursuer_is_absent_from_echo_visible_world() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let pursuer_cell = voxel_coord_at(echo.pursuer.position);
+        echo.show_full_map = true;
+        assert_eq!(
+            echo.visible_world(echo.start_position).get(pursuer_cell),
+            echo.world.get(pursuer_cell)
+        );
+        assert!(echo.world.get(pursuer_cell).is_none());
+    }
+
+    #[test]
+    fn echolocation_contact_freezes_the_run_and_restart_restores_seeded_state() {
+        let mut app = AppState::new();
+        app.start_echolocation();
+        let seeded_spawn = app.echolocation.pursuer.position;
+        app.echolocation.pursuer.position = app.camera.position;
+        app.frame(0.0, false);
+        assert_eq!(app.echolocation.run_status, EchoRunStatus::Dead);
+        app.drain_audio_events();
+        let frozen_position = app.echolocation.pursuer.position;
+        app.frame(1.0, false);
+        assert_eq!(app.echolocation.pursuer.position, frozen_position);
+        app.fire_weapon();
+        assert!(app.drain_audio_events().is_empty());
+        let scene = app.frame(0.0, false);
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text == "YOU WERE FOUND"));
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyR), ElementState::Pressed);
+        assert_eq!(app.echolocation.run_status, EchoRunStatus::Active);
+        assert_eq!(app.echolocation.seed, ECHOLOCATION_SEED);
+        assert_eq!(app.echolocation.pursuer.position, seeded_spawn);
+        assert_eq!(app.camera.position, app.echolocation.start_position);
+    }
+
+    fn echolocation_test_room(max: VoxelCoord) -> VoxelWorld {
+        let mut world = VoxelWorld::new();
+        for x in 0..=max.x {
+            for y in 0..=max.y {
+                for z in 0..=max.z {
+                    if x == 0 || y == 0 || z == 0 || x == max.x || y == max.y || z == max.z {
+                        world.set(
+                            VoxelCoord::new(x, y, z),
+                            VoxelCell::new(VoxelMaterial::Stone),
+                        );
+                    }
+                }
+            }
+        }
+        world
+    }
+
+    #[test]
+    fn echolocation_contacts_continuous_room_surfaces_without_holes() {
+        let max = VoxelCoord::new(6, 4, 5);
+        let world = echolocation_test_room(max);
+        let impacts = echo_impacts(&world, VoxelCoord::new(3, 2, 2), 40.0);
+        let contacted: std::collections::HashSet<_> =
+            impacts.iter().map(|impact| impact.solid_voxel).collect();
+
+        for x in 1..max.x {
+            for z in 1..max.z {
+                assert!(contacted.contains(&VoxelCoord::new(x, 0, z)));
+                assert!(contacted.contains(&VoxelCoord::new(x, max.y, z)));
+            }
+        }
+        for y in 1..max.y {
+            for z in 1..max.z {
+                assert!(contacted.contains(&VoxelCoord::new(0, y, z)));
+                assert!(contacted.contains(&VoxelCoord::new(max.x, y, z)));
+            }
+            for x in 1..max.x {
+                assert!(contacted.contains(&VoxelCoord::new(x, y, 0)));
+                assert!(contacted.contains(&VoxelCoord::new(x, y, max.z)));
+            }
+        }
+    }
+
+    #[test]
+    fn echolocation_sealed_wall_blocks_every_voxel_behind_it() {
+        let mut world = echolocation_test_room(VoxelCoord::new(7, 4, 4));
+        for y in 1..4 {
+            for z in 1..4 {
+                world.set(
+                    VoxelCoord::new(3, y, z),
+                    VoxelCell::new(VoxelMaterial::ShipHull),
+                );
+            }
+        }
+        let hidden_target = VoxelCoord::new(5, 2, 2);
+        world.set(hidden_target, VoxelCell::new(VoxelMaterial::Beacon));
+
+        let impacts = echo_impacts(&world, VoxelCoord::new(1, 2, 2), 40.0);
+        assert!(!impacts
+            .iter()
+            .any(|impact| impact.solid_voxel == hidden_target));
+        assert!(!impacts.iter().any(|impact| impact.source_air_cell.x > 3));
+    }
+
+    #[test]
+    fn echolocation_reaches_around_wall_only_through_doorway() {
+        let mut open_world = echolocation_test_room(VoxelCoord::new(7, 4, 5));
+        let target = VoxelCoord::new(5, 2, 1);
+        open_world.set(target, VoxelCell::new(VoxelMaterial::Beacon));
+        let direct_distance = echo_impacts(&open_world, VoxelCoord::new(1, 2, 1), 40.0)
+            .into_iter()
+            .find(|impact| impact.solid_voxel == target)
+            .expect("target is directly reachable")
+            .arrival_distance_milli;
+
+        let mut doorway_world = open_world.clone();
+        for y in 1..4 {
+            for z in 1..5 {
+                if (y, z) != (2, 4) {
+                    doorway_world.set(
+                        VoxelCoord::new(3, y, z),
+                        VoxelCell::new(VoxelMaterial::ShipHull),
+                    );
+                }
+            }
+        }
+        let doorway_distance = echo_impacts(&doorway_world, VoxelCoord::new(1, 2, 1), 40.0)
+            .into_iter()
+            .find(|impact| impact.solid_voxel == target)
+            .expect("sound reaches the target through the doorway")
+            .arrival_distance_milli;
+
+        assert!(doorway_distance > direct_distance);
+    }
+
+    #[test]
+    fn echolocation_diagonal_corner_cutting_is_blocked() {
+        let mut world = VoxelWorld::new();
+        let target = VoxelCoord::new(2, 1, 0);
+        world.set(
+            VoxelCoord::new(1, 0, 0),
+            VoxelCell::new(VoxelMaterial::Stone),
+        );
+        world.set(
+            VoxelCoord::new(0, 1, 0),
+            VoxelCell::new(VoxelMaterial::Stone),
+        );
+        world.set(
+            VoxelCoord::new(2, 0, 0),
+            VoxelCell::new(VoxelMaterial::Stone),
+        );
+        world.set(target, VoxelCell::new(VoxelMaterial::Beacon));
+
+        let impacts = echo_impacts(&world, VoxelCoord::new(0, 0, 0), 10.0);
+        assert!(!impacts.iter().any(|impact| impact.solid_voxel == target));
+    }
+
+    #[test]
+    fn echolocation_open_diagonal_uses_weighted_distance() {
+        let mut world = VoxelWorld::new();
+        let target = VoxelCoord::new(2, 1, 0);
+        world.set(
+            VoxelCoord::new(2, 0, 0),
+            VoxelCell::new(VoxelMaterial::Stone),
+        );
+        world.set(
+            VoxelCoord::new(0, 1, 0),
+            VoxelCell::new(VoxelMaterial::Stone),
+        );
+        world.set(target, VoxelCell::new(VoxelMaterial::Beacon));
+        world.clear(VoxelCoord::new(0, 1, 0));
+
+        let impact = echo_impacts(&world, VoxelCoord::new(0, 0, 0), 10.0)
+            .into_iter()
+            .find(|impact| impact.solid_voxel == target)
+            .expect("open diagonal reaches the target");
+        assert_eq!(impact.arrival_distance_milli, 2414);
+    }
+
+    #[test]
+    fn echolocation_default_speed_is_deliberate_and_slow() {
+        assert_eq!(EchoLocationConfig::default().ping_speed, 10.0);
+        assert_eq!(EchoLocationConfig::default().echo_strength, 0.0);
+    }
+
+    #[test]
+    fn echolocation_reveals_all_exposed_faces_but_not_shared_faces() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let coord = VoxelCoord::new(4, 2, 3);
+        let cell = VoxelCell::new(VoxelMaterial::Stone);
+        echo.world.set(coord, cell);
+        echo.world.set(
+            VoxelCoord::new(5, 2, 3),
+            VoxelCell::new(VoxelMaterial::Stone),
+        );
+        echo.record_reveal(coord, cell, 1.0, VoxelCoord::new(3, 2, 3));
+
+        assert!(echo.face_is_revealed(coord, Vec3::new(-1.0, 0.0, 0.0)));
+        assert!(echo.face_is_revealed(coord, Vec3::new(0.0, 1.0, 0.0)));
+        assert!(!echo.face_is_revealed(coord, Vec3::new(1.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn echolocation_map_has_a_continuous_enclosing_hull() {
+        let (world, start) = build_echolocation_map(ECHOLOCATION_SEED);
+        let mut exposed_floor_edges = 0;
+
+        for_each_voxel(&world, |coord, cell| {
+            if coord.y != 0 || cell.material != VoxelMaterial::Basalt {
+                return;
+            }
+            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let neighbor = VoxelCoord::new(coord.x + dx, 0, coord.z + dz);
+                if world.get(neighbor).is_none() {
+                    exposed_floor_edges += 1;
+                    for y in 1..=6 {
+                        assert!(
+                            world
+                                .get(VoxelCoord::new(neighbor.x, y, neighbor.z))
+                                .is_some(),
+                            "open hull at {},{},{}",
+                            neighbor.x,
+                            y,
+                            neighbor.z
+                        );
+                    }
+                }
+            }
+        });
+
+        assert!(exposed_floor_edges > 0);
+        assert!(world
+            .get(VoxelCoord::new(
+                start.x.floor() as i32,
+                0,
+                start.z.floor() as i32
+            ))
+            .is_some());
+    }
+
+    #[test]
+    fn echolocation_impacts_are_material_independent() {
+        let mut signatures = Vec::new();
+        for material in [
+            VoxelMaterial::Stone,
+            VoxelMaterial::Basalt,
+            VoxelMaterial::Glass,
+        ] {
+            let mut world = echolocation_test_room(VoxelCoord::new(6, 4, 4));
+            let target = VoxelCoord::new(4, 2, 2);
+            world.set(target, VoxelCell::new(material));
+            let impacts = echo_impacts(&world, VoxelCoord::new(1, 2, 2), 20.0);
+            assert_eq!(
+                impacts
+                    .iter()
+                    .find(|impact| impact.solid_voxel == target)
+                    .expect("target is contacted")
+                    .cell
+                    .material,
+                material
+            );
+            signatures.push(
+                impacts
+                    .into_iter()
+                    .map(|impact| {
+                        (
+                            impact.solid_voxel,
+                            impact.source_air_cell,
+                            impact.arrival_distance_milli,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+
+        assert!(signatures.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    #[test]
+    fn echolocation_range_limits_propagation() {
+        let mut world = echolocation_test_room(VoxelCoord::new(10, 4, 4));
+        let target = VoxelCoord::new(8, 2, 2);
+        world.set(target, VoxelCell::new(VoxelMaterial::Beacon));
+
+        assert!(!echo_impacts(&world, VoxelCoord::new(1, 2, 2), 6.9)
+            .iter()
+            .any(|impact| impact.solid_voxel == target));
+        assert!(echo_impacts(&world, VoxelCoord::new(1, 2, 2), 7.0)
+            .iter()
+            .any(|impact| impact.solid_voxel == target));
+    }
+
+    #[test]
+    fn echolocation_speed_changes_timing_not_reachable_impacts() {
+        let mut world = echolocation_test_room(VoxelCoord::new(8, 4, 4));
+        let target = VoxelCoord::new(5, 2, 2);
+        world.set(target, VoxelCell::new(VoxelMaterial::Beacon));
+        let mut fast = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        fast.world = world.clone();
+        fast.config.max_range = 20.0;
+        fast.config.ping_speed = 10.0;
+        fast.emit_ping(Vec3::new(1.5, 2.5, 2.5));
+        let mut slow = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        slow.world = world;
+        slow.config.max_range = 20.0;
+        slow.config.ping_speed = 5.0;
+        slow.emit_ping(Vec3::new(1.5, 2.5, 2.5));
+
+        assert_eq!(fast.waves[0].impacts, slow.waves[0].impacts);
+        fast.update(0.41);
+        slow.update(0.41);
+        assert!(fast.revealed.contains_key(&target));
+        assert!(!slow.revealed.contains_key(&target));
+    }
+
+    #[test]
+    fn echolocation_default_strength_has_no_secondary_waves() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.world = echolocation_test_room(VoxelCoord::new(6, 4, 4));
+        echo.emit_ping(Vec3::new(2.5, 2.5, 2.5));
+        echo.update(0.3);
+
+        assert_eq!(echo.config.echo_strength, 0.0);
+        assert_eq!(echo.reflected_pulse_count(), 0);
+    }
+
+    #[test]
+    fn echolocation_secondary_waves_are_weaker_and_wall_safe() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.config.echo_strength = 0.72;
+        echo.world = echolocation_test_room(VoxelCoord::new(7, 4, 4));
+        for y in 1..4 {
+            for z in 1..4 {
+                echo.world.set(
+                    VoxelCoord::new(3, y, z),
+                    VoxelCell::new(VoxelMaterial::ShipHull),
+                );
+            }
+        }
+        let hidden_target = VoxelCoord::new(5, 2, 2);
+        echo.world
+            .set(hidden_target, VoxelCell::new(VoxelMaterial::Beacon));
+        echo.emit_ping(Vec3::new(1.5, 2.5, 2.5));
+        echo.update(0.25);
+
+        let secondary = echo
+            .waves
+            .iter()
+            .find(|wave| wave.bounce_depth == 1)
+            .expect("wall contact spawns a secondary wave");
+        assert!(secondary.energy < echo.config.initial_energy);
+        for _ in 0..8 {
+            echo.update(0.5);
+            assert!(!echo.revealed.contains_key(&hidden_target));
+        }
+    }
+
+    #[test]
+    fn echolocation_full_map_toggle_bypasses_pulse_filter() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let target = VoxelCoord::new(2, 1, 0);
+        echo.world = VoxelWorld::new();
+        echo.world.set(target, VoxelCell::new(VoxelMaterial::Glass));
+
+        assert_eq!(echo.visible_world(Vec3::ZERO).get(target), None);
+        echo.toggle_full_map();
+        assert_eq!(
+            echo.visible_world(Vec3::ZERO).get(target),
+            Some(VoxelCell::new(VoxelMaterial::Glass))
+        );
+        echo.toggle_full_map();
+        assert_eq!(echo.visible_world(Vec3::ZERO).get(target), None);
+    }
+
+    #[test]
+    fn echolocation_strength_derives_return_gain_and_bounce_depth() {
+        assert_eq!(echo_bounce_limit(0.10), 0);
+        assert_eq!(echo_bounce_limit(0.50), 1);
+        assert_eq!(echo_bounce_limit(0.75), 2);
+        assert_eq!(echo_bounce_limit(1.00), 3);
+        assert!(echo_reflection_gain(0.9) > echo_reflection_gain(0.3));
+    }
+
+    #[test]
+    fn echolocation_large_frame_consumes_all_crossed_impacts_and_retains_reveals() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.world = echolocation_test_room(VoxelCoord::new(8, 4, 4));
+        let near_target = VoxelCoord::new(3, 0, 2);
+        let far_target = VoxelCoord::new(8, 2, 2);
+        echo.emit_ping(Vec3::new(1.5, 2.5, 2.5));
+
+        echo.update(1.0);
+        assert!(echo.revealed.contains_key(&near_target));
+        assert!(echo.revealed.contains_key(&far_target));
+        assert!(echo.visible_world(Vec3::ZERO).get(near_target).is_some());
+        assert!(echo.visible_world(Vec3::ZERO).get(far_target).is_some());
+
+        echo.waves.clear();
+        echo.update(echo.config.reveal_seconds + 0.1);
+        assert!(echo.visible_world(Vec3::ZERO).get(near_target).is_none());
     }
 }

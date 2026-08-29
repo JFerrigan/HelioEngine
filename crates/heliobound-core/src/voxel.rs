@@ -51,6 +51,8 @@ pub enum VoxelMaterial {
     Glass,
     Beacon,
     Gate,
+    /// A color supplied by an imported voxel asset's palette.
+    Custom([u8; 3]),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
