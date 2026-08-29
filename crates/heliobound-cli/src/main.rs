@@ -8046,14 +8046,14 @@ fn echo_search_effect(echo: &EchoLocationState, listener_position: Vec3) -> Echo
         d if d <= 4.0 => 5,
         d if d <= 9.0 => 4,
         d if d <= 15.0 => 3,
-        d if d <= 23.0 => 2,
+        d if d <= 30.0 => 2,
         _ => 1,
     };
     let intensity = 0.12 + proximity * 0.88;
     let phase = ((ECHO_PURSUER_INVESTIGATE_SECONDS - remaining_seconds).max(0.0) * 17.0) as u32
         ^ (echo.seed as u32);
     let twitch = if corruption_level >= 2
-        && phase % (8_u32.saturating_sub((intensity * 6.0) as u32).max(2)) == 0
+        && phase % (12_u32.saturating_sub((intensity * 5.0) as u32).max(3)) == 0
     {
         1
     } else {
@@ -8075,7 +8075,7 @@ fn echo_search_effect(echo: &EchoLocationState, listener_position: Vec3) -> Echo
 }
 
 fn echo_search_twitch_cells(viewport: Viewport, effect: EchoSearchEffect) -> Vec<SceneCell> {
-    let count = 3 + effect.corruption_level as i32 * 10;
+    let count = 2 + effect.corruption_level as i32 * 7;
     (0..count)
         .filter_map(|index| {
             let hash = effect
@@ -8095,21 +8095,23 @@ fn echo_search_twitch_cells(viewport: Viewport, effect: EchoSearchEffect) -> Vec
                     (hash % viewport.height as u32) as i32,
                 ),
             };
-            (hash % 3 == 0 || effect.intensity > 0.65).then(|| SceneCell {
-                x,
-                y,
-                glyph: if hash & 1 == 0 { ':' } else { '.' },
-                style: TextStyle {
-                    fg: Some(
-                        if effect.corruption_level == 1 {
-                            "#25282b"
-                        } else {
-                            "#62686d"
-                        }
-                        .to_string(),
-                    ),
-                    ..TextStyle::default()
-                },
+            (hash % 4 == 0 || effect.corruption_level >= 4 && effect.intensity > 0.72).then(|| {
+                SceneCell {
+                    x,
+                    y,
+                    glyph: if hash & 1 == 0 { ':' } else { '.' },
+                    style: TextStyle {
+                        fg: Some(
+                            if effect.corruption_level == 1 {
+                                "#25282b"
+                            } else {
+                                "#62686d"
+                            }
+                            .to_string(),
+                        ),
+                        ..TextStyle::default()
+                    },
+                }
             })
         })
         .collect()
@@ -8123,8 +8125,8 @@ fn echo_search_static_cells(viewport: Viewport, effect: EchoSearchEffect) -> Vec
         return Vec::new();
     }
     let coverage = match effect.corruption_level {
-        2 => 0.009,
-        3 => 0.03,
+        2 => 0.003,
+        3 => 0.016,
         4 => 0.075,
         _ => 0.16,
     };
@@ -8142,10 +8144,17 @@ fn echo_search_static_cells(viewport: Viewport, effect: EchoSearchEffect) -> Vec
             glyph: glyphs[(hash >> 18) as usize % glyphs.len()],
             style: TextStyle {
                 fg: Some(
-                    match (hash >> 3) & 3 {
-                        0 => "#17191b",
-                        1 => "#303438",
-                        2 => "#5e6469",
+                    match ((hash >> 3) & 3, effect.corruption_level) {
+                        (_, 2) => {
+                            if hash & 1 == 0 {
+                                "#17191b"
+                            } else {
+                                "#303438"
+                            }
+                        }
+                        (0, _) => "#17191b",
+                        (1, _) => "#303438",
+                        (2, _) => "#5e6469",
                         _ => "#aeb3b5",
                     }
                     .to_string(),
