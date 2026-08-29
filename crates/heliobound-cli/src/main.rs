@@ -268,6 +268,10 @@ const ECHOLOCATION_SEED: u64 = 0xEC40_10CA_7100_0001;
 const ECHOLOCATION_PING_SPEED: f32 = 10.0;
 const ECHOLOCATION_PING_MAX_RANGE: f32 = 92.0;
 const ECHOLOCATION_PING_COOLDOWN_SECONDS: f32 = 1.0;
+const ECHO_CHARGED_PULSE_SECONDS: f32 = 1.5;
+const ECHO_CHARGED_PULSE_MAX_RANGE: f32 = 160.0;
+const ECHO_CHARGED_PULSE_ALERT_SECONDS: f32 = 3.0;
+const ECHO_CHARGED_PULSE_MAX_PURSUER_SPEED_MULTIPLIER: f32 = 1.85;
 const ECHO_PURSUER_SPEED: f32 = 3.0;
 const ECHO_PURSUER_CONTACT_RADIUS: f32 = 0.72;
 const ECHO_PURSUER_STEP_SECONDS: f32 = 0.52;
@@ -277,6 +281,9 @@ const ECHO_FOOTPRINT_LIFETIME: f32 = 4.0;
 const ECHO_STEP_WAVE_SPEED: f32 = 5.0;
 const ECHO_STEP_WAVE_MAX_RADIUS: f32 = 2.2;
 const ECHO_FOOTPRINT_SURFACE_Y: f32 = 1.02;
+// At normal walking speed this creates an audible footfall about four times a
+// second, while boost remains deliberately louder/more frequent.
+const ECHO_PLAYER_STEP_DISTANCE: f32 = 2.6;
 const ECHOLOCATION_WALK_PROFILE: WalkProfile = WalkProfile {
     speed: 10.0,
     collision_radius: 0.45,
@@ -324,18 +331,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                     app.input = PlayerInput::default();
                     mouse_captured = set_mouse_captured(&window, false);
                 }
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button,
-                    ..
-                } => {
+                WindowEvent::MouseInput { state, button, .. } => {
                     if mouse_captured {
-                        app.handle_mouse_button(button);
+                        app.handle_mouse_button(button, state);
                         play_audio_events(&mut audio, app.drain_audio_events());
-                    } else if app.mode != AppMode::Menu {
+                    } else if state == ElementState::Pressed && app.mode != AppMode::Menu {
                         mouse_captured = set_mouse_captured(&window, true);
                         if mouse_captured && app.mode == AppMode::EchoLocation {
-                            app.handle_mouse_button(button);
+                            app.handle_mouse_button(button, state);
                         }
                     }
                 }
@@ -514,6 +517,15 @@ impl AppState {
     fn handle_keyboard(&mut self, key: &PhysicalKey, state: ElementState) -> KeyboardAction {
         let pressed = state == ElementState::Pressed;
 
+        if self.mode == AppMode::EchoLocation && *key == PhysicalKey::Code(KeyCode::Space) {
+            if pressed {
+                self.echolocation.begin_pulse_charge();
+            } else if self.echolocation.release_pulse_charge(self.camera.position) {
+                self.audio_events.push(SoundEffect::EchoPing);
+            }
+            return KeyboardAction::None;
+        }
+
         if pressed {
             match (self.mode, key) {
                 (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit1)) => {
@@ -602,9 +614,6 @@ impl AppState {
                     return KeyboardAction::Fire;
                 }
                 (AppMode::Zombies, PhysicalKey::Code(KeyCode::Space)) => {
-                    return KeyboardAction::Fire;
-                }
-                (AppMode::EchoLocation, PhysicalKey::Code(KeyCode::Space)) => {
                     return KeyboardAction::Fire;
                 }
                 (AppMode::EchoLocation, PhysicalKey::Code(KeyCode::KeyR))
@@ -923,6 +932,7 @@ impl AppState {
             }
             AppMode::EchoLocation => {
                 if self.echolocation.run_status == EchoRunStatus::Active {
+                    let before_move = self.camera.position;
                     update_walking_camera_with_profile(
                         &mut self.camera,
                         &self.input,
@@ -930,6 +940,11 @@ impl AppState {
                         ECHOLOCATION_WALK_PROFILE,
                         dt,
                     );
+                    self.audio_events
+                        .extend(self.echolocation.update_player_footsteps(
+                            horizontal_distance(before_move, self.camera.position),
+                            self.camera.position,
+                        ));
                 }
                 self.audio_events
                     .extend(self.echolocation.update_with_pursuer_from_listener(
@@ -977,13 +992,24 @@ impl AppState {
         }
     }
 
-    fn handle_mouse_button(&mut self, button: MouseButton) {
-        match (self.mode, button) {
-            (AppMode::CityShooter, MouseButton::Left) => self.fire_weapon(),
-            (AppMode::Zombies, MouseButton::Left) => self.fire_weapon(),
-            (AppMode::EchoLocation, MouseButton::Left) => self.fire_weapon(),
-            (AppMode::VoxelSandbox, MouseButton::Left) => self.sandbox.remove_block(&self.camera),
-            (AppMode::VoxelSandbox, MouseButton::Right) => self.sandbox.place_block(&self.camera),
+    fn handle_mouse_button(&mut self, button: MouseButton, state: ElementState) {
+        match (self.mode, button, state) {
+            (AppMode::CityShooter, MouseButton::Left, ElementState::Pressed) => self.fire_weapon(),
+            (AppMode::Zombies, MouseButton::Left, ElementState::Pressed) => self.fire_weapon(),
+            (AppMode::EchoLocation, MouseButton::Left, ElementState::Pressed) => {
+                self.echolocation.begin_pulse_charge()
+            }
+            (AppMode::EchoLocation, MouseButton::Left, ElementState::Released) => {
+                if self.echolocation.release_pulse_charge(self.camera.position) {
+                    self.audio_events.push(SoundEffect::EchoPing);
+                }
+            }
+            (AppMode::VoxelSandbox, MouseButton::Left, ElementState::Pressed) => {
+                self.sandbox.remove_block(&self.camera)
+            }
+            (AppMode::VoxelSandbox, MouseButton::Right, ElementState::Pressed) => {
+                self.sandbox.place_block(&self.camera)
+            }
             _ => {}
         }
     }
@@ -1712,6 +1738,10 @@ struct EchoLocationState {
     waves: Vec<EchoWave>,
     revealed: HashMap<VoxelCoord, EchoReveal>,
     ping_cooldown_remaining: f32,
+    pulse_charge_seconds: Option<f32>,
+    pursuer_alert_remaining: f32,
+    pursuer_alert_strength: f32,
+    player_step_distance: f32,
     tuning_open: bool,
     show_full_map: bool,
     pursuer: EchoPursuer,
@@ -1733,6 +1763,10 @@ impl EchoLocationState {
             waves: Vec::new(),
             revealed: HashMap::new(),
             ping_cooldown_remaining: 0.0,
+            pulse_charge_seconds: None,
+            pursuer_alert_remaining: 0.0,
+            pursuer_alert_strength: 0.0,
+            player_step_distance: 0.0,
             tuning_open: false,
             show_full_map: false,
             pursuer: EchoPursuer {
@@ -1747,6 +1781,10 @@ impl EchoLocationState {
     }
 
     fn emit_ping(&mut self, origin: Vec3) -> bool {
+        self.emit_ping_with_range(origin, self.config.max_range)
+    }
+
+    fn emit_ping_with_range(&mut self, origin: Vec3, range: f32) -> bool {
         if self.run_status != EchoRunStatus::Active || self.ping_cooldown_remaining > 0.0 {
             return false;
         }
@@ -1764,10 +1802,66 @@ impl EchoLocationState {
             source,
             self.config.initial_energy,
             0,
-            self.config.max_range,
+            range,
         ));
         self.ping_cooldown_remaining = ECHOLOCATION_PING_COOLDOWN_SECONDS;
         true
+    }
+
+    fn begin_pulse_charge(&mut self) {
+        if self.run_status == EchoRunStatus::Active && self.ping_cooldown_remaining <= 0.0 {
+            self.pulse_charge_seconds.get_or_insert(0.0);
+        }
+    }
+
+    fn release_pulse_charge(&mut self, origin: Vec3) -> bool {
+        let charge = self.pulse_charge_seconds.take().unwrap_or(0.0);
+        let amount = (charge / ECHO_CHARGED_PULSE_SECONDS).clamp(0.0, 1.0);
+        let range =
+            self.config.max_range + (ECHO_CHARGED_PULSE_MAX_RANGE - self.config.max_range) * amount;
+        if !self.emit_ping_with_range(origin, range) {
+            return false;
+        }
+        if amount > 0.0 {
+            self.pursuer_alert_remaining = ECHO_CHARGED_PULSE_ALERT_SECONDS;
+            self.pursuer_alert_strength = amount;
+        }
+        true
+    }
+
+    fn update_player_footsteps(
+        &mut self,
+        horizontal_distance: f32,
+        player_position: Vec3,
+    ) -> Vec<SoundEffect> {
+        if self.run_status != EchoRunStatus::Active || horizontal_distance <= f32::EPSILON {
+            return Vec::new();
+        }
+        self.player_step_distance += horizontal_distance;
+        let mut effects = Vec::new();
+        while self.player_step_distance >= ECHO_PLAYER_STEP_DISTANCE {
+            self.player_step_distance -= ECHO_PLAYER_STEP_DISTANCE;
+            let foot_position = Vec3::new(
+                player_position.x,
+                ECHO_FOOTPRINT_SURFACE_Y,
+                player_position.z,
+            );
+            self.step_waves.push(EchoStepWave {
+                origin: foot_position,
+                age: 0.0,
+                impacts: build_echo_wave(
+                    &self.world,
+                    echo_pursuer_foot_source(foot_position),
+                    1.0,
+                    0,
+                    ECHO_STEP_WAVE_MAX_RADIUS,
+                )
+                .impacts,
+                next_impact: 0,
+            });
+            effects.push(SoundEffect::PlayerFootstep);
+        }
+        effects
     }
 
     /// Retained for deterministic echo-wave tests; gameplay supplies the live player position.
@@ -1792,6 +1886,13 @@ impl EchoLocationState {
             return Vec::new();
         }
         let mut effects = Vec::new();
+        if let Some(charge) = &mut self.pulse_charge_seconds {
+            *charge = (*charge + dt).min(ECHO_CHARGED_PULSE_SECONDS);
+        }
+        self.pursuer_alert_remaining = (self.pursuer_alert_remaining - dt).max(0.0);
+        if self.pursuer_alert_remaining <= 0.0 {
+            self.pursuer_alert_strength = 0.0;
+        }
         self.update_pursuer(dt, player_position, listener_right, &mut effects);
         if self.run_status == EchoRunStatus::Dead {
             return effects;
@@ -1886,7 +1987,11 @@ impl EchoLocationState {
             let candidate = approach_vec3(
                 self.pursuer.position,
                 Vec3::new(step.x, self.pursuer.position.y, step.z),
-                ECHO_PURSUER_SPEED * dt,
+                ECHO_PURSUER_SPEED
+                    * (1.0
+                        + (ECHO_CHARGED_PULSE_MAX_PURSUER_SPEED_MULTIPLIER - 1.0)
+                            * self.pursuer_alert_strength)
+                    * dt,
             );
             let previous = self.pursuer.position;
             self.pursuer.position = move_walking_with_collision(
@@ -7005,6 +7110,15 @@ fn render_echolocation_scene(
     } else {
         "READY".to_string()
     };
+    let charge_status = echo
+        .pulse_charge_seconds
+        .map(|charge| {
+            format!(
+                "{:>3}%",
+                (charge / ECHO_CHARGED_PULSE_SECONDS * 100.0) as u8
+            )
+        })
+        .unwrap_or_else(|| "idle".to_string());
     scene.layers.push(Layer {
         name: "reticle".to_string(),
         z: 50,
@@ -7038,8 +7152,9 @@ fn render_echolocation_scene(
         y: 5,
         z: 120,
         text: format!(
-            "Space/click ping [{}]  V full map [{}]  speed {:.0}  range {:.0}  TAB tuning [{}]",
+            "hold Space/click pulse [{}; charge {}]  V full map [{}]  speed {:.0}  range {:.0}  TAB tuning [{}]",
             ping_status,
+            charge_status,
             if echo.show_full_map { "ON" } else { "off" },
             echo.config.ping_speed,
             echo.config.max_range,
@@ -7051,7 +7166,10 @@ fn render_echolocation_scene(
         x: 2,
         y: 8,
         z: 120,
-        text: "Something follows: only fading footprints and footsteps reveal it.".to_string(),
+        text: format!(
+            "Your steps make tiny echoes. Something follows: fading prints and footsteps reveal it.{}",
+            if echo.pursuer_alert_remaining > 0.0 { "  LOUD PULSE: IT IS CLOSER" } else { "" }
+        ),
         style: hud_style(),
     });
     if echo.tuning_open {
@@ -9505,6 +9623,48 @@ mod tests {
         app.echolocation.update(0.01);
         app.fire_weapon();
         assert_eq!(app.drain_audio_events(), vec![SoundEffect::EchoPing]);
+    }
+
+    #[test]
+    fn echolocation_charged_pulse_extends_range_and_alerts_the_pursuer() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.world = echolocation_test_room(VoxelCoord::new(200, 4, 4));
+        echo.start_position = Vec3::new(2.5, WALK_EYE_HEIGHT, 2.5);
+        echo.begin_pulse_charge();
+        echo.update_with_pursuer(ECHO_CHARGED_PULSE_SECONDS, echo.start_position);
+        assert!(echo.release_pulse_charge(echo.start_position));
+        let max_impact = echo.waves[0]
+            .impacts
+            .iter()
+            .map(|impact| impact.arrival_distance_milli)
+            .max()
+            .unwrap_or_default() as f32
+            / 1000.0;
+        assert!(max_impact > echo.config.max_range);
+        assert_eq!(
+            echo.pursuer_alert_remaining,
+            ECHO_CHARGED_PULSE_ALERT_SECONDS
+        );
+        assert_eq!(echo.pursuer_alert_strength, 1.0);
+    }
+
+    #[test]
+    fn echolocation_player_walking_emits_tiny_footstep_echoes() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let position = Vec3::new(4.5, WALK_EYE_HEIGHT, 4.5);
+        let effects = echo.update_player_footsteps(ECHO_PLAYER_STEP_DISTANCE, position);
+        assert_eq!(effects, vec![SoundEffect::PlayerFootstep]);
+        assert_eq!(echo.step_waves.len(), 1);
+        assert_eq!(
+            echo.step_waves[0].origin,
+            Vec3::new(position.x, ECHO_FOOTPRINT_SURFACE_Y, position.z)
+        );
+        assert!(echo.step_waves[0]
+            .impacts
+            .iter()
+            .all(
+                |impact| impact.arrival_distance_milli as f32 / 1000.0 <= ECHO_STEP_WAVE_MAX_RADIUS
+            ));
     }
 
     #[test]

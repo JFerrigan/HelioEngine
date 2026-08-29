@@ -48,6 +48,8 @@ pub enum SoundEffect {
     PlayerHurt,
     GateSuccess,
     EchoPing,
+    /// Close, non-spatial footstep used by the Echolocation player character.
+    PlayerFootstep,
     /// Stereo pan (-1 left to 1 right) and volume multiplier for the hidden pursuer.
     InvisibleFootstep {
         pan: f32,
@@ -283,6 +285,7 @@ impl RodioBackend {
             SoundEffect::PlayerHurt => synthesize_player_hurt(),
             SoundEffect::GateSuccess => synthesize_gate_success(),
             SoundEffect::EchoPing => synthesize_echo_ping(),
+            SoundEffect::PlayerFootstep => synthesize_player_footstep(),
             SoundEffect::InvisibleFootstep { pan, gain } => synthesize_spatial_footstep(pan, gain),
         };
         self.sink.mixer().add(samples_buffer(samples));
@@ -587,6 +590,7 @@ pub fn synthesize_effect(effect: SoundEffect) -> Vec<f32> {
         SoundEffect::PlayerHurt => synthesize_player_hurt(),
         SoundEffect::GateSuccess => synthesize_gate_success(),
         SoundEffect::EchoPing => synthesize_echo_ping(),
+        SoundEffect::PlayerFootstep => synthesize_player_footstep(),
         SoundEffect::InvisibleFootstep { .. } => synthesize_invisible_footstep(),
     }
 }
@@ -640,6 +644,14 @@ fn synthesize_invisible_footstep() -> Vec<f32> {
         let thump = (TAU * 74.0 * t).sin() * (-t * 34.0).exp();
         let sample = soft_clip((thump * 0.32 + white * 0.10) * envelope);
         push_stereo(&mut samples, sample * 0.86, sample * 0.78);
+    }
+    samples
+}
+
+fn synthesize_player_footstep() -> Vec<f32> {
+    let mut samples = synthesize_invisible_footstep();
+    for sample in &mut samples {
+        *sample *= 0.38;
     }
     samples
 }
@@ -904,6 +916,7 @@ mod tests {
         let hurt = synthesize_effect(SoundEffect::PlayerHurt);
         let gate = synthesize_effect(SoundEffect::GateSuccess);
         let echo_ping = synthesize_effect(SoundEffect::EchoPing);
+        let player_footstep = synthesize_effect(SoundEffect::PlayerFootstep);
         let footstep = synthesize_effect(SoundEffect::InvisibleFootstep {
             pan: 0.0,
             gain: 1.0,
@@ -916,6 +929,8 @@ mod tests {
         assert_eq!(gate.len() % CHANNELS as usize, 0);
         assert!(echo_ping.len() >= SAMPLE_RATE as usize * CHANNELS as usize);
         assert_eq!(echo_ping.len() % CHANNELS as usize, 0);
+        assert_eq!(player_footstep.len() % CHANNELS as usize, 0);
+        assert!(player_footstep.iter().any(|sample| sample.abs() > 0.001));
         assert!(footstep.len() < echo_ping.len());
         assert_eq!(footstep.len() % CHANNELS as usize, 0);
         assert!(footstep.iter().any(|sample| sample.abs() > 0.01));
