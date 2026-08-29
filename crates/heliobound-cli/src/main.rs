@@ -9883,6 +9883,225 @@ mod tests {
         assert!(!motion.airborne);
     }
 
+    /// One-off canonical exporter for migrated maps. It reads each checked-in
+    /// file for its authored metadata/markers and replaces only static geometry
+    /// and the fixed legacy player start with a compact, deterministic list of
+    /// non-overlapping fill boxes.
+    #[test]
+    #[ignore = "run explicitly when refreshing legacy map exports"]
+    fn export_legacy_map_blueprints() {
+        let liminal = LiminalState::new_seeded(LIMINAL_SEED);
+        let echolocation = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let exports = [
+            ("bar", build_bar_scene(), bar_start_camera().position, 0_u16),
+            (
+                "doom",
+                build_doom_map(),
+                doom_start_camera().position,
+                0_u16,
+            ),
+            (
+                "zombies",
+                build_zombies_map(&ZombiesState::new()),
+                zombies_start_camera().position,
+                0_u16,
+            ),
+            (
+                "liminal-office",
+                liminal.world,
+                liminal.start_position,
+                0_u16,
+            ),
+            (
+                "echolocation",
+                echolocation.world,
+                echolocation.start_position,
+                0_u16,
+            ),
+        ];
+
+        for (id, world, start, yaw_degrees) in exports {
+            export_legacy_map_blueprint(id, &world, start, yaw_degrees);
+        }
+    }
+
+    #[test]
+    fn compiled_blueprints_match_legacy_static_worlds() {
+        let assets = AssetCatalog::discover(
+            asset_directory().expect("workspace asset directory should exist"),
+        );
+        let catalog = MapCatalog::discover(
+            map_directory().expect("workspace map directory should exist"),
+            &assets,
+        );
+        assert!(
+            catalog.errors.is_empty(),
+            "catalog errors: {:?}",
+            catalog.errors
+        );
+
+        let liminal = LiminalState::new_seeded(LIMINAL_SEED);
+        let echolocation = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let legacy = [
+            ("bar", build_bar_scene(), bar_start_camera().position),
+            ("doom", build_doom_map(), doom_start_camera().position),
+            (
+                "zombies",
+                build_zombies_map(&ZombiesState::new()),
+                zombies_start_camera().position,
+            ),
+            ("liminal-office", liminal.world, liminal.start_position),
+            (
+                "echolocation",
+                echolocation.world,
+                echolocation.start_position,
+            ),
+        ];
+
+        for (id, legacy_world, start) in legacy {
+            let compiled = catalog.get(id).expect("generated map should compile");
+            assert_eq!(
+                compiled.world.voxel_count(),
+                legacy_world.voxel_count(),
+                "{id}"
+            );
+            assert_eq!(compiled.world.bounds(), legacy_world.bounds(), "{id}");
+            assert_eq!(
+                compiled.fresh_session().player_start.position,
+                start,
+                "{id}"
+            );
+            let bounds = legacy_world.bounds().expect("legacy map has bounds");
+            for z in bounds.min.z..=bounds.max.z {
+                for y in bounds.min.y..=bounds.max.y {
+                    for x in bounds.min.x..=bounds.max.x {
+                        let coord = VoxelCoord::new(x, y, z);
+                        assert_eq!(
+                            compiled.world.get(coord),
+                            legacy_world.get(coord),
+                            "{id} differs at {coord:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn export_legacy_map_blueprint(id: &str, world: &VoxelWorld, start: Vec3, yaw_degrees: u16) {
+        use std::collections::{HashMap, HashSet};
+
+        let bounds = world.bounds().expect("legacy map has voxels");
+        let mut voxels = HashMap::new();
+        for z in bounds.min.z..=bounds.max.z {
+            for y in bounds.min.y..=bounds.max.y {
+                for x in bounds.min.x..=bounds.max.x {
+                    let coord = VoxelCoord::new(x, y, z);
+                    if let Some(cell) = world.get(coord) {
+                        voxels.insert(coord, cell.material);
+                    }
+                }
+            }
+        }
+
+        let mut coordinates: Vec<_> = voxels.keys().copied().collect();
+        coordinates.sort_by_key(|coord| (coord.z, coord.y, coord.x));
+        let mut emitted = HashSet::new();
+        let mut operations = Vec::new();
+        for min in coordinates {
+            if emitted.contains(&min) {
+                continue;
+            }
+            let material = voxels[&min];
+            let matches =
+                |coord| voxels.get(&coord) == Some(&material) && !emitted.contains(&coord);
+            let mut max_x = min.x;
+            while matches(VoxelCoord::new(max_x + 1, min.y, min.z)) {
+                max_x += 1;
+            }
+            let mut max_z = min.z;
+            while (min.x..=max_x).all(|x| matches(VoxelCoord::new(x, min.y, max_z + 1))) {
+                max_z += 1;
+            }
+            let mut max_y = min.y;
+            while (min.z..=max_z)
+                .flat_map(|z| (min.x..=max_x).map(move |x| VoxelCoord::new(x, max_y + 1, z)))
+                .all(matches)
+            {
+                max_y += 1;
+            }
+            for z in min.z..=max_z {
+                for y in min.y..=max_y {
+                    for x in min.x..=max_x {
+                        emitted.insert(VoxelCoord::new(x, y, z));
+                    }
+                }
+            }
+            operations.push(serde_json::json!({
+                "kind": "fill_box",
+                "min": [min.x, min.y, min.z],
+                "max": [max_x, max_y, max_z],
+                "material": export_material_name(material),
+            }));
+        }
+
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/voxel-maps")
+            .join(format!("{id}.hbmap.json"));
+        let mut json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&path).expect("read current map metadata"),
+        )
+        .expect("parse current map metadata");
+        json["bounds"] = serde_json::json!({
+            "min": [bounds.min.x, bounds.min.y, bounds.min.z],
+            "max": [bounds.max.x, bounds.max.y, bounds.max.z],
+        });
+        json["player_start"] = serde_json::json!({
+            "id": "player-start",
+            "kind": "player_spawn",
+            "position": [start.x, start.y, start.z],
+            "yaw_degrees": yaw_degrees,
+        });
+        // The placeholder liminal marker is a temporary graph anchor; keep
+        // it valid while the static legacy room layout is exported verbatim.
+        if id == "liminal-office" {
+            json["markers"][0]["bounds"] = serde_json::json!({
+                "min": [bounds.min.x, bounds.min.y, bounds.min.z],
+                "max": [bounds.max.x, bounds.max.y, bounds.max.z],
+            });
+        }
+        json["operations"] = serde_json::Value::Array(operations);
+        std::fs::write(path, serde_json::to_string_pretty(&json).unwrap() + "\n")
+            .expect("write canonical map export");
+    }
+
+    fn export_material_name(material: VoxelMaterial) -> &'static str {
+        match material {
+            VoxelMaterial::Regolith => "Regolith",
+            VoxelMaterial::Basalt => "Basalt",
+            VoxelMaterial::Ocean => "Ocean",
+            VoxelMaterial::Ice => "Ice",
+            VoxelMaterial::Grass => "Grass",
+            VoxelMaterial::Dirt => "Dirt",
+            VoxelMaterial::Stone => "Stone",
+            VoxelMaterial::Sand => "Sand",
+            VoxelMaterial::Wood => "Wood",
+            VoxelMaterial::Leaves => "Leaves",
+            VoxelMaterial::Zombie => "Zombie",
+            VoxelMaterial::CornStalk => "CornStalk",
+            VoxelMaterial::CarbonLife => "CarbonLife",
+            VoxelMaterial::SiliconLife => "SiliconLife",
+            VoxelMaterial::Habitat => "Habitat",
+            VoxelMaterial::ShipHull => "ShipHull",
+            VoxelMaterial::Glass => "Glass",
+            VoxelMaterial::Beacon => "Beacon",
+            VoxelMaterial::Gate => "Gate",
+            VoxelMaterial::Receiver => "Receiver",
+            VoxelMaterial::SignalPipe => "SignalPipe",
+            VoxelMaterial::PuzzleDoor => "PuzzleDoor",
+            VoxelMaterial::Custom(_) => panic!("legacy map contains unsupported custom material"),
+        }
+    }
+
     #[test]
     fn walking_collision_slides_along_walls() {
         let mut world = VoxelWorld::new();

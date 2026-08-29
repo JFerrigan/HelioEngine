@@ -1,1 +1,8205 @@
-{"format_version":1,"id":"bar","name":"Starhusk bar","mode":"bar","category":"authored","bounds":{"min":[-32,0,-32],"max":[32,16,32]},"player_start":{"id":"player-start","kind":"player_spawn","position":[0.5,1.7,18.5],"yaw_degrees":180},"operations":[{"kind":"fill_box","min":[-32,0,-32],"max":[32,0,32],"material":"Stone"},{"kind":"fill_box","min":[-32,1,-32],"max":[32,8,-32],"material":"Basalt"},{"kind":"fill_box","min":[-32,1,32],"max":[32,8,32],"material":"Basalt"},{"kind":"fill_box","min":[-32,1,-32],"max":[-32,8,32],"material":"Basalt"},{"kind":"fill_box","min":[32,1,-32],"max":[32,8,32],"material":"Basalt"},{"kind":"fill_box","min":[-32,9,-32],"max":[32,9,32],"material":"ShipHull"},{"kind":"fill_box","min":[-12,1,-8],"max":[12,4,-5],"material":"Wood"},{"kind":"place_asset","id":"airlock","asset_id":"spaceship-airlock-door","position":[0,1,-31],"yaw_degrees":0}],"markers":[{"id":"exit","kind":"exit","position":[0.5,1.7,-30.5],"target":"menu"}]}
+{
+  "bounds": {
+    "max": [
+      72,
+      18,
+      48
+    ],
+    "min": [
+      -72,
+      0,
+      -48
+    ]
+  },
+  "category": "authored",
+  "format_version": 1,
+  "id": "bar",
+  "markers": [
+    {
+      "id": "exit",
+      "kind": "exit",
+      "position": [
+        0.5,
+        1.7,
+        -30.5
+      ],
+      "target": "menu"
+    }
+  ],
+  "mode": "bar",
+  "name": "Starhusk bar",
+  "operations": [
+    {
+      "kind": "fill_box",
+      "material": "Regolith",
+      "max": [
+        72,
+        0,
+        48
+      ],
+      "min": [
+        -72,
+        0,
+        -48
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        72,
+        18,
+        -47
+      ],
+      "min": [
+        -72,
+        1,
+        -48
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -71,
+        18,
+        48
+      ],
+      "min": [
+        -72,
+        1,
+        -46
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        72,
+        18,
+        48
+      ],
+      "min": [
+        71,
+        1,
+        -46
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -59,
+        17,
+        -43
+      ],
+      "min": [
+        -60,
+        1,
+        -44
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -39,
+        17,
+        -43
+      ],
+      "min": [
+        -40,
+        1,
+        -44
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -19,
+        17,
+        -43
+      ],
+      "min": [
+        -20,
+        1,
+        -44
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        1,
+        17,
+        -43
+      ],
+      "min": [
+        0,
+        1,
+        -44
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        21,
+        17,
+        -43
+      ],
+      "min": [
+        20,
+        1,
+        -44
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        41,
+        17,
+        -43
+      ],
+      "min": [
+        40,
+        1,
+        -44
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        61,
+        17,
+        -43
+      ],
+      "min": [
+        60,
+        1,
+        -44
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        68,
+        18,
+        -41
+      ],
+      "min": [
+        -68,
+        18,
+        -42
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        68,
+        3,
+        36
+      ],
+      "min": [
+        62,
+        1,
+        -38
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        68,
+        14,
+        -37
+      ],
+      "min": [
+        62,
+        4,
+        -38
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -59,
+        4,
+        -25
+      ],
+      "min": [
+        -68,
+        1,
+        -36
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        62,
+        4,
+        34
+      ],
+      "min": [
+        59,
+        4,
+        -36
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        68,
+        14,
+        36
+      ],
+      "min": [
+        63,
+        4,
+        -36
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -59,
+        10,
+        -36
+      ],
+      "min": [
+        -68,
+        5,
+        -36
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        62,
+        7,
+        36
+      ],
+      "min": [
+        62,
+        5,
+        -36
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        62,
+        8,
+        34
+      ],
+      "min": [
+        59,
+        8,
+        -36
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        62,
+        11,
+        36
+      ],
+      "min": [
+        62,
+        9,
+        -36
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        62,
+        12,
+        34
+      ],
+      "min": [
+        59,
+        12,
+        -36
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        62,
+        14,
+        36
+      ],
+      "min": [
+        62,
+        13,
+        -36
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -68,
+        10,
+        -25
+      ],
+      "min": [
+        -68,
+        5,
+        -35
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -58,
+        6,
+        -26
+      ],
+      "min": [
+        -67,
+        5,
+        -35
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -58,
+        10,
+        -35
+      ],
+      "min": [
+        -67,
+        7,
+        -35
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        58,
+        5,
+        23
+      ],
+      "min": [
+        43,
+        1,
+        -34
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -58,
+        4,
+        -34
+      ],
+      "min": [
+        -58,
+        2,
+        -34
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        59,
+        6,
+        23
+      ],
+      "min": [
+        41,
+        6,
+        -34
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -67,
+        10,
+        -26
+      ],
+      "min": [
+        -67,
+        7,
+        -34
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -59,
+        8,
+        -27
+      ],
+      "min": [
+        -66,
+        7,
+        -34
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -58,
+        10,
+        -26
+      ],
+      "min": [
+        -58,
+        7,
+        -34
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -59,
+        10,
+        -26
+      ],
+      "min": [
+        -66,
+        9,
+        -34
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        39,
+        2,
+        31
+      ],
+      "min": [
+        39,
+        2,
+        -33
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        6,
+        -32
+      ],
+      "min": [
+        60,
+        5,
+        -32
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        7,
+        -32
+      ],
+      "min": [
+        60,
+        7,
+        -32
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -32,
+        2,
+        -31
+      ],
+      "min": [
+        -32,
+        1,
+        -31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -28,
+        2,
+        -31
+      ],
+      "min": [
+        -28,
+        1,
+        -31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -29,
+        3,
+        -27
+      ],
+      "min": [
+        -31,
+        2,
+        -31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -32,
+        3,
+        -27
+      ],
+      "min": [
+        -32,
+        3,
+        -31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -28,
+        3,
+        -27
+      ],
+      "min": [
+        -28,
+        3,
+        -31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        40,
+        8,
+        -31
+      ],
+      "min": [
+        40,
+        7,
+        -31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        40,
+        9,
+        -31
+      ],
+      "min": [
+        40,
+        9,
+        -31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        14,
+        -31
+      ],
+      "min": [
+        60,
+        13,
+        -31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        15,
+        -31
+      ],
+      "min": [
+        60,
+        15,
+        -31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -58,
+        4,
+        -30
+      ],
+      "min": [
+        -58,
+        2,
+        -30
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -32,
+        2,
+        -28
+      ],
+      "min": [
+        -32,
+        2,
+        -30
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -28,
+        2,
+        -28
+      ],
+      "min": [
+        -28,
+        2,
+        -30
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        10,
+        -30
+      ],
+      "min": [
+        60,
+        9,
+        -30
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        11,
+        -30
+      ],
+      "min": [
+        60,
+        11,
+        -30
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        68,
+        18,
+        -29
+      ],
+      "min": [
+        -68,
+        18,
+        -30
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -6,
+        2,
+        -29
+      ],
+      "min": [
+        -6,
+        1,
+        -29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -2,
+        2,
+        -29
+      ],
+      "min": [
+        -2,
+        1,
+        -29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        20,
+        2,
+        -29
+      ],
+      "min": [
+        20,
+        1,
+        -29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        24,
+        2,
+        -29
+      ],
+      "min": [
+        24,
+        1,
+        -29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -3,
+        3,
+        -29
+      ],
+      "min": [
+        -5,
+        2,
+        -29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        23,
+        3,
+        -25
+      ],
+      "min": [
+        21,
+        2,
+        -29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -6,
+        3,
+        -29
+      ],
+      "min": [
+        -6,
+        3,
+        -29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -2,
+        3,
+        -29
+      ],
+      "min": [
+        -2,
+        3,
+        -29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        20,
+        3,
+        -25
+      ],
+      "min": [
+        20,
+        3,
+        -29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        24,
+        3,
+        -25
+      ],
+      "min": [
+        24,
+        3,
+        -29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -5,
+        3,
+        -25
+      ],
+      "min": [
+        -6,
+        1,
+        -28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -2,
+        3,
+        -25
+      ],
+      "min": [
+        -3,
+        1,
+        -28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -4,
+        3,
+        -25
+      ],
+      "min": [
+        -4,
+        2,
+        -28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        20,
+        2,
+        -26
+      ],
+      "min": [
+        20,
+        2,
+        -28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        24,
+        2,
+        -26
+      ],
+      "min": [
+        24,
+        2,
+        -28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -2,
+        8,
+        -26
+      ],
+      "min": [
+        -6,
+        4,
+        -28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -3,
+        11,
+        -26
+      ],
+      "min": [
+        -5,
+        9,
+        -28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -2,
+        12,
+        -26
+      ],
+      "min": [
+        -6,
+        12,
+        -28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -32,
+        2,
+        -27
+      ],
+      "min": [
+        -32,
+        1,
+        -27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -28,
+        2,
+        -27
+      ],
+      "min": [
+        -28,
+        1,
+        -27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        33,
+        2,
+        -27
+      ],
+      "min": [
+        33,
+        1,
+        -27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        37,
+        2,
+        -27
+      ],
+      "min": [
+        37,
+        1,
+        -27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        36,
+        3,
+        -23
+      ],
+      "min": [
+        34,
+        2,
+        -27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        33,
+        3,
+        -23
+      ],
+      "min": [
+        33,
+        3,
+        -27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        37,
+        3,
+        -23
+      ],
+      "min": [
+        37,
+        3,
+        -27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -28,
+        9,
+        -27
+      ],
+      "min": [
+        -32,
+        4,
+        -27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        37,
+        9,
+        -23
+      ],
+      "min": [
+        37,
+        4,
+        -27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -7,
+        8,
+        -27
+      ],
+      "min": [
+        -8,
+        5,
+        -27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        0,
+        8,
+        -27
+      ],
+      "min": [
+        -1,
+        5,
+        -27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        6,
+        -27
+      ],
+      "min": [
+        60,
+        5,
+        -27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        7,
+        -27
+      ],
+      "min": [
+        60,
+        7,
+        -27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -58,
+        4,
+        -26
+      ],
+      "min": [
+        -58,
+        2,
+        -26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        33,
+        2,
+        -24
+      ],
+      "min": [
+        33,
+        2,
+        -26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        37,
+        2,
+        -24
+      ],
+      "min": [
+        37,
+        2,
+        -26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -37,
+        8,
+        -25
+      ],
+      "min": [
+        -37,
+        5,
+        -26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -23,
+        8,
+        -25
+      ],
+      "min": [
+        -23,
+        5,
+        -26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -59,
+        8,
+        -26
+      ],
+      "min": [
+        -66,
+        7,
+        -26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        40,
+        8,
+        -26
+      ],
+      "min": [
+        40,
+        7,
+        -26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        40,
+        9,
+        -26
+      ],
+      "min": [
+        40,
+        9,
+        -26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        14,
+        -26
+      ],
+      "min": [
+        60,
+        13,
+        -26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        15,
+        -26
+      ],
+      "min": [
+        60,
+        15,
+        -26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        20,
+        2,
+        -25
+      ],
+      "min": [
+        20,
+        1,
+        -25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        24,
+        2,
+        -25
+      ],
+      "min": [
+        24,
+        1,
+        -25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -2,
+        9,
+        -25
+      ],
+      "min": [
+        -6,
+        4,
+        -25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        24,
+        9,
+        -25
+      ],
+      "min": [
+        20,
+        4,
+        -25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -59,
+        10,
+        -25
+      ],
+      "min": [
+        -67,
+        5,
+        -25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -26,
+        5,
+        -19
+      ],
+      "min": [
+        -34,
+        5,
+        -25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        10,
+        -25
+      ],
+      "min": [
+        60,
+        9,
+        -25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -5,
+        10,
+        -25
+      ],
+      "min": [
+        -5,
+        10,
+        -25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -3,
+        10,
+        -25
+      ],
+      "min": [
+        -3,
+        10,
+        -25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        11,
+        -25
+      ],
+      "min": [
+        60,
+        11,
+        -25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -36,
+        3,
+        -23
+      ],
+      "min": [
+        -39,
+        1,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -35,
+        2,
+        -24
+      ],
+      "min": [
+        -35,
+        1,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -33,
+        4,
+        -24
+      ],
+      "min": [
+        -33,
+        1,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -27,
+        4,
+        -24
+      ],
+      "min": [
+        -27,
+        1,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -25,
+        2,
+        -24
+      ],
+      "min": [
+        -25,
+        1,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -21,
+        3,
+        -23
+      ],
+      "min": [
+        -24,
+        1,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -35,
+        3,
+        -20
+      ],
+      "min": [
+        -35,
+        3,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -25,
+        3,
+        -20
+      ],
+      "min": [
+        -25,
+        3,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -36,
+        8,
+        -20
+      ],
+      "min": [
+        -38,
+        4,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -35,
+        9,
+        -20
+      ],
+      "min": [
+        -35,
+        4,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -25,
+        9,
+        -20
+      ],
+      "min": [
+        -25,
+        4,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "SiliconLife",
+      "max": [
+        -22,
+        8,
+        -20
+      ],
+      "min": [
+        -24,
+        4,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        29,
+        8,
+        -23
+      ],
+      "min": [
+        29,
+        5,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -36,
+        12,
+        -20
+      ],
+      "min": [
+        -38,
+        12,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -22,
+        12,
+        -20
+      ],
+      "min": [
+        -24,
+        12,
+        -24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        33,
+        2,
+        -23
+      ],
+      "min": [
+        33,
+        1,
+        -23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        37,
+        2,
+        -23
+      ],
+      "min": [
+        37,
+        1,
+        -23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -35,
+        2,
+        -21
+      ],
+      "min": [
+        -35,
+        2,
+        -23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -25,
+        2,
+        -21
+      ],
+      "min": [
+        -25,
+        2,
+        -23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        0,
+        5,
+        -17
+      ],
+      "min": [
+        -8,
+        5,
+        -23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        26,
+        5,
+        -17
+      ],
+      "min": [
+        18,
+        5,
+        -23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -30,
+        6,
+        -21
+      ],
+      "min": [
+        -30,
+        6,
+        -23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -27,
+        7,
+        -23
+      ],
+      "min": [
+        -27,
+        6,
+        -23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -27,
+        8,
+        -23
+      ],
+      "min": [
+        -27,
+        8,
+        -23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -36,
+        11,
+        -21
+      ],
+      "min": [
+        -38,
+        9,
+        -23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -22,
+        11,
+        -21
+      ],
+      "min": [
+        -24,
+        9,
+        -23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -39,
+        10,
+        -23
+      ],
+      "min": [
+        -39,
+        10,
+        -23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -21,
+        10,
+        -23
+      ],
+      "min": [
+        -21,
+        10,
+        -23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -13,
+        2,
+        -22
+      ],
+      "min": [
+        -13,
+        1,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -9,
+        2,
+        -22
+      ],
+      "min": [
+        -9,
+        1,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -7,
+        4,
+        -22
+      ],
+      "min": [
+        -7,
+        1,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -1,
+        4,
+        -22
+      ],
+      "min": [
+        -1,
+        1,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        1,
+        2,
+        -22
+      ],
+      "min": [
+        1,
+        1,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        5,
+        2,
+        -22
+      ],
+      "min": [
+        5,
+        1,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        13,
+        2,
+        -22
+      ],
+      "min": [
+        13,
+        1,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        17,
+        2,
+        -22
+      ],
+      "min": [
+        17,
+        1,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        19,
+        4,
+        -22
+      ],
+      "min": [
+        19,
+        1,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        25,
+        4,
+        -22
+      ],
+      "min": [
+        25,
+        1,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        27,
+        2,
+        -22
+      ],
+      "min": [
+        27,
+        1,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        31,
+        3,
+        -21
+      ],
+      "min": [
+        28,
+        1,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -36,
+        3,
+        -22
+      ],
+      "min": [
+        -39,
+        2,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -21,
+        3,
+        -22
+      ],
+      "min": [
+        -24,
+        2,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -10,
+        3,
+        -18
+      ],
+      "min": [
+        -12,
+        2,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        4,
+        3,
+        -18
+      ],
+      "min": [
+        2,
+        2,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        16,
+        3,
+        -18
+      ],
+      "min": [
+        14,
+        2,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -13,
+        3,
+        -18
+      ],
+      "min": [
+        -13,
+        3,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -9,
+        3,
+        -18
+      ],
+      "min": [
+        -9,
+        3,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        1,
+        3,
+        -18
+      ],
+      "min": [
+        1,
+        3,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        5,
+        3,
+        -18
+      ],
+      "min": [
+        5,
+        3,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        13,
+        3,
+        -18
+      ],
+      "min": [
+        13,
+        3,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        17,
+        3,
+        -18
+      ],
+      "min": [
+        17,
+        3,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        27,
+        3,
+        -18
+      ],
+      "min": [
+        27,
+        3,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -9,
+        9,
+        -18
+      ],
+      "min": [
+        -9,
+        4,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        1,
+        9,
+        -18
+      ],
+      "min": [
+        1,
+        4,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        17,
+        9,
+        -18
+      ],
+      "min": [
+        17,
+        4,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        27,
+        9,
+        -18
+      ],
+      "min": [
+        27,
+        4,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        30,
+        8,
+        -18
+      ],
+      "min": [
+        28,
+        4,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        6,
+        -22
+      ],
+      "min": [
+        60,
+        5,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -31,
+        6,
+        -22
+      ],
+      "min": [
+        -31,
+        6,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -29,
+        6,
+        -22
+      ],
+      "min": [
+        -29,
+        6,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -30,
+        7,
+        -22
+      ],
+      "min": [
+        -30,
+        7,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        7,
+        -22
+      ],
+      "min": [
+        60,
+        7,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        30,
+        12,
+        -18
+      ],
+      "min": [
+        28,
+        12,
+        -22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -36,
+        3,
+        -20
+      ],
+      "min": [
+        -39,
+        1,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -21,
+        3,
+        -20
+      ],
+      "min": [
+        -24,
+        1,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -13,
+        2,
+        -19
+      ],
+      "min": [
+        -13,
+        2,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -9,
+        2,
+        -19
+      ],
+      "min": [
+        -9,
+        2,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        1,
+        2,
+        -19
+      ],
+      "min": [
+        1,
+        2,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        5,
+        2,
+        -19
+      ],
+      "min": [
+        5,
+        2,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        13,
+        2,
+        -19
+      ],
+      "min": [
+        13,
+        2,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        17,
+        2,
+        -19
+      ],
+      "min": [
+        17,
+        2,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        27,
+        2,
+        -19
+      ],
+      "min": [
+        27,
+        2,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -4,
+        6,
+        -19
+      ],
+      "min": [
+        -4,
+        6,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -1,
+        7,
+        -21
+      ],
+      "min": [
+        -1,
+        6,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        22,
+        6,
+        -19
+      ],
+      "min": [
+        22,
+        6,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        25,
+        7,
+        -21
+      ],
+      "min": [
+        25,
+        6,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        40,
+        8,
+        -21
+      ],
+      "min": [
+        40,
+        7,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -1,
+        8,
+        -21
+      ],
+      "min": [
+        -1,
+        8,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        25,
+        8,
+        -21
+      ],
+      "min": [
+        25,
+        8,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        30,
+        11,
+        -19
+      ],
+      "min": [
+        28,
+        9,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        40,
+        9,
+        -21
+      ],
+      "min": [
+        40,
+        9,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -39,
+        10,
+        -21
+      ],
+      "min": [
+        -39,
+        10,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -21,
+        10,
+        -21
+      ],
+      "min": [
+        -21,
+        10,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        31,
+        10,
+        -21
+      ],
+      "min": [
+        31,
+        10,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        14,
+        -21
+      ],
+      "min": [
+        60,
+        13,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        15,
+        -21
+      ],
+      "min": [
+        60,
+        15,
+        -21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -35,
+        2,
+        -20
+      ],
+      "min": [
+        -35,
+        1,
+        -20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -33,
+        4,
+        -20
+      ],
+      "min": [
+        -33,
+        1,
+        -20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -27,
+        4,
+        -20
+      ],
+      "min": [
+        -27,
+        1,
+        -20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -25,
+        2,
+        -20
+      ],
+      "min": [
+        -25,
+        1,
+        -20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        31,
+        3,
+        -20
+      ],
+      "min": [
+        28,
+        2,
+        -20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -5,
+        6,
+        -20
+      ],
+      "min": [
+        -5,
+        6,
+        -20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -3,
+        6,
+        -20
+      ],
+      "min": [
+        -3,
+        6,
+        -20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        21,
+        6,
+        -20
+      ],
+      "min": [
+        21,
+        6,
+        -20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        23,
+        6,
+        -20
+      ],
+      "min": [
+        23,
+        6,
+        -20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -4,
+        7,
+        -20
+      ],
+      "min": [
+        -4,
+        7,
+        -20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        22,
+        7,
+        -20
+      ],
+      "min": [
+        22,
+        7,
+        -20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        10,
+        -20
+      ],
+      "min": [
+        60,
+        9,
+        -20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        11,
+        -20
+      ],
+      "min": [
+        60,
+        11,
+        -20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        31,
+        3,
+        -18
+      ],
+      "min": [
+        28,
+        1,
+        -19
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -37,
+        8,
+        -18
+      ],
+      "min": [
+        -37,
+        5,
+        -19
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -23,
+        8,
+        -18
+      ],
+      "min": [
+        -23,
+        5,
+        -19
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        31,
+        10,
+        -19
+      ],
+      "min": [
+        31,
+        10,
+        -19
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -13,
+        2,
+        -18
+      ],
+      "min": [
+        -13,
+        1,
+        -18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -9,
+        2,
+        -18
+      ],
+      "min": [
+        -9,
+        1,
+        -18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -7,
+        4,
+        -18
+      ],
+      "min": [
+        -7,
+        1,
+        -18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -1,
+        4,
+        -18
+      ],
+      "min": [
+        -1,
+        1,
+        -18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        1,
+        2,
+        -18
+      ],
+      "min": [
+        1,
+        1,
+        -18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        5,
+        2,
+        -18
+      ],
+      "min": [
+        5,
+        1,
+        -18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        13,
+        2,
+        -18
+      ],
+      "min": [
+        13,
+        1,
+        -18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        17,
+        2,
+        -18
+      ],
+      "min": [
+        17,
+        1,
+        -18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        19,
+        4,
+        -18
+      ],
+      "min": [
+        19,
+        1,
+        -18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        25,
+        4,
+        -18
+      ],
+      "min": [
+        25,
+        1,
+        -18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        27,
+        2,
+        -18
+      ],
+      "min": [
+        27,
+        1,
+        -18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        68,
+        18,
+        -17
+      ],
+      "min": [
+        -68,
+        18,
+        -18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        33,
+        2,
+        -17
+      ],
+      "min": [
+        33,
+        1,
+        -17
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        37,
+        2,
+        -17
+      ],
+      "min": [
+        37,
+        1,
+        -17
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        36,
+        3,
+        -13
+      ],
+      "min": [
+        34,
+        2,
+        -17
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        33,
+        3,
+        -13
+      ],
+      "min": [
+        33,
+        3,
+        -17
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        37,
+        3,
+        -13
+      ],
+      "min": [
+        37,
+        3,
+        -17
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        37,
+        9,
+        -13
+      ],
+      "min": [
+        37,
+        4,
+        -17
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        29,
+        8,
+        -16
+      ],
+      "min": [
+        29,
+        5,
+        -17
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        6,
+        -17
+      ],
+      "min": [
+        60,
+        5,
+        -17
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        7,
+        -17
+      ],
+      "min": [
+        60,
+        7,
+        -17
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        33,
+        2,
+        -14
+      ],
+      "min": [
+        33,
+        2,
+        -16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        37,
+        2,
+        -14
+      ],
+      "min": [
+        37,
+        2,
+        -16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -60,
+        10,
+        -15
+      ],
+      "min": [
+        -60,
+        7,
+        -16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        40,
+        8,
+        -16
+      ],
+      "min": [
+        40,
+        7,
+        -16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        40,
+        9,
+        -16
+      ],
+      "min": [
+        40,
+        9,
+        -16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        14,
+        -16
+      ],
+      "min": [
+        60,
+        13,
+        -16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        15,
+        -16
+      ],
+      "min": [
+        60,
+        15,
+        -16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        10,
+        -15
+      ],
+      "min": [
+        60,
+        9,
+        -15
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        11,
+        -15
+      ],
+      "min": [
+        60,
+        11,
+        -15
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -59,
+        5,
+        -13
+      ],
+      "min": [
+        -61,
+        1,
+        -14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -59,
+        10,
+        -10
+      ],
+      "min": [
+        -61,
+        6,
+        -14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -59,
+        14,
+        -10
+      ],
+      "min": [
+        -61,
+        14,
+        -14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        33,
+        2,
+        -13
+      ],
+      "min": [
+        33,
+        1,
+        -13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        37,
+        2,
+        -13
+      ],
+      "min": [
+        37,
+        1,
+        -13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -59,
+        13,
+        -11
+      ],
+      "min": [
+        -61,
+        11,
+        -13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -62,
+        12,
+        -13
+      ],
+      "min": [
+        -62,
+        12,
+        -13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        6,
+        -12
+      ],
+      "min": [
+        60,
+        5,
+        -12
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        7,
+        -12
+      ],
+      "min": [
+        60,
+        7,
+        -12
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -59,
+        5,
+        -10
+      ],
+      "min": [
+        -61,
+        1,
+        -11
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        40,
+        8,
+        -11
+      ],
+      "min": [
+        40,
+        7,
+        -11
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        40,
+        9,
+        -11
+      ],
+      "min": [
+        40,
+        9,
+        -11
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -62,
+        12,
+        -11
+      ],
+      "min": [
+        -62,
+        12,
+        -11
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        14,
+        -11
+      ],
+      "min": [
+        60,
+        13,
+        -11
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        15,
+        -11
+      ],
+      "min": [
+        60,
+        15,
+        -11
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        10,
+        -10
+      ],
+      "min": [
+        60,
+        9,
+        -10
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        11,
+        -10
+      ],
+      "min": [
+        60,
+        11,
+        -10
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        35,
+        8,
+        -8
+      ],
+      "min": [
+        35,
+        5,
+        -9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -60,
+        10,
+        -8
+      ],
+      "min": [
+        -60,
+        7,
+        -9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        36,
+        3,
+        -6
+      ],
+      "min": [
+        33,
+        1,
+        -7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        37,
+        2,
+        -7
+      ],
+      "min": [
+        37,
+        1,
+        -7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        37,
+        3,
+        -3
+      ],
+      "min": [
+        37,
+        3,
+        -7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "SiliconLife",
+      "max": [
+        36,
+        8,
+        -3
+      ],
+      "min": [
+        34,
+        4,
+        -7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        37,
+        9,
+        -3
+      ],
+      "min": [
+        37,
+        4,
+        -7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        6,
+        -7
+      ],
+      "min": [
+        60,
+        5,
+        -7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        7,
+        -7
+      ],
+      "min": [
+        60,
+        7,
+        -7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        36,
+        12,
+        -3
+      ],
+      "min": [
+        34,
+        12,
+        -7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        37,
+        2,
+        -4
+      ],
+      "min": [
+        37,
+        2,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        40,
+        8,
+        -6
+      ],
+      "min": [
+        40,
+        7,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        36,
+        11,
+        -4
+      ],
+      "min": [
+        34,
+        9,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        40,
+        9,
+        -6
+      ],
+      "min": [
+        40,
+        9,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        33,
+        10,
+        -6
+      ],
+      "min": [
+        33,
+        10,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        14,
+        -6
+      ],
+      "min": [
+        60,
+        13,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        15,
+        -6
+      ],
+      "min": [
+        60,
+        15,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        68,
+        18,
+        -5
+      ],
+      "min": [
+        -68,
+        18,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        36,
+        3,
+        -5
+      ],
+      "min": [
+        33,
+        2,
+        -5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        10,
+        -5
+      ],
+      "min": [
+        60,
+        9,
+        -5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        11,
+        -5
+      ],
+      "min": [
+        60,
+        11,
+        -5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        36,
+        3,
+        -3
+      ],
+      "min": [
+        33,
+        1,
+        -4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        33,
+        10,
+        -4
+      ],
+      "min": [
+        33,
+        10,
+        -4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -26,
+        2,
+        -3
+      ],
+      "min": [
+        -26,
+        1,
+        -3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -22,
+        2,
+        -3
+      ],
+      "min": [
+        -22,
+        1,
+        -3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        37,
+        2,
+        -3
+      ],
+      "min": [
+        37,
+        1,
+        -3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -23,
+        3,
+        1
+      ],
+      "min": [
+        -25,
+        2,
+        -3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -26,
+        3,
+        1
+      ],
+      "min": [
+        -26,
+        3,
+        -3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -22,
+        3,
+        1
+      ],
+      "min": [
+        -22,
+        3,
+        -3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        16,
+        2,
+        -2
+      ],
+      "min": [
+        16,
+        1,
+        -2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        20,
+        2,
+        -2
+      ],
+      "min": [
+        20,
+        1,
+        -2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -26,
+        2,
+        0
+      ],
+      "min": [
+        -26,
+        2,
+        -2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -22,
+        2,
+        0
+      ],
+      "min": [
+        -22,
+        2,
+        -2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        19,
+        3,
+        2
+      ],
+      "min": [
+        17,
+        2,
+        -2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        16,
+        3,
+        2
+      ],
+      "min": [
+        16,
+        3,
+        -2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        20,
+        3,
+        2
+      ],
+      "min": [
+        20,
+        3,
+        -2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        35,
+        8,
+        -1
+      ],
+      "min": [
+        35,
+        5,
+        -2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        6,
+        -2
+      ],
+      "min": [
+        60,
+        5,
+        -2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        7,
+        -2
+      ],
+      "min": [
+        60,
+        7,
+        -2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        16,
+        2,
+        1
+      ],
+      "min": [
+        16,
+        2,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        20,
+        2,
+        1
+      ],
+      "min": [
+        20,
+        2,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        40,
+        8,
+        -1
+      ],
+      "min": [
+        40,
+        7,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        40,
+        9,
+        -1
+      ],
+      "min": [
+        40,
+        9,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        14,
+        -1
+      ],
+      "min": [
+        60,
+        13,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        15,
+        -1
+      ],
+      "min": [
+        60,
+        15,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        10,
+        0
+      ],
+      "min": [
+        60,
+        9,
+        0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        11,
+        0
+      ],
+      "min": [
+        60,
+        11,
+        0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -26,
+        2,
+        1
+      ],
+      "min": [
+        -26,
+        1,
+        1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -22,
+        2,
+        1
+      ],
+      "min": [
+        -22,
+        1,
+        1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -22,
+        9,
+        1
+      ],
+      "min": [
+        -26,
+        4,
+        1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        16,
+        2,
+        2
+      ],
+      "min": [
+        16,
+        1,
+        2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        20,
+        2,
+        2
+      ],
+      "min": [
+        20,
+        1,
+        2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        20,
+        9,
+        2
+      ],
+      "min": [
+        16,
+        4,
+        2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        6,
+        10,
+        3
+      ],
+      "min": [
+        6,
+        7,
+        2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        33,
+        2,
+        3
+      ],
+      "min": [
+        33,
+        1,
+        3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        37,
+        2,
+        3
+      ],
+      "min": [
+        37,
+        1,
+        3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        36,
+        3,
+        7
+      ],
+      "min": [
+        34,
+        2,
+        3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        33,
+        3,
+        7
+      ],
+      "min": [
+        33,
+        3,
+        3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        37,
+        3,
+        7
+      ],
+      "min": [
+        37,
+        3,
+        3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        37,
+        9,
+        7
+      ],
+      "min": [
+        37,
+        4,
+        3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -20,
+        5,
+        9
+      ],
+      "min": [
+        -28,
+        5,
+        3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        6,
+        3
+      ],
+      "min": [
+        60,
+        5,
+        3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        7,
+        3
+      ],
+      "min": [
+        60,
+        7,
+        3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -33,
+        2,
+        4
+      ],
+      "min": [
+        -33,
+        1,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -29,
+        2,
+        4
+      ],
+      "min": [
+        -29,
+        1,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -27,
+        4,
+        4
+      ],
+      "min": [
+        -27,
+        1,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -21,
+        4,
+        4
+      ],
+      "min": [
+        -21,
+        1,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -19,
+        2,
+        4
+      ],
+      "min": [
+        -19,
+        1,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -15,
+        2,
+        4
+      ],
+      "min": [
+        -15,
+        1,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        7,
+        5,
+        5
+      ],
+      "min": [
+        5,
+        1,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -30,
+        3,
+        8
+      ],
+      "min": [
+        -32,
+        2,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -16,
+        3,
+        8
+      ],
+      "min": [
+        -18,
+        2,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        33,
+        2,
+        6
+      ],
+      "min": [
+        33,
+        2,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        37,
+        2,
+        6
+      ],
+      "min": [
+        37,
+        2,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -33,
+        3,
+        8
+      ],
+      "min": [
+        -33,
+        3,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -29,
+        3,
+        8
+      ],
+      "min": [
+        -29,
+        3,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -19,
+        3,
+        8
+      ],
+      "min": [
+        -19,
+        3,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -15,
+        3,
+        8
+      ],
+      "min": [
+        -15,
+        3,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -29,
+        9,
+        8
+      ],
+      "min": [
+        -29,
+        4,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -19,
+        9,
+        8
+      ],
+      "min": [
+        -19,
+        4,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        22,
+        5,
+        10
+      ],
+      "min": [
+        14,
+        5,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        7,
+        10,
+        8
+      ],
+      "min": [
+        5,
+        6,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        40,
+        8,
+        4
+      ],
+      "min": [
+        40,
+        7,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        40,
+        9,
+        4
+      ],
+      "min": [
+        40,
+        9,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        14,
+        4
+      ],
+      "min": [
+        60,
+        13,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        7,
+        14,
+        8
+      ],
+      "min": [
+        5,
+        14,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        15,
+        4
+      ],
+      "min": [
+        60,
+        15,
+        4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        9,
+        2,
+        5
+      ],
+      "min": [
+        9,
+        1,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        13,
+        2,
+        5
+      ],
+      "min": [
+        13,
+        1,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        15,
+        4,
+        5
+      ],
+      "min": [
+        15,
+        1,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        21,
+        4,
+        5
+      ],
+      "min": [
+        21,
+        1,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        23,
+        2,
+        5
+      ],
+      "min": [
+        23,
+        1,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        27,
+        2,
+        5
+      ],
+      "min": [
+        27,
+        1,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -33,
+        2,
+        7
+      ],
+      "min": [
+        -33,
+        2,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -29,
+        2,
+        7
+      ],
+      "min": [
+        -29,
+        2,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -19,
+        2,
+        7
+      ],
+      "min": [
+        -19,
+        2,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -15,
+        2,
+        7
+      ],
+      "min": [
+        -15,
+        2,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        12,
+        3,
+        9
+      ],
+      "min": [
+        10,
+        2,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        26,
+        3,
+        9
+      ],
+      "min": [
+        24,
+        2,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        9,
+        3,
+        9
+      ],
+      "min": [
+        9,
+        3,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        13,
+        3,
+        9
+      ],
+      "min": [
+        13,
+        3,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        23,
+        3,
+        9
+      ],
+      "min": [
+        23,
+        3,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        27,
+        3,
+        9
+      ],
+      "min": [
+        27,
+        3,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        13,
+        9,
+        9
+      ],
+      "min": [
+        13,
+        4,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        23,
+        9,
+        9
+      ],
+      "min": [
+        23,
+        4,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -24,
+        6,
+        7
+      ],
+      "min": [
+        -24,
+        6,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -21,
+        7,
+        5
+      ],
+      "min": [
+        -21,
+        6,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -21,
+        8,
+        5
+      ],
+      "min": [
+        -21,
+        8,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        9,
+        6
+      ],
+      "min": [
+        -70,
+        9,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        10,
+        5
+      ],
+      "min": [
+        60,
+        9,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        11,
+        5
+      ],
+      "min": [
+        -70,
+        10,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        7,
+        13,
+        7
+      ],
+      "min": [
+        5,
+        11,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        11,
+        5
+      ],
+      "min": [
+        60,
+        11,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        8,
+        12,
+        5
+      ],
+      "min": [
+        8,
+        12,
+        5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        9,
+        2,
+        8
+      ],
+      "min": [
+        9,
+        2,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        13,
+        2,
+        8
+      ],
+      "min": [
+        13,
+        2,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        23,
+        2,
+        8
+      ],
+      "min": [
+        23,
+        2,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        27,
+        2,
+        8
+      ],
+      "min": [
+        27,
+        2,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -25,
+        6,
+        6
+      ],
+      "min": [
+        -25,
+        6,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -23,
+        6,
+        6
+      ],
+      "min": [
+        -23,
+        6,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        18,
+        6,
+        8
+      ],
+      "min": [
+        18,
+        6,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        21,
+        7,
+        6
+      ],
+      "min": [
+        21,
+        6,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -24,
+        7,
+        6
+      ],
+      "min": [
+        -24,
+        7,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        8,
+        7
+      ],
+      "min": [
+        -70,
+        8,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        21,
+        8,
+        6
+      ],
+      "min": [
+        21,
+        8,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        10,
+        6
+      ],
+      "min": [
+        -70,
+        10,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        12,
+        6
+      ],
+      "min": [
+        -70,
+        11,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        68,
+        18,
+        7
+      ],
+      "min": [
+        -68,
+        18,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        7,
+        5,
+        8
+      ],
+      "min": [
+        5,
+        1,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        33,
+        2,
+        7
+      ],
+      "min": [
+        33,
+        1,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        37,
+        2,
+        7
+      ],
+      "min": [
+        37,
+        1,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        17,
+        6,
+        7
+      ],
+      "min": [
+        17,
+        6,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        19,
+        6,
+        7
+      ],
+      "min": [
+        19,
+        6,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        7,
+        9
+      ],
+      "min": [
+        -70,
+        7,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        18,
+        7,
+        7
+      ],
+      "min": [
+        18,
+        7,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        9,
+        7
+      ],
+      "min": [
+        -70,
+        9,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -70,
+        10,
+        9
+      ],
+      "min": [
+        -70,
+        10,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        11,
+        7
+      ],
+      "min": [
+        -70,
+        11,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        13,
+        7
+      ],
+      "min": [
+        -70,
+        12,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        8,
+        12,
+        7
+      ],
+      "min": [
+        8,
+        12,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -33,
+        2,
+        8
+      ],
+      "min": [
+        -33,
+        1,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -29,
+        2,
+        8
+      ],
+      "min": [
+        -29,
+        1,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -27,
+        4,
+        8
+      ],
+      "min": [
+        -27,
+        1,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -21,
+        4,
+        8
+      ],
+      "min": [
+        -21,
+        1,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -19,
+        2,
+        8
+      ],
+      "min": [
+        -19,
+        1,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -15,
+        2,
+        8
+      ],
+      "min": [
+        -15,
+        1,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        6,
+        8
+      ],
+      "min": [
+        60,
+        5,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        7,
+        8
+      ],
+      "min": [
+        60,
+        7,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        8,
+        8
+      ],
+      "min": [
+        -70,
+        8,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -70,
+        9,
+        8
+      ],
+      "min": [
+        -70,
+        9,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -70,
+        11,
+        8
+      ],
+      "min": [
+        -70,
+        11,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        12,
+        8
+      ],
+      "min": [
+        -70,
+        12,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        13,
+        9
+      ],
+      "min": [
+        -70,
+        13,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        9,
+        2,
+        9
+      ],
+      "min": [
+        9,
+        1,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        13,
+        2,
+        9
+      ],
+      "min": [
+        13,
+        1,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        15,
+        4,
+        9
+      ],
+      "min": [
+        15,
+        1,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        21,
+        4,
+        9
+      ],
+      "min": [
+        21,
+        1,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        23,
+        2,
+        9
+      ],
+      "min": [
+        23,
+        1,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        27,
+        2,
+        9
+      ],
+      "min": [
+        27,
+        1,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        6,
+        10,
+        10
+      ],
+      "min": [
+        6,
+        7,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        40,
+        8,
+        9
+      ],
+      "min": [
+        40,
+        7,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        8,
+        10
+      ],
+      "min": [
+        -70,
+        8,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        9,
+        9
+      ],
+      "min": [
+        -70,
+        9,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        40,
+        9,
+        9
+      ],
+      "min": [
+        40,
+        9,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        11,
+        9
+      ],
+      "min": [
+        -70,
+        11,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        12,
+        10
+      ],
+      "min": [
+        -70,
+        12,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        14,
+        9
+      ],
+      "min": [
+        60,
+        13,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        15,
+        9
+      ],
+      "min": [
+        60,
+        15,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        9,
+        11
+      ],
+      "min": [
+        -70,
+        9,
+        10
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        10,
+        10
+      ],
+      "min": [
+        60,
+        9,
+        10
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        10,
+        10
+      ],
+      "min": [
+        -70,
+        10,
+        10
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        11,
+        11
+      ],
+      "min": [
+        -70,
+        11,
+        10
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        11,
+        10
+      ],
+      "min": [
+        60,
+        11,
+        10
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        35,
+        8,
+        12
+      ],
+      "min": [
+        35,
+        5,
+        11
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        10,
+        11
+      ],
+      "min": [
+        -70,
+        10,
+        11
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        36,
+        3,
+        14
+      ],
+      "min": [
+        33,
+        1,
+        13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        37,
+        2,
+        13
+      ],
+      "min": [
+        37,
+        1,
+        13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        37,
+        3,
+        17
+      ],
+      "min": [
+        37,
+        3,
+        13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        36,
+        8,
+        17
+      ],
+      "min": [
+        34,
+        4,
+        13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        37,
+        9,
+        17
+      ],
+      "min": [
+        37,
+        4,
+        13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        6,
+        13
+      ],
+      "min": [
+        60,
+        5,
+        13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        7,
+        13
+      ],
+      "min": [
+        60,
+        7,
+        13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        36,
+        12,
+        17
+      ],
+      "min": [
+        34,
+        12,
+        13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        37,
+        2,
+        16
+      ],
+      "min": [
+        37,
+        2,
+        14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        40,
+        8,
+        14
+      ],
+      "min": [
+        40,
+        7,
+        14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        36,
+        11,
+        16
+      ],
+      "min": [
+        34,
+        9,
+        14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        40,
+        9,
+        14
+      ],
+      "min": [
+        40,
+        9,
+        14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        33,
+        10,
+        14
+      ],
+      "min": [
+        33,
+        10,
+        14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        14,
+        14
+      ],
+      "min": [
+        60,
+        13,
+        14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        15,
+        14
+      ],
+      "min": [
+        60,
+        15,
+        14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        36,
+        3,
+        15
+      ],
+      "min": [
+        33,
+        2,
+        15
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        10,
+        15
+      ],
+      "min": [
+        60,
+        9,
+        15
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        11,
+        15
+      ],
+      "min": [
+        60,
+        11,
+        15
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        36,
+        3,
+        17
+      ],
+      "min": [
+        33,
+        1,
+        16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        33,
+        10,
+        16
+      ],
+      "min": [
+        33,
+        10,
+        16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        37,
+        2,
+        17
+      ],
+      "min": [
+        37,
+        1,
+        17
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        35,
+        8,
+        19
+      ],
+      "min": [
+        35,
+        5,
+        18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        6,
+        18
+      ],
+      "min": [
+        60,
+        5,
+        18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        7,
+        18
+      ],
+      "min": [
+        60,
+        7,
+        18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        68,
+        18,
+        19
+      ],
+      "min": [
+        -68,
+        18,
+        18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        40,
+        8,
+        19
+      ],
+      "min": [
+        40,
+        7,
+        19
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        40,
+        9,
+        19
+      ],
+      "min": [
+        40,
+        9,
+        19
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        14,
+        19
+      ],
+      "min": [
+        60,
+        13,
+        19
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        15,
+        19
+      ],
+      "min": [
+        60,
+        15,
+        19
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -16,
+        3,
+        27
+      ],
+      "min": [
+        -62,
+        1,
+        20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        10,
+        20
+      ],
+      "min": [
+        60,
+        9,
+        20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        11,
+        20
+      ],
+      "min": [
+        60,
+        11,
+        20
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        9,
+        22
+      ],
+      "min": [
+        -70,
+        9,
+        21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        11,
+        21
+      ],
+      "min": [
+        -70,
+        10,
+        21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        48,
+        10,
+        23
+      ],
+      "min": [
+        48,
+        7,
+        22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        8,
+        23
+      ],
+      "min": [
+        -70,
+        8,
+        22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        10,
+        22
+      ],
+      "min": [
+        -70,
+        10,
+        22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        12,
+        22
+      ],
+      "min": [
+        -70,
+        11,
+        22
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        33,
+        2,
+        23
+      ],
+      "min": [
+        33,
+        1,
+        23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        37,
+        2,
+        23
+      ],
+      "min": [
+        37,
+        1,
+        23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        36,
+        3,
+        27
+      ],
+      "min": [
+        34,
+        2,
+        23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        33,
+        3,
+        27
+      ],
+      "min": [
+        33,
+        3,
+        23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        37,
+        3,
+        27
+      ],
+      "min": [
+        37,
+        3,
+        23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        37,
+        9,
+        27
+      ],
+      "min": [
+        37,
+        4,
+        23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        6,
+        23
+      ],
+      "min": [
+        60,
+        5,
+        23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        7,
+        25
+      ],
+      "min": [
+        -70,
+        7,
+        23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        7,
+        23
+      ],
+      "min": [
+        60,
+        7,
+        23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        9,
+        23
+      ],
+      "min": [
+        -70,
+        9,
+        23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -70,
+        10,
+        25
+      ],
+      "min": [
+        -70,
+        10,
+        23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        11,
+        23
+      ],
+      "min": [
+        -70,
+        11,
+        23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        13,
+        23
+      ],
+      "min": [
+        -70,
+        12,
+        23
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        46,
+        5,
+        32
+      ],
+      "min": [
+        43,
+        1,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        49,
+        5,
+        25
+      ],
+      "min": [
+        47,
+        1,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        58,
+        5,
+        32
+      ],
+      "min": [
+        50,
+        1,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        33,
+        2,
+        26
+      ],
+      "min": [
+        33,
+        2,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        37,
+        2,
+        26
+      ],
+      "min": [
+        37,
+        2,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        46,
+        6,
+        32
+      ],
+      "min": [
+        41,
+        6,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "SiliconLife",
+      "max": [
+        49,
+        10,
+        28
+      ],
+      "min": [
+        47,
+        6,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        59,
+        6,
+        32
+      ],
+      "min": [
+        50,
+        6,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        40,
+        8,
+        24
+      ],
+      "min": [
+        40,
+        7,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        8,
+        24
+      ],
+      "min": [
+        -70,
+        8,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -70,
+        9,
+        24
+      ],
+      "min": [
+        -70,
+        9,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        40,
+        9,
+        24
+      ],
+      "min": [
+        40,
+        9,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -70,
+        11,
+        24
+      ],
+      "min": [
+        -70,
+        11,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        12,
+        24
+      ],
+      "min": [
+        -70,
+        12,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        13,
+        25
+      ],
+      "min": [
+        -70,
+        13,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        14,
+        24
+      ],
+      "min": [
+        60,
+        13,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        49,
+        14,
+        28
+      ],
+      "min": [
+        47,
+        14,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        15,
+        24
+      ],
+      "min": [
+        60,
+        15,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -22,
+        5,
+        25
+      ],
+      "min": [
+        -22,
+        4,
+        25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -22,
+        6,
+        25
+      ],
+      "min": [
+        -22,
+        6,
+        25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        8,
+        26
+      ],
+      "min": [
+        -70,
+        8,
+        25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        9,
+        25
+      ],
+      "min": [
+        -70,
+        9,
+        25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        10,
+        25
+      ],
+      "min": [
+        60,
+        9,
+        25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        11,
+        25
+      ],
+      "min": [
+        -70,
+        11,
+        25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        49,
+        13,
+        27
+      ],
+      "min": [
+        47,
+        11,
+        25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        11,
+        25
+      ],
+      "min": [
+        60,
+        11,
+        25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        12,
+        26
+      ],
+      "min": [
+        -70,
+        12,
+        25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        50,
+        12,
+        25
+      ],
+      "min": [
+        50,
+        12,
+        25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        49,
+        5,
+        26
+      ],
+      "min": [
+        47,
+        1,
+        26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        9,
+        27
+      ],
+      "min": [
+        -70,
+        9,
+        26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -70,
+        10,
+        26
+      ],
+      "min": [
+        -70,
+        10,
+        26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        11,
+        27
+      ],
+      "min": [
+        -70,
+        11,
+        26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        33,
+        2,
+        27
+      ],
+      "min": [
+        33,
+        1,
+        27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        37,
+        2,
+        27
+      ],
+      "min": [
+        37,
+        1,
+        27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        49,
+        5,
+        28
+      ],
+      "min": [
+        47,
+        1,
+        27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -52,
+        10,
+        28
+      ],
+      "min": [
+        -52,
+        7,
+        27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -70,
+        10,
+        27
+      ],
+      "min": [
+        -70,
+        10,
+        27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -38,
+        12,
+        27
+      ],
+      "min": [
+        -38,
+        12,
+        27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -36,
+        12,
+        27
+      ],
+      "min": [
+        -36,
+        12,
+        27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        50,
+        12,
+        27
+      ],
+      "min": [
+        50,
+        12,
+        27
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -40,
+        3,
+        28
+      ],
+      "min": [
+        -62,
+        1,
+        28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -38,
+        5,
+        30
+      ],
+      "min": [
+        -39,
+        1,
+        28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -37,
+        3,
+        43
+      ],
+      "min": [
+        -37,
+        1,
+        28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -35,
+        5,
+        30
+      ],
+      "min": [
+        -36,
+        1,
+        28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -16,
+        3,
+        43
+      ],
+      "min": [
+        -34,
+        1,
+        28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        6,
+        28
+      ],
+      "min": [
+        60,
+        5,
+        28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "SiliconLife",
+      "max": [
+        -35,
+        10,
+        30
+      ],
+      "min": [
+        -39,
+        6,
+        28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        7,
+        28
+      ],
+      "min": [
+        60,
+        7,
+        28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -36,
+        13,
+        30
+      ],
+      "min": [
+        -38,
+        11,
+        28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        -35,
+        14,
+        30
+      ],
+      "min": [
+        -39,
+        14,
+        28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -54,
+        3,
+        43
+      ],
+      "min": [
+        -62,
+        1,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -51,
+        5,
+        30
+      ],
+      "min": [
+        -53,
+        1,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -40,
+        3,
+        43
+      ],
+      "min": [
+        -50,
+        1,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        49,
+        5,
+        32
+      ],
+      "min": [
+        47,
+        1,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -51,
+        10,
+        33
+      ],
+      "min": [
+        -53,
+        6,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        49,
+        6,
+        32
+      ],
+      "min": [
+        47,
+        6,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -40,
+        10,
+        29
+      ],
+      "min": [
+        -41,
+        7,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -33,
+        10,
+        29
+      ],
+      "min": [
+        -34,
+        7,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        40,
+        8,
+        29
+      ],
+      "min": [
+        40,
+        7,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        48,
+        10,
+        30
+      ],
+      "min": [
+        48,
+        7,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        40,
+        9,
+        29
+      ],
+      "min": [
+        40,
+        9,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -39,
+        13,
+        31
+      ],
+      "min": [
+        -39,
+        12,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        14,
+        29
+      ],
+      "min": [
+        60,
+        13,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -51,
+        14,
+        33
+      ],
+      "min": [
+        -53,
+        14,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        15,
+        29
+      ],
+      "min": [
+        60,
+        15,
+        29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        60,
+        10,
+        30
+      ],
+      "min": [
+        60,
+        9,
+        30
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -51,
+        13,
+        32
+      ],
+      "min": [
+        -53,
+        11,
+        30
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        60,
+        11,
+        30
+      ],
+      "min": [
+        60,
+        11,
+        30
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -54,
+        12,
+        30
+      ],
+      "min": [
+        -54,
+        12,
+        30
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        68,
+        18,
+        31
+      ],
+      "min": [
+        -68,
+        18,
+        30
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -51,
+        3,
+        31
+      ],
+      "min": [
+        -53,
+        1,
+        31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -38,
+        3,
+        43
+      ],
+      "min": [
+        -39,
+        1,
+        31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -35,
+        3,
+        43
+      ],
+      "min": [
+        -36,
+        1,
+        31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -37,
+        13,
+        31
+      ],
+      "min": [
+        -38,
+        12,
+        31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -51,
+        5,
+        33
+      ],
+      "min": [
+        -53,
+        1,
+        32
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -54,
+        8,
+        35
+      ],
+      "min": [
+        -57,
+        8,
+        32
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        -47,
+        9,
+        35
+      ],
+      "min": [
+        -50,
+        9,
+        32
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -54,
+        12,
+        32
+      ],
+      "min": [
+        -54,
+        12,
+        32
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -51,
+        3,
+        43
+      ],
+      "min": [
+        -53,
+        1,
+        34
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -49,
+        6,
+        36
+      ],
+      "min": [
+        -55,
+        4,
+        34
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -53,
+        7,
+        36
+      ],
+      "min": [
+        -55,
+        7,
+        34
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -52,
+        10,
+        35
+      ],
+      "min": [
+        -52,
+        7,
+        34
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -49,
+        7,
+        36
+      ],
+      "min": [
+        -51,
+        7,
+        34
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        62,
+        4,
+        36
+      ],
+      "min": [
+        62,
+        4,
+        35
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        62,
+        8,
+        36
+      ],
+      "min": [
+        62,
+        8,
+        35
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        62,
+        12,
+        36
+      ],
+      "min": [
+        62,
+        12,
+        35
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        -52,
+        7,
+        36
+      ],
+      "min": [
+        -52,
+        7,
+        36
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -57,
+        15,
+        42
+      ],
+      "min": [
+        -58,
+        4,
+        42
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -49,
+        15,
+        42
+      ],
+      "min": [
+        -50,
+        4,
+        42
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -41,
+        15,
+        42
+      ],
+      "min": [
+        -42,
+        4,
+        42
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -33,
+        15,
+        42
+      ],
+      "min": [
+        -34,
+        4,
+        42
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -25,
+        15,
+        42
+      ],
+      "min": [
+        -26,
+        4,
+        42
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        68,
+        18,
+        43
+      ],
+      "min": [
+        -68,
+        18,
+        42
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        1,
+        17,
+        44
+      ],
+      "min": [
+        0,
+        1,
+        43
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        21,
+        17,
+        44
+      ],
+      "min": [
+        20,
+        1,
+        43
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        41,
+        17,
+        44
+      ],
+      "min": [
+        40,
+        1,
+        43
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        61,
+        17,
+        44
+      ],
+      "min": [
+        60,
+        1,
+        43
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        -16,
+        16,
+        45
+      ],
+      "min": [
+        -62,
+        4,
+        43
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -59,
+        17,
+        44
+      ],
+      "min": [
+        -60,
+        17,
+        43
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -39,
+        17,
+        44
+      ],
+      "min": [
+        -40,
+        17,
+        43
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -19,
+        17,
+        44
+      ],
+      "min": [
+        -20,
+        17,
+        43
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -59,
+        3,
+        44
+      ],
+      "min": [
+        -60,
+        1,
+        44
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -39,
+        3,
+        44
+      ],
+      "min": [
+        -40,
+        1,
+        44
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -19,
+        3,
+        44
+      ],
+      "min": [
+        -20,
+        1,
+        44
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        70,
+        18,
+        48
+      ],
+      "min": [
+        -70,
+        1,
+        47
+      ]
+    }
+  ],
+  "player_start": {
+    "id": "player-start",
+    "kind": "player_spawn",
+    "position": [
+      0.5,
+      10.5,
+      -34.5
+    ],
+    "yaw_degrees": 0
+  }
+}

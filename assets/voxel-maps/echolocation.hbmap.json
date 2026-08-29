@@ -1,1 +1,1226 @@
-{"format_version":1,"id":"echolocation","name":"Echolocation","mode":"echolocation","category":"authored","bounds":{"min":[-40,0,-32],"max":[40,8,32]},"player_start":{"id":"player-start","kind":"player_spawn","position":[-28.5,1.7,-0.5],"yaw_degrees":90},"operations":[{"kind":"fill_box","min":[-40,0,-32],"max":[40,0,32],"material":"Basalt"},{"kind":"fill_box","min":[-40,1,-32],"max":[40,6,-32],"material":"Stone"},{"kind":"fill_box","min":[-40,1,32],"max":[40,6,32],"material":"Stone"},{"kind":"fill_box","min":[-40,7,-32],"max":[40,7,32],"material":"ShipHull"},{"kind":"fill_box","min":[-24,0,0],"max":[12,0,0],"material":"SignalPipe"},{"kind":"fill_box","min":[12,1,-2],"max":[12,5,2],"material":"PuzzleDoor"}],"markers":[{"id":"receiver","kind":"echo_receiver","position":[-24.5,1.0,0.5],"output_seconds":1.0,"puzzle_id":"main"},{"id":"pipe","kind":"echo_pipe","position":[0.5,0.5,0.5],"puzzle_id":"main","sequence":0},{"id":"door","kind":"echo_door","position":[12.5,1.0,0.5],"puzzle_id":"main","closed_bounds":{"min":[12,1,-2],"max":[12,5,2]},"normal":[1,0,0],"starting_side_anchor":[10.5,1.7,0.5],"far_side_anchor":[14.5,1.7,0.5]}]}
+{
+  "bounds": {
+    "max": [
+      39,
+      6,
+      33
+    ],
+    "min": [
+      -39,
+      0,
+      -29
+    ]
+  },
+  "category": "authored",
+  "format_version": 1,
+  "id": "echolocation",
+  "markers": [
+    {
+      "id": "receiver",
+      "kind": "echo_receiver",
+      "output_seconds": 1.0,
+      "position": [
+        -24.5,
+        1.0,
+        0.5
+      ],
+      "puzzle_id": "main"
+    },
+    {
+      "id": "pipe",
+      "kind": "echo_pipe",
+      "position": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "puzzle_id": "main",
+      "sequence": 0
+    },
+    {
+      "closed_bounds": {
+        "max": [
+          12,
+          5,
+          2
+        ],
+        "min": [
+          12,
+          1,
+          -2
+        ]
+      },
+      "far_side_anchor": [
+        14.5,
+        1.7,
+        0.5
+      ],
+      "id": "door",
+      "kind": "echo_door",
+      "normal": [
+        1,
+        0,
+        0
+      ],
+      "position": [
+        12.5,
+        1.0,
+        0.5
+      ],
+      "puzzle_id": "main",
+      "starting_side_anchor": [
+        10.5,
+        1.7,
+        0.5
+      ]
+    }
+  ],
+  "mode": "echolocation",
+  "name": "Echolocation",
+  "operations": [
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        36,
+        5,
+        -29
+      ],
+      "min": [
+        18,
+        1,
+        -29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        36,
+        6,
+        -11
+      ],
+      "min": [
+        18,
+        6,
+        -29
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        36,
+        0,
+        -12
+      ],
+      "min": [
+        18,
+        0,
+        -28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        17,
+        5,
+        -17
+      ],
+      "min": [
+        17,
+        1,
+        -28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        37,
+        5,
+        -12
+      ],
+      "min": [
+        37,
+        1,
+        -28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        17,
+        6,
+        -11
+      ],
+      "min": [
+        17,
+        6,
+        -28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        37,
+        6,
+        -12
+      ],
+      "min": [
+        37,
+        6,
+        -28
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        16,
+        5,
+        -17
+      ],
+      "min": [
+        -8,
+        1,
+        -17
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        16,
+        6,
+        -11
+      ],
+      "min": [
+        -8,
+        6,
+        -17
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        17,
+        0,
+        -12
+      ],
+      "min": [
+        -8,
+        0,
+        -16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -9,
+        5,
+        -6
+      ],
+      "min": [
+        -9,
+        1,
+        -16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -9,
+        6,
+        6
+      ],
+      "min": [
+        -9,
+        6,
+        -16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        26,
+        3,
+        -14
+      ],
+      "min": [
+        26,
+        1,
+        -14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        12,
+        0,
+        -2
+      ],
+      "min": [
+        -8,
+        0,
+        -11
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        36,
+        5,
+        -11
+      ],
+      "min": [
+        13,
+        1,
+        -11
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        13,
+        5,
+        -2
+      ],
+      "min": [
+        13,
+        1,
+        -10
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        13,
+        6,
+        -2
+      ],
+      "min": [
+        -8,
+        6,
+        -10
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -22,
+        5,
+        -9
+      ],
+      "min": [
+        -38,
+        1,
+        -9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -22,
+        6,
+        9
+      ],
+      "min": [
+        -38,
+        6,
+        -9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -22,
+        0,
+        -1
+      ],
+      "min": [
+        -38,
+        0,
+        -8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -39,
+        5,
+        8
+      ],
+      "min": [
+        -39,
+        1,
+        -8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -21,
+        5,
+        -6
+      ],
+      "min": [
+        -21,
+        1,
+        -8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        7,
+        3,
+        -8
+      ],
+      "min": [
+        7,
+        1,
+        -8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -39,
+        6,
+        8
+      ],
+      "min": [
+        -39,
+        6,
+        -8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -21,
+        6,
+        8
+      ],
+      "min": [
+        -21,
+        6,
+        -8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -10,
+        5,
+        -6
+      ],
+      "min": [
+        -20,
+        1,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -10,
+        6,
+        6
+      ],
+      "min": [
+        -20,
+        6,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -9,
+        0,
+        -1
+      ],
+      "min": [
+        -21,
+        0,
+        -5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -21,
+        5,
+        -2
+      ],
+      "min": [
+        -21,
+        1,
+        -5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -6,
+        0,
+        5
+      ],
+      "min": [
+        -8,
+        0,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        6,
+        0,
+        24
+      ],
+      "min": [
+        -4,
+        0,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "PuzzleDoor",
+      "max": [
+        -21,
+        4,
+        1
+      ],
+      "min": [
+        -21,
+        1,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -5,
+        5,
+        15
+      ],
+      "min": [
+        -5,
+        1,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        12,
+        5,
+        -1
+      ],
+      "min": [
+        7,
+        1,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -21,
+        5,
+        5
+      ],
+      "min": [
+        -21,
+        5,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        12,
+        6,
+        -1
+      ],
+      "min": [
+        -8,
+        6,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -37,
+        0,
+        8
+      ],
+      "min": [
+        -38,
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "SignalPipe",
+      "max": [
+        -21,
+        0,
+        0
+      ],
+      "min": [
+        -36,
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -9,
+        0,
+        5
+      ],
+      "min": [
+        -20,
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Receiver",
+      "max": [
+        -36,
+        1,
+        0
+      ],
+      "min": [
+        -36,
+        1,
+        0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        7,
+        5,
+        15
+      ],
+      "min": [
+        7,
+        1,
+        0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        7,
+        6,
+        6
+      ],
+      "min": [
+        -8,
+        6,
+        0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -21,
+        0,
+        5
+      ],
+      "min": [
+        -36,
+        0,
+        1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -21,
+        4,
+        5
+      ],
+      "min": [
+        -21,
+        1,
+        2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -22,
+        0,
+        8
+      ],
+      "min": [
+        -36,
+        0,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -6,
+        5,
+        6
+      ],
+      "min": [
+        -21,
+        1,
+        6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -21,
+        5,
+        8
+      ],
+      "min": [
+        -21,
+        1,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        7,
+        6,
+        25
+      ],
+      "min": [
+        -5,
+        6,
+        7
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -24,
+        3,
+        9
+      ],
+      "min": [
+        -24,
+        1,
+        8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -25,
+        5,
+        9
+      ],
+      "min": [
+        -38,
+        1,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -22,
+        5,
+        9
+      ],
+      "min": [
+        -23,
+        1,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -24,
+        5,
+        9
+      ],
+      "min": [
+        -24,
+        4,
+        9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        38,
+        5,
+        13
+      ],
+      "min": [
+        16,
+        1,
+        13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        38,
+        6,
+        33
+      ],
+      "min": [
+        16,
+        6,
+        13
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        38,
+        0,
+        32
+      ],
+      "min": [
+        16,
+        0,
+        14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        15,
+        5,
+        15
+      ],
+      "min": [
+        15,
+        1,
+        14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        39,
+        5,
+        32
+      ],
+      "min": [
+        39,
+        1,
+        14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        15,
+        6,
+        32
+      ],
+      "min": [
+        15,
+        6,
+        14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        39,
+        6,
+        32
+      ],
+      "min": [
+        39,
+        6,
+        14
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -6,
+        5,
+        15
+      ],
+      "min": [
+        -24,
+        1,
+        15
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        14,
+        5,
+        15
+      ],
+      "min": [
+        8,
+        1,
+        15
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -6,
+        6,
+        31
+      ],
+      "min": [
+        -24,
+        6,
+        15
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        14,
+        6,
+        25
+      ],
+      "min": [
+        8,
+        6,
+        15
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -5,
+        0,
+        24
+      ],
+      "min": [
+        -24,
+        0,
+        16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        15,
+        0,
+        24
+      ],
+      "min": [
+        7,
+        0,
+        16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -25,
+        5,
+        20
+      ],
+      "min": [
+        -25,
+        1,
+        16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -25,
+        6,
+        30
+      ],
+      "min": [
+        -25,
+        6,
+        16
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Beacon",
+      "max": [
+        29,
+        4,
+        21
+      ],
+      "min": [
+        26,
+        1,
+        18
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -6,
+        3,
+        19
+      ],
+      "min": [
+        -6,
+        1,
+        19
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Wood",
+      "max": [
+        -22,
+        1,
+        25
+      ],
+      "min": [
+        -27,
+        1,
+        21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -25,
+        5,
+        30
+      ],
+      "min": [
+        -25,
+        2,
+        21
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        5,
+        2,
+        25
+      ],
+      "min": [
+        -5,
+        1,
+        24
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Basalt",
+      "max": [
+        -6,
+        0,
+        30
+      ],
+      "min": [
+        -24,
+        0,
+        25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        15,
+        5,
+        25
+      ],
+      "min": [
+        6,
+        1,
+        25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        5,
+        5,
+        25
+      ],
+      "min": [
+        -5,
+        3,
+        25
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -25,
+        1,
+        30
+      ],
+      "min": [
+        -25,
+        1,
+        26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -5,
+        5,
+        30
+      ],
+      "min": [
+        -5,
+        1,
+        26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        15,
+        5,
+        32
+      ],
+      "min": [
+        15,
+        1,
+        26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        -5,
+        6,
+        30
+      ],
+      "min": [
+        -5,
+        6,
+        26
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        -6,
+        5,
+        31
+      ],
+      "min": [
+        -24,
+        1,
+        31
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        38,
+        5,
+        33
+      ],
+      "min": [
+        16,
+        1,
+        33
+      ]
+    }
+  ],
+  "player_start": {
+    "id": "player-start",
+    "kind": "player_spawn",
+    "position": [
+      -28.5,
+      3.200000047683716,
+      -0.5
+    ],
+    "yaw_degrees": 0
+  }
+}
