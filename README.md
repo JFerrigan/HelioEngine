@@ -42,6 +42,8 @@ the dedicated [voxel asset usage guide](docs/voxel-assets.md). Assets belong in
 
 For the pan-and-orbit gameplay map viewer and an overview of how maps are
 currently represented, see [maps and the map viewer](docs/maps.md).
+The planned versioned external map contract is in
+[data-driven map authoring](docs/map-authoring.md).
 
 ## Controls
 

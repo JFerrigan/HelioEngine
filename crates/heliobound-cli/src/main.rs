@@ -9,8 +9,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 use heliobound_audio::{EcholocationInterference, GameAudio, SoundEffect};
 use heliobound_core::{
-    Camera, CityConfig, CityGenerator, DoomMapConfig, DoomMapGenerator, PlanetConfig,
-    ProceduralPlanet, Ray, Vec3, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld,
+    AssetCatalog, Camera, CityConfig, CityGenerator, DoomMapConfig, DoomMapGenerator, MapCatalog,
+    PlanetConfig, ProceduralPlanet, Ray, Vec3, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld,
 };
 use heliobound_gfx::{
     raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay, Scene, SceneBuilder, SceneCell,
@@ -51,6 +51,8 @@ const BOOST_MULTIPLIER: f32 = 8.0;
 const WALK_BOOST_MULTIPLIER: f32 = 2.25;
 const WALK_EYE_HEIGHT: f32 = 3.2;
 const WALK_COLLISION_RADIUS: f32 = 0.34;
+const WALK_JUMP_SPEED: f32 = 10.5;
+const WALK_GRAVITY: f32 = 30.0;
 const CITY_FIGURE_EYE_HEIGHT: f32 = WALK_EYE_HEIGHT;
 const CITY_FIGURE_SPEED: f32 = 4.0;
 const CITY_FIGURE_GAZE_DISTANCE: f32 = 70.0;
@@ -379,10 +381,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                             update_mode_audio(&mut audio, app.mode);
                             mouse_captured = set_mouse_captured(&window, false);
                         }
-                        KeyboardAction::Fire => {
-                            app.fire_weapon();
-                            play_audio_events(&mut audio, app.drain_audio_events());
-                        }
                     }
                 }
                 WindowEvent::Resized(size) => {
@@ -450,13 +448,14 @@ enum KeyboardAction {
     ReleaseMouse,
     EnterMenu,
     StartScene,
-    Fire,
 }
 
 struct AppState {
     mode: AppMode,
     planet: ProceduralPlanet,
     city: VoxelWorld,
+    /// Immutable startup blueprints shared by game sessions and the map viewer.
+    map_catalog: MapCatalog,
     doom_map: VoxelWorld,
     bar_scene: VoxelWorld,
     corn_maze: CornMazeState,
@@ -474,6 +473,7 @@ struct AppState {
     map_builder: SceneBuilder,
     camera: Camera,
     input: PlayerInput,
+    walk_motion: WalkMotion,
     city_figures: CityFigureState,
     shooter: ShooterState,
     viewmodel_bob: ViewmodelBob,
@@ -491,17 +491,31 @@ impl AppState {
 
     fn new_with_drone_course_nonce(drone_course_nonce: u64, randomize_drone_course: bool) -> Self {
         let initial_drone_seed = drone_course_seed(drone_course_nonce, 0);
+        let assets = AssetCatalog::discover(
+            asset_directory().unwrap_or_else(|| Path::new("assets/voxel-assets").to_owned()),
+        );
+        let map_catalog = MapCatalog::discover(
+            map_directory().unwrap_or_else(|| Path::new("assets/voxel-maps").to_owned()),
+            &assets,
+        );
+        let doom_map = build_doom_map();
+        let bar_scene = build_bar_scene();
+        let zombies_map = map_catalog
+            .get("zombies")
+            .map(|map| map.fresh_session().world)
+            .unwrap_or_else(|| build_zombies_map(&ZombiesState::new()));
         Self {
             mode: AppMode::Menu,
             planet: build_demo_planet(),
             city: build_demo_city(),
-            doom_map: build_doom_map(),
-            bar_scene: build_bar_scene(),
+            map_catalog,
+            doom_map,
+            bar_scene,
             corn_maze: CornMazeState::new(),
             asset_viewer: AssetViewerState::new(),
             map_viewer: None,
             sandbox: VoxelSandboxState::new(),
-            zombies_map: build_zombies_map(&ZombiesState::new()),
+            zombies_map,
             zombies: ZombiesState::new(),
             liminal: LiminalState::new_seeded(LIMINAL_SEED),
             drone_gate_runner: DroneGateRunnerState::new_seeded(initial_drone_seed),
@@ -530,6 +544,7 @@ impl AppState {
             ),
             camera: planet_start_camera(),
             input: PlayerInput::default(),
+            walk_motion: WalkMotion::default(),
             city_figures: CityFigureState::new(),
             shooter: ShooterState::new(),
             viewmodel_bob: ViewmodelBob::default(),
@@ -543,15 +558,6 @@ impl AppState {
 
     fn handle_keyboard(&mut self, key: &PhysicalKey, state: ElementState) -> KeyboardAction {
         let pressed = state == ElementState::Pressed;
-
-        if self.mode == AppMode::EchoLocation && *key == PhysicalKey::Code(KeyCode::Space) {
-            if pressed {
-                self.echolocation.begin_pulse_charge();
-            } else if self.echolocation.release_pulse_charge(self.camera.position) {
-                self.audio_events.push(SoundEffect::EchoPing);
-            }
-            return KeyboardAction::None;
-        }
 
         if pressed {
             match (self.mode, key) {
@@ -685,12 +691,6 @@ impl AppState {
                 (AppMode::Menu, PhysicalKey::Code(KeyCode::Escape)) => {
                     return KeyboardAction::Exit;
                 }
-                (AppMode::CityShooter, PhysicalKey::Code(KeyCode::Space)) => {
-                    return KeyboardAction::Fire;
-                }
-                (AppMode::Zombies, PhysicalKey::Code(KeyCode::Space)) => {
-                    return KeyboardAction::Fire;
-                }
                 (AppMode::EchoLocation, PhysicalKey::Code(KeyCode::KeyR))
                     if self.echolocation.run_status == EchoRunStatus::Dead =>
                 {
@@ -779,6 +779,7 @@ impl AppState {
         self.mode = AppMode::CityWalk;
         self.camera = city_start_camera();
         self.input = PlayerInput::default();
+        self.walk_motion = WalkMotion::default();
         self.city_figures = CityFigureState::new();
     }
 
@@ -786,6 +787,7 @@ impl AppState {
         self.mode = AppMode::CityShooter;
         self.camera = doom_start_camera();
         self.input = PlayerInput::default();
+        self.walk_motion = WalkMotion::default();
         self.shooter = ShooterState::new();
         self.viewmodel_bob = ViewmodelBob::default();
     }
@@ -795,12 +797,15 @@ impl AppState {
         self.corn_maze = CornMazeState::new();
         self.camera = corn_maze_start_camera(&self.corn_maze);
         self.input = PlayerInput::default();
+        self.walk_motion = WalkMotion::default();
     }
 
     fn start_bar(&mut self) {
         self.mode = AppMode::BarScene;
+        self.bar_scene = build_bar_scene();
         self.camera = bar_start_camera();
         self.input = PlayerInput::default();
+        self.walk_motion = WalkMotion::default();
     }
 
     fn start_asset_viewer(&mut self) {
@@ -812,7 +817,9 @@ impl AppState {
 
     fn start_map_viewer(&mut self) {
         self.mode = AppMode::MapViewer;
-        self.map_viewer = Some(MapViewerState::new(build_map_catalog()));
+        self.map_viewer = Some(MapViewerState::new(build_map_catalog_from(
+            &self.map_catalog,
+        )));
         self.camera = self
             .map_viewer
             .as_ref()
@@ -831,9 +838,18 @@ impl AppState {
     fn start_zombies(&mut self) {
         self.mode = AppMode::Zombies;
         self.zombies = ZombiesState::new();
-        self.zombies_map = build_zombies_map(&self.zombies);
-        self.camera = zombies_start_camera();
+        self.zombies_map = self
+            .map_catalog
+            .get("zombies")
+            .map(|map| map.fresh_session().world)
+            .unwrap_or_else(|| build_zombies_map(&self.zombies));
+        self.camera = self
+            .map_catalog
+            .get("zombies")
+            .map(compiled_start_camera)
+            .unwrap_or_else(zombies_start_camera);
         self.input = PlayerInput::default();
+        self.walk_motion = WalkMotion::default();
         self.viewmodel_bob = ViewmodelBob::default();
     }
 
@@ -863,6 +879,7 @@ impl AppState {
         self.echolocation = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
         self.camera = echolocation_start_camera(&self.echolocation);
         self.input = PlayerInput::default();
+        self.walk_motion = WalkMotion::default();
     }
 
     fn frame(&mut self, dt: f32, mouse_captured: bool) -> Scene {
@@ -876,7 +893,14 @@ impl AppState {
                     .build_planet(&self.planet, &self.camera, self.tick)
             }
             AppMode::CityWalk => {
-                update_walking_camera(&mut self.camera, &self.input, &self.city, dt);
+                update_jumping_walking_camera(
+                    &mut self.camera,
+                    &mut self.input,
+                    &mut self.walk_motion,
+                    &self.city,
+                    STANDARD_WALK_PROFILE,
+                    dt,
+                );
                 self.city_figures.update(&self.city, &self.camera, dt);
                 let render_world = city_world_with_figures(&self.city, &self.city_figures);
                 let mut scene = self
@@ -887,7 +911,14 @@ impl AppState {
             }
             AppMode::CityShooter => {
                 let before_move = self.camera.position;
-                update_walking_camera(&mut self.camera, &self.input, &self.doom_map, dt);
+                update_jumping_walking_camera(
+                    &mut self.camera,
+                    &mut self.input,
+                    &mut self.walk_motion,
+                    &self.doom_map,
+                    STANDARD_WALK_PROFILE,
+                    dt,
+                );
                 self.viewmodel_bob.update(
                     horizontal_distance(before_move, self.camera.position),
                     moving_on_ground(&self.input),
@@ -914,9 +945,10 @@ impl AppState {
                 scene
             }
             AppMode::CornMaze => {
-                update_walking_camera_with_profile(
+                update_jumping_walking_camera(
                     &mut self.camera,
-                    &self.input,
+                    &mut self.input,
+                    &mut self.walk_motion,
                     &self.corn_maze.world,
                     CORN_WALK_PROFILE,
                     dt,
@@ -975,8 +1007,13 @@ impl AppState {
             }
             AppMode::Zombies => {
                 let before_move = self.camera.position;
-                self.zombies
-                    .update_player(&mut self.camera, &self.input, &self.zombies_map, dt);
+                self.zombies.update_player(
+                    &mut self.camera,
+                    &mut self.input,
+                    &mut self.walk_motion,
+                    &self.zombies_map,
+                    dt,
+                );
                 self.viewmodel_bob.update(
                     horizontal_distance(before_move, self.camera.position),
                     moving_on_ground(&self.input),
@@ -1035,9 +1072,10 @@ impl AppState {
             AppMode::EchoLocation => {
                 if self.echolocation.run_status == EchoRunStatus::Active {
                     let before_move = self.camera.position;
-                    update_walking_camera_with_profile(
+                    update_jumping_walking_camera(
                         &mut self.camera,
-                        &self.input,
+                        &mut self.input,
+                        &mut self.walk_motion,
                         &self.echolocation.world,
                         ECHOLOCATION_WALK_PROFILE,
                         dt,
@@ -1306,6 +1344,16 @@ struct PlayerInput {
     pan_left: bool,
     pan_right: bool,
     boost: bool,
+    jump_requested: bool,
+}
+
+/// State shared by every grounded first-person mode that supports jumping.
+/// Keeping it separate from input makes a press a single jump rather than a
+/// continuous hover while Space is held.
+#[derive(Clone, Copy, Debug, Default)]
+struct WalkMotion {
+    vertical_velocity: f32,
+    airborne: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2030,8 +2078,11 @@ struct EchoLocationState {
 impl EchoLocationState {
     fn new_seeded(seed: u64) -> Self {
         let (world, start_position, puzzle) = build_echolocation_map(seed);
-        let pursuer_position = echo_pursuer_spawn_position(&world, start_position)
-            .expect("echolocation map must contain a reachable pursuer spawn");
+        // Seed the pursuer from the far side of the bulkhead. It remains
+        // dormant behind the closed puzzle door until the player opens it,
+        // rather than spawning in the introductory room.
+        let pursuer_position = echo_pursuer_spawn_position(&world, puzzle.door.far_side_anchor)
+            .expect("echolocation map must contain a walkable far-side pursuer spawn");
         Self {
             seed,
             config: EchoLocationConfig::default(),
@@ -3580,7 +3631,7 @@ struct PreviewMap {
     center: Vec3,
     radius: f32,
     dimensions: [i32; 3],
-    definition: &'static str,
+    definition: String,
 }
 
 impl PreviewMap {
@@ -3588,7 +3639,7 @@ impl PreviewMap {
         name: impl Into<String>,
         world: VoxelWorld,
         start_camera: Camera,
-        definition: &'static str,
+        definition: impl Into<String>,
     ) -> Self {
         let (center, radius) = asset_bounds(&world);
         let dimensions = asset_dimensions(&world);
@@ -3599,7 +3650,7 @@ impl PreviewMap {
             center,
             radius,
             dimensions,
-            definition,
+            definition: definition.into(),
         }
     }
 }
@@ -4179,7 +4230,8 @@ impl ZombiesState {
     fn update_player(
         &mut self,
         camera: &mut Camera,
-        input: &PlayerInput,
+        input: &mut PlayerInput,
+        motion: &mut WalkMotion,
         world: &VoxelWorld,
         dt: f32,
     ) {
@@ -4213,11 +4265,14 @@ impl ZombiesState {
             }
         }
 
-        let mut walking_input = *input;
-        walking_input.boost = false;
-        update_walking_camera_with_profile(
+        // Sprint has already been folded into `speed`; do not apply the
+        // generic walk boost a second time.
+        let boost = input.boost;
+        input.boost = false;
+        update_jumping_walking_camera(
             camera,
-            &walking_input,
+            input,
+            motion,
             world,
             WalkProfile {
                 eye_height: ZOMBIE_EYE_HEIGHT,
@@ -4226,6 +4281,7 @@ impl ZombiesState {
             },
             dt,
         );
+        input.boost = boost;
     }
 
     fn update_rounds_and_zombies(
@@ -4684,7 +4740,12 @@ fn handle_movement_input(input: &mut PlayerInput, key: &PhysicalKey, state: Elem
         PhysicalKey::Code(KeyCode::KeyS) => input.backward = pressed,
         PhysicalKey::Code(KeyCode::KeyA) => input.left = pressed,
         PhysicalKey::Code(KeyCode::KeyD) => input.right = pressed,
-        PhysicalKey::Code(KeyCode::Space) => input.up = pressed,
+        PhysicalKey::Code(KeyCode::Space) => {
+            input.up = pressed;
+            if pressed {
+                input.jump_requested = true;
+            }
+        }
         PhysicalKey::Code(KeyCode::ControlLeft) | PhysicalKey::Code(KeyCode::ControlRight) => {
             input.down = pressed
         }
@@ -4816,6 +4877,70 @@ fn update_walking_camera_with_profile(
     }
 }
 
+fn update_jumping_walking_camera(
+    camera: &mut Camera,
+    input: &mut PlayerInput,
+    motion: &mut WalkMotion,
+    world: &VoxelWorld,
+    profile: WalkProfile,
+    dt: f32,
+) {
+    let mut horizontal_input = *input;
+    horizontal_input.up = false;
+    update_walking_camera_with_profile(camera, &horizontal_input, world, profile, dt);
+
+    let grounded = walking_ground_y(world, camera.position, profile).is_some();
+    if grounded {
+        motion.airborne = false;
+        motion.vertical_velocity = 0.0;
+    }
+
+    if input.jump_requested && grounded {
+        motion.vertical_velocity = WALK_JUMP_SPEED;
+        motion.airborne = true;
+    }
+    input.jump_requested = false;
+
+    // A player who walks off a ledge begins falling; empty test worlds retain
+    // their legacy flat-camera behavior until a jump-capable surface exists.
+    if !motion.airborne && !grounded {
+        return;
+    }
+    if !grounded {
+        motion.airborne = true;
+    }
+
+    motion.vertical_velocity -= WALK_GRAVITY * dt;
+    let vertical_step = motion.vertical_velocity * dt;
+    if vertical_step > 0.0 {
+        let candidate = Vec3::new(
+            camera.position.x,
+            camera.position.y + vertical_step,
+            camera.position.z,
+        );
+        if can_walk_to_with_profile(world, candidate, profile) {
+            camera.position = candidate;
+        } else {
+            motion.vertical_velocity = 0.0;
+        }
+    } else if vertical_step < 0.0 {
+        let candidate = Vec3::new(
+            camera.position.x,
+            camera.position.y + vertical_step,
+            camera.position.z,
+        );
+        if let Some(ground_y) = walking_landing_y(world, camera.position, candidate, profile) {
+            camera.position.y = ground_y as f32 + profile.eye_height;
+            motion.vertical_velocity = 0.0;
+            motion.airborne = false;
+        } else if can_walk_to_with_profile(world, candidate, profile) {
+            camera.position = candidate;
+        } else {
+            motion.vertical_velocity = 0.0;
+        }
+    }
+}
+
 fn update_sandbox_camera(camera: &mut Camera, input: &PlayerInput, world: &VoxelWorld, dt: f32) {
     let mut movement = Vec3::ZERO;
     let forward = horizontal(camera.forward());
@@ -4918,7 +5043,7 @@ fn move_walking_with_collision(
     city: &VoxelWorld,
     profile: WalkProfile,
 ) -> Vec3 {
-    let full = Vec3::new(position.x + step.x, profile.eye_height, position.z + step.z);
+    let full = Vec3::new(position.x + step.x, position.y, position.z + step.z);
     if can_walk_to_with_profile(city, full, profile) {
         return full;
     }
@@ -4942,24 +5067,24 @@ fn resolve_axis_slide(
 ) -> Vec3 {
     let mut resolved = position;
     let primary_candidate = if primary_is_x {
-        Vec3::new(resolved.x + primary, profile.eye_height, resolved.z)
+        Vec3::new(resolved.x + primary, resolved.y, resolved.z)
     } else {
-        Vec3::new(resolved.x, profile.eye_height, resolved.z + primary)
+        Vec3::new(resolved.x, resolved.y, resolved.z + primary)
     };
     if can_walk_to_with_profile(city, primary_candidate, profile) {
         resolved = primary_candidate;
     }
 
     let secondary_candidate = if primary_is_x {
-        Vec3::new(resolved.x, profile.eye_height, resolved.z + secondary)
+        Vec3::new(resolved.x, resolved.y, resolved.z + secondary)
     } else {
-        Vec3::new(resolved.x + secondary, profile.eye_height, resolved.z)
+        Vec3::new(resolved.x + secondary, resolved.y, resolved.z)
     };
     if can_walk_to_with_profile(city, secondary_candidate, profile) {
         resolved = secondary_candidate;
     }
 
-    Vec3::new(resolved.x, profile.eye_height, resolved.z)
+    resolved
 }
 
 fn horizontal(direction: Vec3) -> Vec3 {
@@ -4990,12 +5115,48 @@ fn can_walk_to_with_profile(city: &VoxelWorld, position: Vec3, profile: WalkProf
 fn has_standing_clearance(city: &VoxelWorld, position: Vec3, profile: WalkProfile) -> bool {
     let x = position.x.floor() as i32;
     let z = position.z.floor() as i32;
-    for y in 1..=profile.eye_height.ceil() as i32 {
+    let foot_y = (position.y - profile.eye_height).floor() as i32;
+    for y in (foot_y + 1)..=position.y.ceil() as i32 {
         if city.get(VoxelCoord::new(x, y, z)).is_some() {
             return false;
         }
     }
     true
+}
+
+fn walking_ground_y(world: &VoxelWorld, position: Vec3, profile: WalkProfile) -> Option<i32> {
+    let x = position.x.floor() as i32;
+    let z = position.z.floor() as i32;
+    let min_y = (position.y - profile.eye_height).floor() as i32;
+    let max_y = position.y.floor() as i32;
+    (min_y..=max_y)
+        .rev()
+        .find(|&y| world.get(VoxelCoord::new(x, y, z)).is_some())
+}
+
+fn walking_landing_y(
+    world: &VoxelWorld,
+    current: Vec3,
+    candidate: Vec3,
+    profile: WalkProfile,
+) -> Option<i32> {
+    let current_foot = current.y - profile.eye_height;
+    let candidate_foot = candidate.y - profile.eye_height;
+    let top = current_foot.floor() as i32;
+    let bottom = candidate_foot.ceil() as i32;
+    (bottom..=top).rev().find(|&ground_y| {
+        candidate_foot <= ground_y as f32
+            && walking_ground_y(
+                world,
+                Vec3::new(
+                    candidate.x,
+                    ground_y as f32 + profile.eye_height,
+                    candidate.z,
+                ),
+                profile,
+            )
+            .is_some()
+    })
 }
 
 fn can_fly_to_in_sandbox(world: &VoxelWorld, position: Vec3) -> bool {
@@ -5261,14 +5422,31 @@ fn build_doom_map() -> VoxelWorld {
 }
 
 fn build_map_catalog() -> Vec<PreviewMap> {
+    let assets = AssetCatalog::discover(
+        asset_directory().unwrap_or_else(|| Path::new("assets/voxel-assets").to_owned()),
+    );
+    let maps = MapCatalog::discover(
+        map_directory().unwrap_or_else(|| Path::new("assets/voxel-maps").to_owned()),
+        &assets,
+    );
+    build_map_catalog_from(&maps)
+}
+
+fn build_map_catalog_from(maps: &MapCatalog) -> Vec<PreviewMap> {
     let city = build_demo_city();
     let doom_map = build_doom_map();
     let corn_maze = CornMazeState::new();
     let corn_start_camera = corn_maze_start_camera(&corn_maze);
-    let bar = build_bar_scene();
+    let bar = maps
+        .get("bar")
+        .map(|map| map.fresh_session().world)
+        .unwrap_or_else(build_bar_scene);
     let sandbox = build_voxel_sandbox_world();
     let zombies = ZombiesState::new();
-    let zombies_map = build_zombies_map(&zombies);
+    let zombies_map = maps
+        .get("zombies")
+        .map(|map| map.fresh_session().world)
+        .unwrap_or_else(|| build_zombies_map(&zombies));
     let liminal = LiminalState::new_seeded(LIMINAL_SEED);
     let liminal_start_camera = liminal_start_camera(&liminal);
     let drone_runner = DroneGateRunnerState::new_seeded(DRONE_GATE_SEED);
@@ -5285,9 +5463,17 @@ fn build_map_catalog() -> Vec<PreviewMap> {
         ),
         PreviewMap::new(
             "doomlike arena",
-            doom_map,
-            doom_start_camera(),
-            "core generator",
+            maps.get("doom")
+                .map(|m| m.world.clone())
+                .unwrap_or(doom_map),
+            maps.get("doom")
+                .map(compiled_start_camera)
+                .unwrap_or_else(doom_start_camera),
+            if maps.get("doom").is_some() {
+                "hbmap"
+            } else {
+                "core generator"
+            },
         ),
         PreviewMap::new(
             "corn maze",
@@ -5295,7 +5481,18 @@ fn build_map_catalog() -> Vec<PreviewMap> {
             corn_start_camera,
             "CLI generator",
         ),
-        PreviewMap::new("Starhusk bar", bar, bar_start_camera(), "CLI stamps"),
+        PreviewMap::new(
+            "Starhusk bar",
+            bar,
+            maps.get("bar")
+                .map(compiled_start_camera)
+                .unwrap_or_else(bar_start_camera),
+            if maps.get("bar").is_some() {
+                "hbmap"
+            } else {
+                "CLI stamps"
+            },
+        ),
         PreviewMap::new(
             "voxel sandbox",
             sandbox.clone(),
@@ -5305,14 +5502,28 @@ fn build_map_catalog() -> Vec<PreviewMap> {
         PreviewMap::new(
             "Heliobound Zombies",
             zombies_map,
-            zombies_start_camera(),
-            "CLI stamps",
+            maps.get("zombies")
+                .map(compiled_start_camera)
+                .unwrap_or_else(zombies_start_camera),
+            if maps.get("zombies").is_some() {
+                "hbmap"
+            } else {
+                "CLI stamps"
+            },
         ),
         PreviewMap::new(
             "liminal office",
-            liminal.world,
-            liminal_start_camera,
-            "CLI generator",
+            maps.get("liminal-office")
+                .map(|m| m.world.clone())
+                .unwrap_or(liminal.world),
+            maps.get("liminal-office")
+                .map(compiled_start_camera)
+                .unwrap_or(liminal_start_camera),
+            if maps.get("liminal-office").is_some() {
+                "hbmap"
+            } else {
+                "CLI generator"
+            },
         ),
         PreviewMap::new(
             "drone gate course",
@@ -5322,11 +5533,42 @@ fn build_map_catalog() -> Vec<PreviewMap> {
         ),
         PreviewMap::new(
             "echolocation",
-            echolocation.world,
-            echolocation_start_camera,
-            "CLI generator",
+            maps.get("echolocation")
+                .map(|m| m.world.clone())
+                .unwrap_or(echolocation.world),
+            maps.get("echolocation")
+                .map(compiled_start_camera)
+                .unwrap_or(echolocation_start_camera),
+            if maps.get("echolocation").is_some() {
+                "hbmap"
+            } else {
+                "CLI generator"
+            },
         ),
     ]
+}
+
+fn map_directory() -> Option<std::path::PathBuf> {
+    [
+        std::env::current_dir()
+            .ok()
+            .map(|path| path.join("assets/voxel-maps")),
+        Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/voxel-maps")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|path| path.is_dir())
+}
+
+fn compiled_start_camera(map: &heliobound_core::CompiledMap) -> Camera {
+    match map.player_start {
+        heliobound_core::MapMarker::PlayerSpawn {
+            position,
+            yaw_degrees,
+            ..
+        } => Camera::new(position).looking_at((yaw_degrees as f32).to_radians(), 0.0),
+        _ => unreachable!("compiled maps always have a player spawn"),
+    }
 }
 
 fn build_echolocation_map(seed: u64) -> (VoxelWorld, Vec3, EchoPuzzle) {
@@ -8345,7 +8587,7 @@ fn render_echolocation_scene(
         y: 5,
         z: 120,
         text: format!(
-            "hold Space/click pulse [{}; charge {}]  V full map [{}]  speed {:.0}  range {:.0}  TAB tuning [{}]",
+            "Space jump  hold/click mouse pulse [{}; charge {}]  V full map [{}]  speed {:.0}  range {:.0}  TAB tuning [{}]",
             ping_status,
             charge_status,
             if echo.show_full_map { "ON" } else { "off" },
@@ -9599,6 +9841,46 @@ mod tests {
         update_walking_camera(&mut camera, &input, &city, 1.0);
 
         assert_eq!(camera.position.y, WALK_EYE_HEIGHT);
+    }
+
+    #[test]
+    fn shared_jump_rises_from_and_lands_on_voxel_ground() {
+        let mut world = VoxelWorld::new();
+        fill_cuboid(
+            &mut world,
+            VoxelCoord::new(-2, 0, -2),
+            VoxelCoord::new(2, 0, 2),
+            VoxelMaterial::Stone,
+        );
+        let mut camera = Camera::new(Vec3::new(0.5, WALK_EYE_HEIGHT, 0.5));
+        let mut input = PlayerInput {
+            jump_requested: true,
+            ..PlayerInput::default()
+        };
+        let mut motion = WalkMotion::default();
+
+        update_jumping_walking_camera(
+            &mut camera,
+            &mut input,
+            &mut motion,
+            &world,
+            STANDARD_WALK_PROFILE,
+            0.05,
+        );
+        assert!(camera.position.y > WALK_EYE_HEIGHT);
+
+        for _ in 0..40 {
+            update_jumping_walking_camera(
+                &mut camera,
+                &mut input,
+                &mut motion,
+                &world,
+                STANDARD_WALK_PROFILE,
+                0.05,
+            );
+        }
+        assert_eq!(camera.position.y, WALK_EYE_HEIGHT);
+        assert!(!motion.airborne);
     }
 
     #[test]
@@ -11117,13 +11399,19 @@ mod tests {
         let world = VoxelWorld::new();
         let mut camera = zombies_start_camera();
         let start = camera.position;
-        let input = PlayerInput {
+        let mut input = PlayerInput {
             forward: true,
             boost: true,
             ..Default::default()
         };
 
-        zombies.update_player(&mut camera, &input, &world, 1.0);
+        zombies.update_player(
+            &mut camera,
+            &mut input,
+            &mut WalkMotion::default(),
+            &world,
+            1.0,
+        );
 
         assert!(zombies.sprint_locked);
         assert!(zombies.sprint > 0.0);
@@ -11140,17 +11428,29 @@ mod tests {
         zombies.sprint_locked = true;
         let world = VoxelWorld::new();
         let mut camera = zombies_start_camera();
-        let input = PlayerInput {
+        let mut input = PlayerInput {
             forward: true,
             boost: true,
             ..Default::default()
         };
 
-        zombies.update_player(&mut camera, &input, &world, 4.0);
+        zombies.update_player(
+            &mut camera,
+            &mut input,
+            &mut WalkMotion::default(),
+            &world,
+            4.0,
+        );
         assert!(zombies.sprint_locked);
         assert!(zombies.sprint < 1.0);
 
-        zombies.update_player(&mut camera, &input, &world, 1.0);
+        zombies.update_player(
+            &mut camera,
+            &mut input,
+            &mut WalkMotion::default(),
+            &world,
+            1.0,
+        );
 
         assert!(!zombies.sprint_locked);
         assert_eq!(zombies.sprint, 1.0);
@@ -11501,7 +11801,7 @@ mod tests {
     }
 
     #[test]
-    fn echolocation_pursuer_spawns_walkable_reachable_and_far_from_start() {
+    fn echolocation_pursuer_spawns_walkable_past_the_closed_door() {
         let echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
         assert!(can_walk_to_on_ground(
             &echo.world,
@@ -11517,9 +11817,10 @@ mod tests {
                 echo.pursuer.position.z.floor() as i32,
             )
             .expect("spawn should be in field");
-        // The initial closed bulkhead intentionally limits the spawn component
-        // to the starting-room side while still keeping the pursuer well away.
-        assert!(distance != u16::MAX && distance > 12);
+        // A closed bulkhead isolates the pursuer beyond the first room. The
+        // player cannot reach it until the receiver opens the puzzle door.
+        assert_eq!(distance, u16::MAX);
+        assert!(echo.pursuer.position.x > ECHO_DOOR_X as f32);
     }
 
     #[test]
