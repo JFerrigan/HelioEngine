@@ -462,6 +462,9 @@ struct AppState {
     asset_viewer: AssetViewerState,
     map_viewer: Option<MapViewerState>,
     sandbox: VoxelSandboxState,
+    /// Immutable Zombies geometry; doors and purchased-weapon visuals are
+    /// layered onto a fresh clone each frame.
+    zombies_blueprint: VoxelWorld,
     zombies_map: VoxelWorld,
     zombies: ZombiesState,
     liminal: LiminalState,
@@ -500,7 +503,7 @@ impl AppState {
         );
         let doom_map = build_doom_map();
         let bar_scene = build_bar_scene();
-        let zombies_map = map_catalog
+        let zombies_blueprint = map_catalog
             .get("zombies")
             .map(|map| map.fresh_session().world)
             .unwrap_or_else(|| build_zombies_map(&ZombiesState::new()));
@@ -515,7 +518,8 @@ impl AppState {
             asset_viewer: AssetViewerState::new(),
             map_viewer: None,
             sandbox: VoxelSandboxState::new(),
-            zombies_map,
+            zombies_map: zombies_blueprint.clone(),
+            zombies_blueprint,
             zombies: ZombiesState::new(),
             liminal: LiminalState::new_seeded(LIMINAL_SEED),
             drone_gate_runner: DroneGateRunnerState::new_seeded(initial_drone_seed),
@@ -785,7 +789,13 @@ impl AppState {
 
     fn start_shooter(&mut self) {
         self.mode = AppMode::CityShooter;
-        self.camera = doom_start_camera();
+        if let Some(map) = self.map_catalog.get("doom") {
+            self.doom_map = map.fresh_session().world;
+            self.camera = compiled_start_camera(map);
+        } else {
+            self.doom_map = build_doom_map();
+            self.camera = doom_start_camera();
+        }
         self.input = PlayerInput::default();
         self.walk_motion = WalkMotion::default();
         self.shooter = ShooterState::new();
@@ -802,8 +812,13 @@ impl AppState {
 
     fn start_bar(&mut self) {
         self.mode = AppMode::BarScene;
-        self.bar_scene = build_bar_scene();
-        self.camera = bar_start_camera();
+        if let Some(map) = self.map_catalog.get("bar") {
+            self.bar_scene = map.fresh_session().world;
+            self.camera = compiled_start_camera(map);
+        } else {
+            self.bar_scene = build_bar_scene();
+            self.camera = bar_start_camera();
+        }
         self.input = PlayerInput::default();
         self.walk_motion = WalkMotion::default();
     }
@@ -838,11 +853,12 @@ impl AppState {
     fn start_zombies(&mut self) {
         self.mode = AppMode::Zombies;
         self.zombies = ZombiesState::new();
-        self.zombies_map = self
+        self.zombies_blueprint = self
             .map_catalog
             .get("zombies")
             .map(|map| map.fresh_session().world)
             .unwrap_or_else(|| build_zombies_map(&self.zombies));
+        self.zombies_map = self.zombies_blueprint.clone();
         self.camera = self
             .map_catalog
             .get("zombies")
@@ -856,7 +872,14 @@ impl AppState {
     fn start_liminal(&mut self) {
         self.mode = AppMode::Liminal;
         self.liminal = LiminalState::new_seeded(LIMINAL_SEED);
-        self.camera = liminal_start_camera(&self.liminal);
+        if let Some(map) = self.map_catalog.get("liminal-office") {
+            let session = map.fresh_session();
+            self.liminal.world = session.world;
+            self.liminal.start_position = session.player_start.position;
+            self.camera = compiled_start_camera(map);
+        } else {
+            self.camera = liminal_start_camera(&self.liminal);
+        }
         self.input = PlayerInput::default();
     }
 
@@ -877,7 +900,14 @@ impl AppState {
     fn start_echolocation(&mut self) {
         self.mode = AppMode::EchoLocation;
         self.echolocation = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
-        self.camera = echolocation_start_camera(&self.echolocation);
+        if let Some(map) = self.map_catalog.get("echolocation") {
+            let session = map.fresh_session();
+            self.echolocation.world = session.world;
+            self.echolocation.start_position = session.player_start.position;
+            self.camera = compiled_start_camera(map);
+        } else {
+            self.camera = echolocation_start_camera(&self.echolocation);
+        }
         self.input = PlayerInput::default();
         self.walk_motion = WalkMotion::default();
     }
@@ -1019,7 +1049,8 @@ impl AppState {
                     moving_on_ground(&self.input),
                     dt,
                 );
-                self.zombies_map = build_zombies_map(&self.zombies);
+                self.zombies_map =
+                    zombies_world_with_runtime_overlays(&self.zombies_blueprint, &self.zombies);
                 let hurt = self.zombies.update_rounds_and_zombies(
                     &self.zombies_map,
                     self.camera.position,
@@ -6398,6 +6429,21 @@ fn build_zombies_map(state: &ZombiesState) -> VoxelWorld {
     stamp_zombies_corn_field(&mut world, state);
     stamp_zombies_wall_weapon(&mut world, &state.wall_weapon);
 
+    world
+}
+
+/// Applies only mutable Zombies state to a cloned authored blueprint. Static
+/// streets, buildings, props, and the corn layout come from the hbmap file.
+fn zombies_world_with_runtime_overlays(base: &VoxelWorld, state: &ZombiesState) -> VoxelWorld {
+    let mut world = base.clone();
+    for door in &state.doors {
+        if door.open {
+            clear_zombies_door(&mut world, door.kind);
+        }
+    }
+    if state.wall_weapon.bought {
+        stamp_zombies_wall_weapon(&mut world, &state.wall_weapon);
+    }
     world
 }
 
