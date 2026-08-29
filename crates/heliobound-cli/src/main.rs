@@ -276,6 +276,7 @@ const ECHO_PURSUER_STEP_SECONDS: f32 = 0.52;
 const ECHO_FOOTPRINT_LIFETIME: f32 = 4.0;
 const ECHO_STEP_WAVE_SPEED: f32 = 5.0;
 const ECHO_STEP_WAVE_MAX_RADIUS: f32 = 2.2;
+const ECHO_FOOTPRINT_SURFACE_Y: f32 = 1.02;
 const ECHOLOCATION_WALK_PROFILE: WalkProfile = WalkProfile {
     speed: 10.0,
     collision_radius: 0.45,
@@ -1910,7 +1911,11 @@ impl EchoLocationState {
             for (foot_offset, left) in [(-0.13, true), (0.13, false)] {
                 let foot_position = self.pursuer.position + side * foot_offset
                     - self.pursuer.travel_direction * 0.1
-                    + Vec3::new(0.0, -ECHOLOCATION_WALK_PROFILE.eye_height + 0.08, 0.0);
+                    + Vec3::new(
+                        0.0,
+                        ECHO_FOOTPRINT_SURFACE_Y - ECHOLOCATION_WALK_PROFILE.eye_height,
+                        0.0,
+                    );
                 self.footprints.push(EchoFootprint {
                     position: foot_position,
                     remaining_seconds: ECHO_FOOTPRINT_LIFETIME,
@@ -7102,10 +7107,9 @@ fn echo_footprint_cells(
     footprints
         .iter()
         .filter_map(|print| {
-            // The decal is projected on the floor, but an LOS ray to that point
-            // enters the floor voxel just before arriving. Aim at its top surface
-            // for occlusion, then retain the floor position for projection.
-            let sight_target = print.position + Vec3::new(0.0, 0.94, 0.0);
+            // Decals sit just above the floor's top surface; aim slightly above
+            // that point so the supporting floor voxel is not self-occluding.
+            let sight_target = print.position + Vec3::new(0.0, 0.04, 0.0);
             if !has_line_of_sight(world, camera.position, sight_target) {
                 return None;
             }
@@ -7145,7 +7149,7 @@ fn echo_step_wave_cells(
             && has_line_of_sight(
                 world,
                 camera.position,
-                wave.origin + Vec3::new(0.0, 0.94, 0.0),
+                wave.origin + Vec3::new(0.0, 0.04, 0.0),
             )
         {
             if let Some(projection) = project_world_point(camera, wave.origin, viewport) {
@@ -9564,7 +9568,7 @@ mod tests {
     fn echolocation_footprints_require_direct_line_of_sight() {
         let camera = look_at(Vec3::new(0.5, 2.5, 0.5), Vec3::new(0.5, 0.1, 4.5));
         let prints = [EchoFootprint {
-            position: Vec3::new(0.5, 0.08, 4.5),
+            position: Vec3::new(0.5, ECHO_FOOTPRINT_SURFACE_Y, 4.5),
             remaining_seconds: ECHO_FOOTPRINT_LIFETIME,
             left: true,
             travel_direction: Vec3::new(0.0, 0.0, 1.0),
@@ -9611,7 +9615,7 @@ mod tests {
             Vec3::new(0.5, 3.5, 3.5),
         );
         let waves = [EchoStepWave {
-            origin: source + Vec3::new(0.0, -WALK_EYE_HEIGHT + 0.08, 0.0),
+            origin: source + Vec3::new(0.0, ECHO_FOOTPRINT_SURFACE_Y - WALK_EYE_HEIGHT, 0.0),
             impacts: build_echo_wave(
                 &world,
                 echo_pursuer_foot_source(source),
@@ -9642,7 +9646,7 @@ mod tests {
         echo.world = echolocation_test_room(VoxelCoord::new(6, 6, 6));
         let source = Vec3::new(1.5, WALK_EYE_HEIGHT, 3.5);
         echo.step_waves.push(EchoStepWave {
-            origin: source + Vec3::new(0.0, -WALK_EYE_HEIGHT + 0.08, 0.0),
+            origin: source + Vec3::new(0.0, ECHO_FOOTPRINT_SURFACE_Y - WALK_EYE_HEIGHT, 0.0),
             impacts: build_echo_wave(
                 &echo.world,
                 echo_pursuer_foot_source(source),
@@ -9665,7 +9669,11 @@ mod tests {
         let echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
         let camera = echolocation_start_camera(&echo);
         let prints = [EchoFootprint {
-            position: Vec3::new(echo.start_position.x, 0.08, echo.start_position.z + 6.0),
+            position: Vec3::new(
+                echo.start_position.x,
+                ECHO_FOOTPRINT_SURFACE_Y,
+                echo.start_position.z + 6.0,
+            ),
             remaining_seconds: ECHO_FOOTPRINT_LIFETIME,
             left: true,
             travel_direction: Vec3::new(0.0, 0.0, 1.0),
@@ -9673,7 +9681,7 @@ mod tests {
         assert!(has_line_of_sight(
             &echo.world,
             camera.position,
-            prints[0].position + Vec3::new(0.0, 0.94, 0.0)
+            prints[0].position + Vec3::new(0.0, 0.04, 0.0)
         ));
         assert_eq!(
             echo_footprint_cells(VIEWPORT, &camera, &echo.world, &prints).len(),
