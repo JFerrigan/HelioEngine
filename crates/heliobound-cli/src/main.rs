@@ -53,7 +53,9 @@ const BOOST_MULTIPLIER: f32 = 8.0;
 const WALK_BOOST_MULTIPLIER: f32 = 2.25;
 const WALK_EYE_HEIGHT: f32 = 3.2;
 const WALK_COLLISION_RADIUS: f32 = 0.34;
-const WALK_JUMP_SPEED: f32 = 10.5;
+// Five times the former jump height. With 30 u/s² gravity this reaches about
+// 9.2 voxels above the ground, giving the player a clearly readable hop.
+const WALK_JUMP_SPEED: f32 = 23.5;
 const WALK_GRAVITY: f32 = 30.0;
 const CITY_FIGURE_EYE_HEIGHT: f32 = WALK_EYE_HEIGHT;
 const CITY_FIGURE_SPEED: f32 = 4.0;
@@ -9858,7 +9860,8 @@ mod tests {
         );
         assert!(camera.position.y > WALK_EYE_HEIGHT);
 
-        for _ in 0..40 {
+        let mut peak_y = camera.position.y;
+        for _ in 0..80 {
             update_jumping_walking_camera(
                 &mut camera,
                 &mut input,
@@ -9867,7 +9870,9 @@ mod tests {
                 STANDARD_WALK_PROFILE,
                 0.05,
             );
+            peak_y = peak_y.max(camera.position.y);
         }
+        assert!(peak_y - WALK_EYE_HEIGHT > 8.0);
         assert_eq!(camera.position.y, WALK_EYE_HEIGHT);
         assert!(!motion.airborne);
     }
