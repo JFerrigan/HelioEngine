@@ -9,9 +9,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 use heliobound_audio::{EcholocationInterference, GameAudio, SoundEffect};
 use heliobound_core::{
-    AssetCatalog, Camera, CityConfig, CityGenerator, DoomMapConfig, DoomMapGenerator, MapCatalog,
-    PlanetConfig, ProceduralPlanet, Ray, Vec3, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld,
+    AssetCatalog, Camera, CityConfig, CityGenerator, MapCatalog, PlanetConfig, ProceduralPlanet,
+    Ray, Vec3, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld,
 };
+#[cfg(test)]
+use heliobound_core::{DoomMapConfig, DoomMapGenerator};
 use heliobound_gfx::{
     raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay, Scene, SceneBuilder, SceneCell,
     TextStyle, Viewport,
@@ -501,12 +503,9 @@ impl AppState {
             map_directory().unwrap_or_else(|| Path::new("assets/voxel-maps").to_owned()),
             &assets,
         );
-        let doom_map = build_doom_map();
-        let bar_scene = build_bar_scene();
-        let zombies_blueprint = map_catalog
-            .get("zombies")
-            .map(|map| map.fresh_session().world)
-            .unwrap_or_else(|| build_zombies_map(&ZombiesState::new()));
+        let doom_map = compiled_map_world(&map_catalog, "doom");
+        let bar_scene = compiled_map_world(&map_catalog, "bar");
+        let zombies_blueprint = compiled_map_world(&map_catalog, "zombies");
         Self {
             mode: AppMode::Menu,
             planet: build_demo_planet(),
@@ -789,13 +788,9 @@ impl AppState {
 
     fn start_shooter(&mut self) {
         self.mode = AppMode::CityShooter;
-        if let Some(map) = self.map_catalog.get("doom") {
-            self.doom_map = map.fresh_session().world;
-            self.camera = compiled_start_camera(map);
-        } else {
-            self.doom_map = build_doom_map();
-            self.camera = doom_start_camera();
-        }
+        let map = required_compiled_map(&self.map_catalog, "doom");
+        self.doom_map = map.fresh_session().world;
+        self.camera = compiled_start_camera(map);
         self.input = PlayerInput::default();
         self.walk_motion = WalkMotion::default();
         self.shooter = ShooterState::new();
@@ -812,13 +807,9 @@ impl AppState {
 
     fn start_bar(&mut self) {
         self.mode = AppMode::BarScene;
-        if let Some(map) = self.map_catalog.get("bar") {
-            self.bar_scene = map.fresh_session().world;
-            self.camera = compiled_start_camera(map);
-        } else {
-            self.bar_scene = build_bar_scene();
-            self.camera = bar_start_camera();
-        }
+        let map = required_compiled_map(&self.map_catalog, "bar");
+        self.bar_scene = map.fresh_session().world;
+        self.camera = compiled_start_camera(map);
         self.input = PlayerInput::default();
         self.walk_motion = WalkMotion::default();
     }
@@ -853,17 +844,9 @@ impl AppState {
     fn start_zombies(&mut self) {
         self.mode = AppMode::Zombies;
         self.zombies = ZombiesState::new();
-        self.zombies_blueprint = self
-            .map_catalog
-            .get("zombies")
-            .map(|map| map.fresh_session().world)
-            .unwrap_or_else(|| build_zombies_map(&self.zombies));
+        self.zombies_blueprint = compiled_map_world(&self.map_catalog, "zombies");
         self.zombies_map = self.zombies_blueprint.clone();
-        self.camera = self
-            .map_catalog
-            .get("zombies")
-            .map(compiled_start_camera)
-            .unwrap_or_else(zombies_start_camera);
+        self.camera = compiled_start_camera(required_compiled_map(&self.map_catalog, "zombies"));
         self.input = PlayerInput::default();
         self.walk_motion = WalkMotion::default();
         self.viewmodel_bob = ViewmodelBob::default();
@@ -872,14 +855,11 @@ impl AppState {
     fn start_liminal(&mut self) {
         self.mode = AppMode::Liminal;
         self.liminal = LiminalState::new_seeded(LIMINAL_SEED);
-        if let Some(map) = self.map_catalog.get("liminal-office") {
-            let session = map.fresh_session();
-            self.liminal.world = session.world;
-            self.liminal.start_position = session.player_start.position;
-            self.camera = compiled_start_camera(map);
-        } else {
-            self.camera = liminal_start_camera(&self.liminal);
-        }
+        let map = required_compiled_map(&self.map_catalog, "liminal-office");
+        let session = map.fresh_session();
+        self.liminal.world = session.world;
+        self.liminal.start_position = session.player_start.position;
+        self.camera = compiled_start_camera(map);
         self.input = PlayerInput::default();
     }
 
@@ -900,14 +880,11 @@ impl AppState {
     fn start_echolocation(&mut self) {
         self.mode = AppMode::EchoLocation;
         self.echolocation = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
-        if let Some(map) = self.map_catalog.get("echolocation") {
-            let session = map.fresh_session();
-            self.echolocation.world = session.world;
-            self.echolocation.start_position = session.player_start.position;
-            self.camera = compiled_start_camera(map);
-        } else {
-            self.camera = echolocation_start_camera(&self.echolocation);
-        }
+        let map = required_compiled_map(&self.map_catalog, "echolocation");
+        let session = map.fresh_session();
+        self.echolocation.world = session.world;
+        self.echolocation.start_position = session.player_start.position;
+        self.camera = compiled_start_camera(map);
         self.input = PlayerInput::default();
         self.walk_motion = WalkMotion::default();
     }
@@ -1282,6 +1259,7 @@ fn city_start_camera() -> Camera {
         .with_max_distance(140.0)
 }
 
+#[cfg(test)]
 fn doom_start_camera() -> Camera {
     Camera::new(Vec3::new(0.5, WALK_EYE_HEIGHT, -55.5))
         .looking_at(0.0, 0.0)
@@ -1306,6 +1284,7 @@ fn corn_maze_start_camera(maze: &CornMazeState) -> Camera {
     .with_max_distance(180.0)
 }
 
+#[cfg(test)]
 fn bar_start_camera() -> Camera {
     look_at(
         Vec3::new(0.5, BAR_EYE_HEIGHT, -34.5),
@@ -1325,18 +1304,12 @@ fn sandbox_start_camera(world: &VoxelWorld) -> Camera {
         .with_max_distance(120.0)
 }
 
+#[cfg(test)]
 fn zombies_start_camera() -> Camera {
     Camera::new(Vec3::new(0.5, WALK_EYE_HEIGHT, -66.5))
         .looking_at(0.0, 0.0)
         .with_fov_y(68.0_f32.to_radians())
         .with_max_distance(150.0)
-}
-
-fn liminal_start_camera(liminal: &LiminalState) -> Camera {
-    Camera::new(liminal.start_position)
-        .looking_at(0.0, 0.0)
-        .with_fov_y(66.0_f32.to_radians())
-        .with_max_distance(120.0)
 }
 
 fn drone_gate_runner_start_camera(runner: &DroneGateRunnerState) -> Camera {
@@ -1351,6 +1324,7 @@ fn drone_gate_runner_start_camera(runner: &DroneGateRunnerState) -> Camera {
         .with_max_distance(DRONE_GATE_VIEW_DISTANCE)
 }
 
+#[cfg(test)]
 fn echolocation_start_camera(echo: &EchoLocationState) -> Camera {
     look_at(
         echo.start_position,
@@ -4869,10 +4843,6 @@ fn approach_vec3(current: Vec3, target: Vec3, max_delta: f32) -> Vec3 {
     }
 }
 
-fn update_walking_camera(camera: &mut Camera, input: &PlayerInput, city: &VoxelWorld, dt: f32) {
-    update_walking_camera_with_profile(camera, input, city, STANDARD_WALK_PROFILE, dt);
-}
-
 fn update_walking_camera_with_profile(
     camera: &mut Camera,
     input: &PlayerInput,
@@ -5448,42 +5418,18 @@ fn build_demo_city() -> VoxelWorld {
     .generate()
 }
 
+#[cfg(test)]
 fn build_doom_map() -> VoxelWorld {
     DoomMapGenerator::new(DoomMapConfig::default()).generate()
 }
 
-fn build_map_catalog() -> Vec<PreviewMap> {
-    let assets = AssetCatalog::discover(
-        asset_directory().unwrap_or_else(|| Path::new("assets/voxel-assets").to_owned()),
-    );
-    let maps = MapCatalog::discover(
-        map_directory().unwrap_or_else(|| Path::new("assets/voxel-maps").to_owned()),
-        &assets,
-    );
-    build_map_catalog_from(&maps)
-}
-
 fn build_map_catalog_from(maps: &MapCatalog) -> Vec<PreviewMap> {
     let city = build_demo_city();
-    let doom_map = build_doom_map();
     let corn_maze = CornMazeState::new();
     let corn_start_camera = corn_maze_start_camera(&corn_maze);
-    let bar = maps
-        .get("bar")
-        .map(|map| map.fresh_session().world)
-        .unwrap_or_else(build_bar_scene);
     let sandbox = build_voxel_sandbox_world();
-    let zombies = ZombiesState::new();
-    let zombies_map = maps
-        .get("zombies")
-        .map(|map| map.fresh_session().world)
-        .unwrap_or_else(|| build_zombies_map(&zombies));
-    let liminal = LiminalState::new_seeded(LIMINAL_SEED);
-    let liminal_start_camera = liminal_start_camera(&liminal);
     let drone_runner = DroneGateRunnerState::new_seeded(DRONE_GATE_SEED);
     let drone_start_camera = drone_gate_runner_start_camera(&drone_runner);
-    let echolocation = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
-    let echolocation_start_camera = echolocation_start_camera(&echolocation);
 
     vec![
         PreviewMap::new(
@@ -5494,17 +5440,9 @@ fn build_map_catalog_from(maps: &MapCatalog) -> Vec<PreviewMap> {
         ),
         PreviewMap::new(
             "doomlike arena",
-            maps.get("doom")
-                .map(|m| m.world.clone())
-                .unwrap_or(doom_map),
-            maps.get("doom")
-                .map(compiled_start_camera)
-                .unwrap_or_else(doom_start_camera),
-            if maps.get("doom").is_some() {
-                "hbmap"
-            } else {
-                "core generator"
-            },
+            compiled_map_world(maps, "doom"),
+            compiled_start_camera(required_compiled_map(maps, "doom")),
+            "hbmap",
         ),
         PreviewMap::new(
             "corn maze",
@@ -5514,15 +5452,9 @@ fn build_map_catalog_from(maps: &MapCatalog) -> Vec<PreviewMap> {
         ),
         PreviewMap::new(
             "Starhusk bar",
-            bar,
-            maps.get("bar")
-                .map(compiled_start_camera)
-                .unwrap_or_else(bar_start_camera),
-            if maps.get("bar").is_some() {
-                "hbmap"
-            } else {
-                "CLI stamps"
-            },
+            compiled_map_world(maps, "bar"),
+            compiled_start_camera(required_compiled_map(maps, "bar")),
+            "hbmap",
         ),
         PreviewMap::new(
             "voxel sandbox",
@@ -5532,29 +5464,15 @@ fn build_map_catalog_from(maps: &MapCatalog) -> Vec<PreviewMap> {
         ),
         PreviewMap::new(
             "Heliobound Zombies",
-            zombies_map,
-            maps.get("zombies")
-                .map(compiled_start_camera)
-                .unwrap_or_else(zombies_start_camera),
-            if maps.get("zombies").is_some() {
-                "hbmap"
-            } else {
-                "CLI stamps"
-            },
+            compiled_map_world(maps, "zombies"),
+            compiled_start_camera(required_compiled_map(maps, "zombies")),
+            "hbmap",
         ),
         PreviewMap::new(
             "liminal office",
-            maps.get("liminal-office")
-                .map(|m| m.world.clone())
-                .unwrap_or(liminal.world),
-            maps.get("liminal-office")
-                .map(compiled_start_camera)
-                .unwrap_or(liminal_start_camera),
-            if maps.get("liminal-office").is_some() {
-                "hbmap"
-            } else {
-                "CLI generator"
-            },
+            compiled_map_world(maps, "liminal-office"),
+            compiled_start_camera(required_compiled_map(maps, "liminal-office")),
+            "hbmap",
         ),
         PreviewMap::new(
             "drone gate course",
@@ -5564,17 +5482,9 @@ fn build_map_catalog_from(maps: &MapCatalog) -> Vec<PreviewMap> {
         ),
         PreviewMap::new(
             "echolocation",
-            maps.get("echolocation")
-                .map(|m| m.world.clone())
-                .unwrap_or(echolocation.world),
-            maps.get("echolocation")
-                .map(compiled_start_camera)
-                .unwrap_or(echolocation_start_camera),
-            if maps.get("echolocation").is_some() {
-                "hbmap"
-            } else {
-                "CLI generator"
-            },
+            compiled_map_world(maps, "echolocation"),
+            compiled_start_camera(required_compiled_map(maps, "echolocation")),
+            "hbmap",
         ),
     ]
 }
@@ -5600,6 +5510,17 @@ fn compiled_start_camera(map: &heliobound_core::CompiledMap) -> Camera {
         } => Camera::new(position).looking_at((yaw_degrees as f32).to_radians(), 0.0),
         _ => unreachable!("compiled maps always have a player spawn"),
     }
+}
+
+/// Migrated gameplay maps have no procedural fallback: the checked-in hbmap
+/// blueprint is the authoritative startup world for both games and the viewer.
+fn required_compiled_map<'a>(maps: &'a MapCatalog, id: &str) -> &'a heliobound_core::CompiledMap {
+    maps.get(id)
+        .unwrap_or_else(|| panic!("required hbmap `{id}` failed to load: {:?}", maps.errors))
+}
+
+fn compiled_map_world(maps: &MapCatalog, id: &str) -> VoxelWorld {
+    required_compiled_map(maps, id).fresh_session().world
 }
 
 fn build_echolocation_map(seed: u64) -> (VoxelWorld, Vec3, EchoPuzzle) {
@@ -6414,6 +6335,9 @@ fn rotate_facing_clockwise(facing: BarFacing) -> BarFacing {
     }
 }
 
+/// Frozen pre-hbmap implementation retained solely as the parity oracle for
+/// the checked-in Zombies blueprint.
+#[cfg(test)]
 fn build_zombies_map(state: &ZombiesState) -> VoxelWorld {
     let mut world = VoxelWorld::new();
 
@@ -6447,6 +6371,7 @@ fn zombies_world_with_runtime_overlays(base: &VoxelWorld, state: &ZombiesState) 
     world
 }
 
+#[cfg(test)]
 fn stamp_zombies_boundary(world: &mut VoxelWorld) {
     fill_cuboid(
         world,
@@ -6474,6 +6399,7 @@ fn stamp_zombies_boundary(world: &mut VoxelWorld) {
     );
 }
 
+#[cfg(test)]
 fn stamp_zombies_street(world: &mut VoxelWorld) {
     fill_cuboid(
         world,
@@ -6509,6 +6435,7 @@ fn stamp_zombies_street(world: &mut VoxelWorld) {
     }
 }
 
+#[cfg(test)]
 fn stamp_zombies_building(world: &mut VoxelWorld, state: &ZombiesState) {
     fill_cuboid(
         world,
@@ -6568,6 +6495,7 @@ fn stamp_zombies_building(world: &mut VoxelWorld, state: &ZombiesState) {
     );
 }
 
+#[cfg(test)]
 fn stamp_zombies_corn_field(world: &mut VoxelWorld, state: &ZombiesState) {
     fill_cuboid(
         world,
@@ -6620,6 +6548,7 @@ fn stamp_zombies_wall_weapon(world: &mut VoxelWorld, wall_weapon: &WallWeapon) {
     );
 }
 
+#[cfg(test)]
 fn door_open(state: &ZombiesState, kind: ZombiesDoorKind) -> bool {
     state
         .doors
@@ -6642,6 +6571,7 @@ fn clear_zombies_door(world: &mut VoxelWorld, kind: ZombiesDoorKind) {
     }
 }
 
+#[cfg(test)]
 fn stamp_jukebox_at(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
     fill_cuboid(
         world,
@@ -6663,6 +6593,7 @@ fn stamp_jukebox_at(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
     );
 }
 
+#[cfg(test)]
 fn stamp_dart_board_at(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
     for dy in -3_i32..=3 {
         for dz in -3_i32..=3 {
@@ -6775,6 +6706,9 @@ enum BarPose {
     Sitting,
 }
 
+/// Frozen pre-hbmap implementation retained solely as the parity oracle for
+/// the checked-in bar blueprint.
+#[cfg(test)]
 fn build_bar_scene() -> VoxelWorld {
     let mut world = VoxelWorld::new();
 
@@ -7286,6 +7220,7 @@ fn build_weapon_asset() -> VoxelWorld {
     world
 }
 
+#[cfg(test)]
 fn stamp_bar_room(world: &mut VoxelWorld) {
     fill_cuboid(
         world,
@@ -7342,6 +7277,7 @@ fn stamp_bar_room(world: &mut VoxelWorld) {
     }
 }
 
+#[cfg(test)]
 fn stamp_bar_counter(world: &mut VoxelWorld) {
     fill_cuboid(
         world,
@@ -7384,6 +7320,7 @@ fn stamp_bar_counter(world: &mut VoxelWorld) {
     }
 }
 
+#[cfg(test)]
 fn stamp_stage(world: &mut VoxelWorld) {
     fill_cuboid(
         world,
@@ -7411,6 +7348,7 @@ fn stamp_stage(world: &mut VoxelWorld) {
     stamp_bottle(world, -22, 4, 25);
 }
 
+#[cfg(test)]
 fn stamp_tables_and_chairs(world: &mut VoxelWorld) {
     for (x, z) in [(-30, -22), (-4, -20), (22, -20), (-24, 6), (18, 7)] {
         stamp_table(world, x, z);
@@ -7475,6 +7413,7 @@ fn stamp_chair(world: &mut VoxelWorld, x: i32, z: i32, facing: BarFacing) {
     }
 }
 
+#[cfg(test)]
 fn stamp_jukebox(world: &mut VoxelWorld) {
     fill_cuboid(
         world,
@@ -7504,6 +7443,7 @@ fn stamp_jukebox(world: &mut VoxelWorld) {
     }
 }
 
+#[cfg(test)]
 fn stamp_dart_boards(world: &mut VoxelWorld) {
     for z in [8_i32, 24] {
         for y in 7_i32..=13 {
@@ -7524,6 +7464,7 @@ fn stamp_dart_boards(world: &mut VoxelWorld) {
     }
 }
 
+#[cfg(test)]
 fn stamp_bar_people(world: &mut VoxelWorld) {
     let people = [
         (-37, 29, BarFacing::South, BarPose::Standing),
@@ -7723,6 +7664,7 @@ fn stamp_ash_tray(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
     );
 }
 
+#[cfg(test)]
 fn stamp_microphone(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
     fill_cuboid(
         world,
@@ -7738,6 +7680,7 @@ fn stamp_microphone(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
     );
 }
 
+#[cfg(test)]
 fn stamp_drum_kit(world: &mut VoxelWorld, x: i32, y: i32, z: i32) {
     fill_cuboid(
         world,
@@ -9884,7 +9827,7 @@ mod tests {
             ..PlayerInput::default()
         };
 
-        update_walking_camera(&mut camera, &input, &city, 1.0);
+        update_walking_camera_with_profile(&mut camera, &input, &city, STANDARD_WALK_PROFILE, 1.0);
 
         assert_eq!(camera.position.y, WALK_EYE_HEIGHT);
     }
@@ -10379,7 +10322,8 @@ mod tests {
 
     #[test]
     fn map_catalog_covers_every_finite_voxel_gameplay_map() {
-        let maps = build_map_catalog();
+        let app = AppState::new_with_drone_course_nonce(0, false);
+        let maps = build_map_catalog_from(&app.map_catalog);
 
         assert_eq!(maps.len(), 9);
         assert_eq!(
@@ -10436,7 +10380,8 @@ mod tests {
 
     #[test]
     fn map_viewer_uses_each_mode_start_camera_when_entering_or_resetting() {
-        let maps = build_map_catalog();
+        let app = AppState::new_with_drone_course_nonce(0, false);
+        let maps = build_map_catalog_from(&app.map_catalog);
         let city_start = map_viewer_camera(maps[0].start_camera);
         let echolocation_start = map_viewer_camera(maps[8].start_camera);
         let mut viewer = MapViewerState::new(maps);
