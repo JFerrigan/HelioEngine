@@ -303,7 +303,9 @@ const ECHO_PLAYER_STEP_DISTANCE: f32 = 2.6;
 const ECHO_PUZZLE_SIGNAL_SPEED: f32 = 6.0;
 const ECHO_RECEIVER_OUTPUT_SECONDS: f32 = 3.0;
 const ECHO_RECEIVER_COORD: VoxelCoord = VoxelCoord::new(-36, 1, 0);
-const ECHO_PRESSURE_PLATE_COORD: VoxelCoord = VoxelCoord::new(-30, 0, 3);
+// Just beyond the starting-room bulkhead: the player can reach it during the
+// receiver-open window and send the same delayed signal back through the wire.
+const ECHO_PRESSURE_PLATE_COORD: VoxelCoord = VoxelCoord::new(-19, 0, 0);
 const ECHO_DOOR_X: i32 = -21;
 const ECHOLOCATION_WALK_PROFILE: WalkProfile = WalkProfile {
     speed: 10.0,
@@ -13204,6 +13206,16 @@ mod tests {
     #[test]
     fn pressure_plate_uses_the_delayed_receiver_wire_path() {
         let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        assert!(
+            ECHO_PRESSURE_PLATE_COORD.x > ECHO_DOOR_X,
+            "the pressure plate must be beyond the starting-room bulkhead"
+        );
+        assert_eq!(
+            echo.world
+                .get(ECHO_PRESSURE_PLATE_COORD)
+                .map(|cell| cell.material),
+            Some(VoxelMaterial::PressurePlate)
+        );
         let plate_position = Vec3::new(
             ECHO_PRESSURE_PLATE_COORD.x as f32 + 0.5,
             ECHOLOCATION_WALK_PROFILE.eye_height + ECHO_PRESSURE_PLATE_COORD.y as f32,

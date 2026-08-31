@@ -14,6 +14,9 @@ The first interactive puzzle occupies the starting room. A closed bulkhead at `x
 
 - Activation requires a propagated sound impact on the receiver voxel. Primary and reflected player pulses, player step waves, and pursuer step waves can all trigger it; merely standing nearby cannot.
 - A hit makes the receiver emit for 3 seconds. A new hit while it is emitting extends that interval to at least 3 seconds after the new hit. A hit after shutoff creates a separate interval, so the already-travelling gap is preserved.
+- A pressure plate sits just beyond the starting-room bulkhead on the forward
+  corridor. Stepping on it re-triggers the same receiver output and delayed
+  wire propagation, so it can keep the bulkhead open from the far side.
 - The signal moves along the ordered pipe at 6 voxels per second. Each pipe sample is powered when the receiver was emitting at `current time - distance / 6`, producing visible leading and trailing edges. The 15-voxel route therefore delays the door by 2.5 seconds and preserves the 3-second crossing window.
 - The door clears from the shared voxel world on the delayed rising edge and is restored on the falling edge. When restored over the player or pursuer, that entity moves to the nearer predefined clear position; equal distances use its current side, then the starting-room side.
 - Closed door voxels block walking, pursuer navigation, sight, and newly emitted waves. Opening removes those voxels for all four systems. Waves cache their path at emission, so waves already in flight retain the path computed before a transition.

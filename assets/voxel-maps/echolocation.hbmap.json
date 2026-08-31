@@ -1216,14 +1216,14 @@
       "kind": "fill_box",
       "material": "PressurePlate",
       "max": [
-        -30,
+        -19,
         0,
-        3
+        0
       ],
       "min": [
-        -30,
+        -19,
         0,
-        3
+        0
       ]
     }
   ],
