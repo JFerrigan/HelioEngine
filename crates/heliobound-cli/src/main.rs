@@ -5000,11 +5000,6 @@ fn update_jumping_walking_camera(
     }
     input.jump_requested = false;
 
-    // A player who walks off a ledge begins falling; empty test worlds retain
-    // their legacy flat-camera behavior until a jump-capable surface exists.
-    if !motion.airborne && !grounded {
-        return;
-    }
     if !grounded {
         motion.airborne = true;
     }
@@ -10099,7 +10094,6 @@ mod tests {
         }
 
         #[test]
-        #[ignore = "known edge-fall bug: horizontal movement does not enter airborne state"]
         fn walking_off_an_edge_starts_a_fall() {
             let mut world = VoxelWorld::new();
             floor(
@@ -10124,7 +10118,6 @@ mod tests {
         }
 
         #[test]
-        #[ignore = "known edge-fall bug: player never descends to lower platforms"]
         fn falling_from_an_edge_lands_on_a_lower_platform() {
             let mut world = VoxelWorld::new();
             floor(
@@ -11985,7 +11978,13 @@ mod tests {
         let mut zombies = ZombiesState::new();
         zombies.sprint = 0.0;
         zombies.sprint_locked = true;
-        let world = VoxelWorld::new();
+        let mut world = VoxelWorld::new();
+        fill_cuboid(
+            &mut world,
+            VoxelCoord::new(-2, 0, -80),
+            VoxelCoord::new(2, 0, -50),
+            VoxelMaterial::Stone,
+        );
         let mut camera = zombies_start_camera();
         let start = camera.position;
         let mut input = PlayerInput {
