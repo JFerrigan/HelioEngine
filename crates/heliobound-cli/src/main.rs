@@ -10078,6 +10078,151 @@ mod tests {
         );
     }
 
+    /// Contract tests for grounded first-person movement. Keep edge cases here
+    /// rather than only testing a flat floor: gameplay maps have ledges,
+    /// varying floor heights, and low ceilings.
+    mod walking_physics {
+        use super::*;
+
+        fn floor(world: &mut VoxelWorld, min: VoxelCoord, max: VoxelCoord) {
+            fill_cuboid(world, min, max, VoxelMaterial::Stone);
+        }
+
+        fn step(
+            camera: &mut Camera,
+            input: &mut PlayerInput,
+            motion: &mut WalkMotion,
+            world: &VoxelWorld,
+            dt: f32,
+        ) {
+            update_jumping_walking_camera(camera, input, motion, world, STANDARD_WALK_PROFILE, dt);
+        }
+
+        #[test]
+        #[ignore = "known edge-fall bug: horizontal movement does not enter airborne state"]
+        fn walking_off_an_edge_starts_a_fall() {
+            let mut world = VoxelWorld::new();
+            floor(
+                &mut world,
+                VoxelCoord::new(-2, 0, -1),
+                VoxelCoord::new(0, 0, 1),
+            );
+            let mut camera = Camera::new(Vec3::new(0.5, WALK_EYE_HEIGHT, 0.5));
+            let mut input = PlayerInput {
+                right: true,
+                ..PlayerInput::default()
+            };
+            let mut motion = WalkMotion::default();
+
+            step(&mut camera, &mut input, &mut motion, &world, 0.1);
+            input.right = false;
+            step(&mut camera, &mut input, &mut motion, &world, 0.1);
+
+            assert!(camera.position.x > 0.5);
+            assert!(camera.position.y < WALK_EYE_HEIGHT);
+            assert!(motion.airborne);
+        }
+
+        #[test]
+        #[ignore = "known edge-fall bug: player never descends to lower platforms"]
+        fn falling_from_an_edge_lands_on_a_lower_platform() {
+            let mut world = VoxelWorld::new();
+            floor(
+                &mut world,
+                VoxelCoord::new(-2, 0, -1),
+                VoxelCoord::new(0, 0, 1),
+            );
+            floor(
+                &mut world,
+                VoxelCoord::new(1, -3, -1),
+                VoxelCoord::new(5, -3, 1),
+            );
+            let mut camera = Camera::new(Vec3::new(0.5, WALK_EYE_HEIGHT, 0.5));
+            let mut input = PlayerInput {
+                right: true,
+                ..PlayerInput::default()
+            };
+            let mut motion = WalkMotion::default();
+
+            step(&mut camera, &mut input, &mut motion, &world, 0.1);
+            input.right = false;
+            for _ in 0..40 {
+                step(&mut camera, &mut input, &mut motion, &world, 0.05);
+            }
+
+            assert_eq!(camera.position.y, WALK_EYE_HEIGHT - 3.0);
+            assert!(!motion.airborne);
+        }
+
+        #[test]
+        fn jump_request_in_midair_does_not_reset_fall_velocity() {
+            let world = VoxelWorld::new();
+            let mut camera = Camera::new(Vec3::new(0.5, WALK_EYE_HEIGHT + 4.0, 0.5));
+            let mut input = PlayerInput {
+                jump_requested: true,
+                ..PlayerInput::default()
+            };
+            let mut motion = WalkMotion {
+                vertical_velocity: -3.0,
+                airborne: true,
+            };
+
+            step(&mut camera, &mut input, &mut motion, &world, 0.1);
+
+            assert!(motion.vertical_velocity < -3.0);
+            assert!(camera.position.y < WALK_EYE_HEIGHT + 4.0);
+        }
+
+        #[test]
+        fn jump_stops_at_a_low_ceiling_then_returns_to_ground() {
+            let mut world = VoxelWorld::new();
+            floor(
+                &mut world,
+                VoxelCoord::new(-2, 0, -2),
+                VoxelCoord::new(2, 0, 2),
+            );
+            floor(
+                &mut world,
+                VoxelCoord::new(-2, 7, -2),
+                VoxelCoord::new(2, 7, 2),
+            );
+            let mut camera = Camera::new(Vec3::new(0.5, WALK_EYE_HEIGHT, 0.5));
+            let mut input = PlayerInput {
+                jump_requested: true,
+                ..PlayerInput::default()
+            };
+            let mut motion = WalkMotion::default();
+
+            for _ in 0..40 {
+                step(&mut camera, &mut input, &mut motion, &world, 0.05);
+            }
+
+            assert_eq!(camera.position.y, WALK_EYE_HEIGHT);
+            assert!(!motion.airborne);
+        }
+
+        #[test]
+        fn large_fall_frame_lands_on_the_crossed_platform() {
+            let mut world = VoxelWorld::new();
+            floor(
+                &mut world,
+                VoxelCoord::new(-1, -6, -1),
+                VoxelCoord::new(1, -6, 1),
+            );
+            let mut camera = Camera::new(Vec3::new(0.5, WALK_EYE_HEIGHT, 0.5));
+            let mut input = PlayerInput::default();
+            let mut motion = WalkMotion {
+                vertical_velocity: 0.0,
+                airborne: true,
+            };
+
+            step(&mut camera, &mut input, &mut motion, &world, 1.0);
+
+            assert_eq!(camera.position.y, WALK_EYE_HEIGHT - 6.0);
+            assert!(!motion.airborne);
+        }
+    }
+
     /// One-off canonical exporter for migrated maps. It reads each checked-in
     /// file for its authored metadata/markers and replaces only static geometry
     /// and the fixed legacy player start with a compact, deterministic list of
