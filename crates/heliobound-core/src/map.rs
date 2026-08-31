@@ -3,7 +3,7 @@
 use crate::{
     CityConfig, CityGenerator, Vec3, VoxelBounds, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
@@ -170,7 +170,7 @@ fn color_hex(s: &str) -> Result<[u8; 3], String> {
     ])
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MapMetadata {
     pub id: String,
     pub name: String,
@@ -178,7 +178,7 @@ pub struct MapMetadata {
     pub category: String,
     pub bounds: VoxelBounds,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlacedAsset {
     pub id: String,
     pub asset_id: String,
@@ -203,7 +203,7 @@ pub enum MapOperation {
         generator: String,
     },
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MapMarker {
     PlayerSpawn {
         id: String,
@@ -311,6 +311,21 @@ pub struct CompiledMap {
     pub placed_assets: Vec<PlacedAsset>,
     pub source: PathBuf,
 }
+/// A mutable, editor-facing map working copy.
+///
+/// Its voxel world is the authoritative final static geometry. Exporting it
+/// intentionally does not retain historical fill/clear/generator operations:
+/// it emits a deterministic canonical snapshot instead. Asset instances stay
+/// structured entities; painting through an asset is therefore not supported
+/// until that instance is removed or moved by the editor.
+#[derive(Clone, Debug)]
+pub struct EditableMap {
+    pub metadata: MapMetadata,
+    pub world: VoxelWorld,
+    pub player_start: MapMarker,
+    pub markers: Vec<MapMarker>,
+    pub placed_assets: Vec<PlacedAsset>,
+}
 #[derive(Clone, Debug)]
 pub struct MapSession {
     pub world: VoxelWorld,
@@ -349,6 +364,307 @@ impl CompiledMap {
     }
     pub fn echolocation(&self) -> Result<EcholocationMap, String> {
         EcholocationMap::from_markers(&self.metadata.mode, &self.markers)
+    }
+
+    /// Clones the immutable blueprint into the representation a future editor
+    /// may freely mutate before exporting or saving-as.
+    pub fn editable(&self) -> EditableMap {
+        EditableMap {
+            metadata: self.metadata.clone(),
+            world: self.world.clone(),
+            player_start: self.player_start.clone(),
+            markers: self.markers.clone(),
+            placed_assets: self.placed_assets.clone(),
+        }
+    }
+}
+
+/// Serializes a working map into the canonical v1 JSON form.
+///
+/// Geometry is greedily coalesced into same-material axis-aligned boxes in a
+/// stable order. The result is an authored final-world snapshot, not an edit
+/// history; procedural regions are deliberately materialized on export.
+pub fn export_map(map: &EditableMap, assets: &AssetCatalog) -> Result<String, String> {
+    if !matches!(map.player_start, MapMarker::PlayerSpawn { .. }) {
+        return Err("player_start must be player_spawn".into());
+    }
+    if map.world.voxel_count() == 0 {
+        return Err("cannot export an empty world".into());
+    }
+
+    // Unit-scale assets already appear in the compiled collision world. Omit
+    // their matching cells from direct geometry so a custom asset palette does
+    // not leak into the direct-material namespace. Asset entities are emitted
+    // after geometry and remain the final overlay, matching compiler order.
+    let mut asset_cells = HashMap::new();
+    for placed in &map.placed_assets {
+        let asset = assets
+            .assets
+            .get(&placed.asset_id)
+            .ok_or_else(|| format!("unknown asset '{}'", placed.asset_id))?;
+        if asset.voxel_size != placed.voxel_size {
+            return Err(format!("asset '{}' changed voxel size", placed.asset_id));
+        }
+        if asset.voxel_size == 1.0 {
+            for (voxel, material) in &asset.voxels {
+                let rotated = rotate(*voxel, placed.yaw_degrees);
+                let coord = VoxelCoord::new(
+                    placed.position.x + rotated.x,
+                    placed.position.y + rotated.y,
+                    placed.position.z + rotated.z,
+                );
+                if !inside(map.metadata.bounds, coord) {
+                    return Err("asset extent lies outside map bounds".into());
+                }
+                asset_cells.insert(coord, *material);
+            }
+        }
+    }
+
+    let mut cells = BTreeMap::new();
+    for (coord, cell) in map.world.voxels() {
+        if asset_cells.get(&coord) == Some(&cell.material) {
+            continue;
+        }
+        if !inside(map.metadata.bounds, coord) {
+            return Err("world geometry lies outside map bounds".into());
+        }
+        material_name(cell.material)?;
+        cells.insert(coord, cell.material);
+    }
+    let mut operations = Vec::new();
+    while let Some((&start, &material)) = cells.iter().next() {
+        let mut max_x = start.x;
+        while max_x < i32::MAX
+            && cells.get(&VoxelCoord::new(max_x + 1, start.y, start.z)) == Some(&material)
+        {
+            max_x += 1;
+        }
+        let mut max_z = start.z;
+        'z_expand: loop {
+            let Some(next_z) = max_z.checked_add(1) else {
+                break;
+            };
+            for x in start.x..=max_x {
+                if cells.get(&VoxelCoord::new(x, start.y, next_z)) != Some(&material) {
+                    break 'z_expand;
+                }
+            }
+            max_z = next_z;
+        }
+        let mut max_y = start.y;
+        'y_expand: loop {
+            let Some(next_y) = max_y.checked_add(1) else {
+                break;
+            };
+            for z in start.z..=max_z {
+                for x in start.x..=max_x {
+                    if cells.get(&VoxelCoord::new(x, next_y, z)) != Some(&material) {
+                        break 'y_expand;
+                    }
+                }
+            }
+            max_y = next_y;
+        }
+        for z in start.z..=max_z {
+            for y in start.y..=max_y {
+                for x in start.x..=max_x {
+                    cells.remove(&VoxelCoord::new(x, y, z));
+                }
+            }
+        }
+        operations.push(serde_json::json!({
+            "kind": "fill_box",
+            "min": [start.x, start.y, start.z],
+            "max": [max_x, max_y, max_z],
+            "material": material_name(material)?,
+        }));
+    }
+    if operations.len() + map.placed_assets.len() > 10_000 {
+        return Err("export exceeds operation limit".into());
+    }
+    for asset in &map.placed_assets {
+        operations.push(serde_json::json!({
+            "kind": "place_asset",
+            "id": asset.id,
+            "asset_id": asset.asset_id,
+            "position": [asset.position.x, asset.position.y, asset.position.z],
+            "yaw_degrees": asset.yaw_degrees,
+        }));
+    }
+    let document = ExportedMap {
+        format_version: 1,
+        id: &map.metadata.id,
+        name: &map.metadata.name,
+        mode: &map.metadata.mode,
+        category: "authored",
+        bounds: ExportedBounds::from(map.metadata.bounds),
+        player_start: marker_json(&map.player_start),
+        operations,
+        markers: map.markers.iter().map(marker_json).collect(),
+    };
+    serde_json::to_string_pretty(&document).map_err(|error| error.to_string())
+}
+
+#[derive(Serialize)]
+struct ExportedMap<'a> {
+    format_version: u32,
+    id: &'a str,
+    name: &'a str,
+    mode: &'a str,
+    category: &'a str,
+    bounds: ExportedBounds,
+    player_start: serde_json::Value,
+    operations: Vec<serde_json::Value>,
+    markers: Vec<serde_json::Value>,
+}
+#[derive(Serialize)]
+struct ExportedBounds {
+    min: [i32; 3],
+    max: [i32; 3],
+}
+impl From<VoxelBounds> for ExportedBounds {
+    fn from(bounds: VoxelBounds) -> Self {
+        Self {
+            min: [bounds.min.x, bounds.min.y, bounds.min.z],
+            max: [bounds.max.x, bounds.max.y, bounds.max.z],
+        }
+    }
+}
+fn material_name(material: VoxelMaterial) -> Result<&'static str, String> {
+    use VoxelMaterial::*;
+    match material {
+        Regolith => Ok("Regolith"),
+        Basalt => Ok("Basalt"),
+        Ocean => Ok("Ocean"),
+        Ice => Ok("Ice"),
+        Grass => Ok("Grass"),
+        Dirt => Ok("Dirt"),
+        Stone => Ok("Stone"),
+        Sand => Ok("Sand"),
+        Wood => Ok("Wood"),
+        Leaves => Ok("Leaves"),
+        Zombie => Ok("Zombie"),
+        CornStalk => Ok("CornStalk"),
+        CarbonLife => Ok("CarbonLife"),
+        SiliconLife => Ok("SiliconLife"),
+        Habitat => Ok("Habitat"),
+        ShipHull => Ok("ShipHull"),
+        Glass => Ok("Glass"),
+        Beacon => Ok("Beacon"),
+        Gate => Ok("Gate"),
+        Receiver => Ok("Receiver"),
+        SignalPipe => Ok("SignalPipe"),
+        PuzzleDoor => Ok("PuzzleDoor"),
+        PressurePlate => Ok("PressurePlate"),
+        Custom(_) => Err("custom-material voxels must belong to a placed asset".into()),
+    }
+}
+fn marker_json(marker: &MapMarker) -> serde_json::Value {
+    let position = |p: Vec3| serde_json::json!([p.x, p.y, p.z]);
+    let bounds = |b: VoxelBounds| serde_json::json!({"min": [b.min.x, b.min.y, b.min.z], "max": [b.max.x, b.max.y, b.max.z]});
+    match marker {
+        MapMarker::PlayerSpawn {
+            id,
+            position: p,
+            yaw_degrees,
+        } => {
+            serde_json::json!({"id": id, "kind": "player_spawn", "position": position(*p), "yaw_degrees": yaw_degrees})
+        }
+        MapMarker::Exit {
+            id,
+            position: p,
+            target,
+        } => {
+            serde_json::json!({"id": id, "kind": "exit", "position": position(*p), "target": target})
+        }
+        MapMarker::EnemySpawn {
+            id,
+            position: p,
+            enemy_type,
+            spawn_group,
+        } => {
+            serde_json::json!({"id": id, "kind": "enemy_spawn", "position": position(*p), "enemy_type": enemy_type, "spawn_group": spawn_group})
+        }
+        MapMarker::Pickup {
+            id,
+            position: p,
+            pickup_type,
+            amount,
+        } => {
+            serde_json::json!({"id": id, "kind": "pickup", "position": position(*p), "pickup_type": pickup_type, "amount": amount})
+        }
+        MapMarker::InteractableDoor {
+            id,
+            position: p,
+            door_type,
+            closed_bounds,
+            open_cost,
+        } => {
+            serde_json::json!({"id": id, "kind": "interactable_door", "position": position(*p), "door_type": door_type, "closed_bounds": bounds(*closed_bounds), "open_cost": open_cost})
+        }
+        MapMarker::WallWeapon {
+            id,
+            position: p,
+            weapon_type,
+            cost,
+            yaw_degrees,
+        } => {
+            serde_json::json!({"id": id, "kind": "wall_weapon", "position": position(*p), "weapon_type": weapon_type, "cost": cost, "yaw_degrees": yaw_degrees})
+        }
+        MapMarker::LiminalObjective {
+            id,
+            position: p,
+            objective_type,
+            room_id,
+        } => {
+            serde_json::json!({"id": id, "kind": "liminal_objective", "position": position(*p), "objective_type": objective_type, "room_id": room_id})
+        }
+        MapMarker::EchoReceiver {
+            id,
+            position: p,
+            output_seconds,
+            puzzle_id,
+        } => {
+            serde_json::json!({"id": id, "kind": "echo_receiver", "position": position(*p), "output_seconds": output_seconds, "puzzle_id": puzzle_id})
+        }
+        MapMarker::EchoPipe {
+            id,
+            position: p,
+            puzzle_id,
+            sequence,
+        } => {
+            serde_json::json!({"id": id, "kind": "echo_pipe", "position": position(*p), "puzzle_id": puzzle_id, "sequence": sequence})
+        }
+        MapMarker::EchoDoor {
+            id,
+            position: p,
+            puzzle_id,
+            closed_bounds,
+            normal,
+            starting_side_anchor,
+            far_side_anchor,
+        } => {
+            serde_json::json!({"id": id, "kind": "echo_door", "position": position(*p), "puzzle_id": puzzle_id, "closed_bounds": bounds(*closed_bounds), "normal": [normal.x, normal.y, normal.z], "starting_side_anchor": position(*starting_side_anchor), "far_side_anchor": position(*far_side_anchor)})
+        }
+        MapMarker::LiminalRoom {
+            id,
+            position: p,
+            room_id,
+            bounds: room_bounds,
+            room_type,
+            sign,
+        } => {
+            serde_json::json!({"id": id, "kind": "liminal_room", "position": position(*p), "room_id": room_id, "bounds": bounds(*room_bounds), "room_type": room_type, "sign": sign})
+        }
+        MapMarker::LiminalConnection {
+            id,
+            position: p,
+            from_room,
+            to_room,
+        } => {
+            serde_json::json!({"id": id, "kind": "liminal_connection", "position": position(*p), "from_room": from_room, "to_room": to_room})
+        }
     }
 }
 #[derive(Clone, Debug)]
@@ -1259,5 +1575,70 @@ mod tests {
             MapOperation::GeneratorRegion { .. }
         ));
         let _ = fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn exported_working_map_round_trips_geometry_markers_and_assets() {
+        let d = dir();
+        let mut assets = AssetCatalog::default();
+        assets.assets.insert(
+            "unit-asset".into(),
+            AssetDefinition {
+                id: "unit-asset".into(),
+                name: "Unit asset".into(),
+                voxel_size: 1.0,
+                pivot: [0.0, 0.0, 0.0],
+                voxels: vec![(VoxelCoord::new(0, 0, 0), VoxelMaterial::Glass)],
+            },
+        );
+        fs::write(d.join("roundtrip.hbmap.json"), r#"{"format_version":1,"id":"roundtrip","name":"Round trip","mode":"bar","category":"authored","bounds":{"min":[0,0,0],"max":[5,3,3]},"player_start":{"id":"start","kind":"player_spawn","position":[0.5,1.0,0.5],"yaw_degrees":0},"operations":[{"kind":"fill_box","min":[0,0,0],"max":[2,1,1],"material":"Stone"},{"kind":"clear_box","min":[1,1,1],"max":[1,1,1]},{"kind":"place_asset","id":"window","asset_id":"unit-asset","position":[4,1,1],"yaw_degrees":0}],"markers":[{"id":"exit","kind":"exit","position":[2.5,1.0,2.5],"target":"menu"}]}"#).unwrap();
+        let original = MapCatalog::discover(&d, &assets).maps.remove(0);
+        let editable = original.editable();
+        let exported = export_map(&editable, &assets).unwrap();
+        assert_eq!(exported, export_map(&editable, &assets).unwrap());
+        fs::write(d.join("roundtrip.hbmap.json"), exported).unwrap();
+
+        let catalog = MapCatalog::discover(&d, &assets);
+        assert!(catalog.errors.is_empty(), "{:?}", catalog.errors);
+        let reloaded = &catalog.maps[0];
+        assert_eq!(reloaded.metadata, original.metadata);
+        assert_eq!(reloaded.player_start, original.player_start);
+        assert_eq!(reloaded.markers, original.markers);
+        assert_eq!(reloaded.placed_assets, original.placed_assets);
+        assert_eq!(reloaded.world.voxels(), original.world.voxels());
+        assert!(reloaded.operations.len() < original.world.voxel_count());
+        let _ = fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn exporter_rejects_unowned_custom_voxels() {
+        let mut world = VoxelWorld::new();
+        world.set(
+            VoxelCoord::new(0, 0, 0),
+            VoxelCell::new(VoxelMaterial::Custom([1, 2, 3])),
+        );
+        let map = EditableMap {
+            metadata: MapMetadata {
+                id: "custom".into(),
+                name: "Custom".into(),
+                mode: "bar".into(),
+                category: "authored".into(),
+                bounds: VoxelBounds {
+                    min: VoxelCoord::new(0, 0, 0),
+                    max: VoxelCoord::new(1, 1, 1),
+                },
+            },
+            world,
+            player_start: MapMarker::PlayerSpawn {
+                id: "start".into(),
+                position: Vec3::new(0.5, 1.0, 0.5),
+                yaw_degrees: 0,
+            },
+            markers: vec![],
+            placed_assets: vec![],
+        };
+        assert!(export_map(&map, &AssetCatalog::default())
+            .unwrap_err()
+            .contains("custom-material"));
     }
 }

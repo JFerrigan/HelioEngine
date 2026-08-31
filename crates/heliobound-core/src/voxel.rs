@@ -175,6 +175,36 @@ impl VoxelWorld {
     pub fn bounds(&self) -> Option<VoxelBounds> {
         self.bounds
     }
+
+    /// Returns every occupied cell in a stable world-coordinate order.
+    ///
+    /// This is intentionally a snapshot instead of exposing the chunk storage:
+    /// callers such as map export must not inherit the hash-map iteration order
+    /// of the sparse world implementation.
+    pub fn voxels(&self) -> Vec<(VoxelCoord, VoxelCell)> {
+        let mut cells = Vec::with_capacity(self.filled_voxels);
+        for (chunk_coord, chunk) in &self.chunks {
+            for z in 0..CHUNK_SIZE {
+                for y in 0..CHUNK_SIZE {
+                    for x in 0..CHUNK_SIZE {
+                        let local = VoxelCoord::new(x, y, z);
+                        if let Some(cell) = chunk.get(local) {
+                            cells.push((
+                                VoxelCoord::new(
+                                    chunk_coord.x * CHUNK_SIZE + x,
+                                    chunk_coord.y * CHUNK_SIZE + y,
+                                    chunk_coord.z * CHUNK_SIZE + z,
+                                ),
+                                cell,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        cells.sort_by_key(|(coord, _)| (coord.z, coord.y, coord.x));
+        cells
+    }
 }
 
 fn split_coord(coord: VoxelCoord) -> (ChunkCoord, VoxelCoord) {

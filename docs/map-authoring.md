@@ -134,8 +134,9 @@ cells, and later clears can deliberately cut openings. Every operation has a
 `Regolith`, `Basalt`, `Ocean`, `Ice`, `Grass`, `Dirt`, `Stone`, `Sand`, `Wood`,
 `Leaves`, `Zombie`, `CornStalk`, `CarbonLife`, `SiliconLife`, `Habitat`,
 `ShipHull`, `Glass`, `Beacon`, `Gate`, `Receiver`, `SignalPipe`, or
-`PuzzleDoor`. `Custom` is not valid in a map file. Arbitrary RGB colors remain
-an asset-palette feature, never direct map geometry.
+`PuzzleDoor`, or `PressurePlate`. `Custom` is not valid in a map file.
+Arbitrary RGB colors remain an asset-palette feature, never direct map
+geometry.
 
 An asset reference must resolve by asset ID after asset discovery. The compiler
 rotates the asset around its declared pivot, checks its final extents against
@@ -224,11 +225,11 @@ mode state and must not mutate the canonical blueprint.
    state, consuming markers instead of hard-coded coordinates.
 3. Point the map viewer at the same compiled blueprint catalog, showing map
    ID, source type, and load errors.
-4. Register the existing City, Corn Maze, and Sandbox algorithms as the three
-   generator-region types above. Their recipe files then replace large voxel
-   dumps without changing their deterministic output. The implementation order
-   and editor preparation work are tracked in [the map migration and editor
-   roadmap](map-editor.md).
+4. City is registered as the first authoritative generator region. Corn Maze,
+   Sandbox, and Drone Gate remain legacy procedural entries until each has its
+   own deliberately designed pure seeded procedural contract; they are not
+   editor-map migration shortcuts. The editor preparation work is tracked in
+   [the map migration and editor roadmap](map-editor.md).
 
 ## Required tests and acceptance
 

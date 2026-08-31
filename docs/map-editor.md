@@ -41,10 +41,17 @@ map-editor work.
 
 - Keep strict versioned validation and stable IDs for markers and asset
   placements.
-- Add a canonical exporter from a mutable voxel working world to deterministic
-  map operations. The editor edits a world and structured entities; it does
-  not preserve a historical sequence of hand-written operations.
-- Add round-trip tests: load, export, reload, and compare world and markers.
+- `heliobound-core` now exposes `CompiledMap::editable` and `export_map`.
+  The exporter turns a mutable voxel working world into deterministic,
+  coalesced `fill_box` operations and retains typed markers plus placed assets.
+  It deliberately does not preserve a historical sequence of handwritten
+  fills, clears, or generator operations.
+- Unit-scale asset cells are owned by their retained asset entity during
+  export. A future editor must move or remove the entity before painting its
+  cells; this prevents custom asset colors from leaking into direct map
+  materials.
+- Round-trip tests load, export, reload, and compare geometry, markers,
+  player start, and asset instances. The exporter is deterministic.
 - Add editor metadata only where it is source data (display name, authoring
   bounds, presentation defaults), never runtime game state.
 

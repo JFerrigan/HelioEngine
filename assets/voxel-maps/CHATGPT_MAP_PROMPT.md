@@ -60,7 +60,8 @@ Rules:
 - Every direct geometry material is exactly one of: `Regolith`, `Basalt`,
   `Ocean`, `Ice`, `Grass`, `Dirt`, `Stone`, `Sand`, `Wood`, `Leaves`, `Zombie`,
   `CornStalk`, `CarbonLife`, `SiliconLife`, `Habitat`, `ShipHull`, `Glass`,
-  `Beacon`, `Gate`, `Receiver`, `SignalPipe`, `PuzzleDoor`. Never use RGB,
+  `Beacon`, `Gate`, `Receiver`, `SignalPipe`, `PuzzleDoor`, `PressurePlate`.
+  Never use RGB,
   hex colors, `Custom`, or an invented material.
 - Operations are applied in list order. Use `fill_box` for solid inclusive
   boxes and `clear_box` for openings. Later operations intentionally overwrite
