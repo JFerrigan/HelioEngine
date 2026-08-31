@@ -9877,6 +9877,48 @@ mod tests {
         assert!(!motion.airborne);
     }
 
+    #[test]
+    #[ignore = "documents the ground-contact bug; enable when fixing jump grounding"]
+    fn one_jump_press_keeps_rising_after_leaving_the_floor() {
+        let mut world = VoxelWorld::new();
+        fill_cuboid(
+            &mut world,
+            VoxelCoord::new(-2, 0, -2),
+            VoxelCoord::new(2, 0, 2),
+            VoxelMaterial::Stone,
+        );
+        let mut camera = Camera::new(Vec3::new(0.5, WALK_EYE_HEIGHT, 0.5));
+        let mut input = PlayerInput {
+            jump_requested: true,
+            ..PlayerInput::default()
+        };
+        let mut motion = WalkMotion::default();
+
+        update_jumping_walking_camera(
+            &mut camera,
+            &mut input,
+            &mut motion,
+            &world,
+            STANDARD_WALK_PROFILE,
+            1.0 / 60.0,
+        );
+        let first_frame_y = camera.position.y;
+
+        update_jumping_walking_camera(
+            &mut camera,
+            &mut input,
+            &mut motion,
+            &world,
+            STANDARD_WALK_PROFILE,
+            1.0 / 60.0,
+        );
+
+        assert!(
+            camera.position.y > first_frame_y,
+            "a single jump press should keep rising on the next frame"
+        );
+    }
+
     /// One-off canonical exporter for migrated maps. It reads each checked-in
     /// file for its authored metadata/markers and replaces only static geometry
     /// and the fixed legacy player start with a compact, deterministic list of
