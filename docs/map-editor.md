@@ -57,10 +57,14 @@ map-editor work.
 
 ## Phase 3: evolve the Map Viewer into an editor foundation
 
-First make the viewer a trustworthy read-only inspector: compiled geometry,
-asset instances, bounds, collision, marker labels, and non-blocking catalog
-errors. It must launch the selected map through the same fresh-session path as
-gameplay.
+Implemented as a trustworthy read-only inspector. Compiled previews are built
+from `CompiledMap::fresh_session`, exactly as gameplay starts are. The HUD
+shows the stable map ID and source, declared bounds, static collision voxel
+count, retained asset instances, and typed marker labels. Bad map files remain
+non-blocking and appear in the viewer HUD while valid entries stay selectable.
+Legacy Corn Maze, Sandbox, and Drone Gate previews retain their explicit
+`CLI generator` source and derived bounds until their procedural contracts are
+ready for migration.
 
 ## Phase 4: minimum viable editor
 

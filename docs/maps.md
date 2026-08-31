@@ -18,6 +18,11 @@ collision-free first-person flight: mouse movement looks, `WASD` moves on the
 horizontal plane, `Space` and `Ctrl` rise and drop, and `Shift` boosts speed.
 Flight moves at twice the sandbox's normal speed.
 
+The read-only inspector HUD identifies the selected map's stable ID and
+source, declared (or legacy-derived) bounds, static collision voxel count,
+asset instances, and typed marker labels. A malformed map file is shown as a
+non-blocking catalog error; it never removes the other selectable maps.
+
 Press `O` to switch to the original orbit view. In that view, mouse movement
 orbits the camera, `WASD` and arrow keys pan relative to the current camera
 view, `Q` and `E` roll, and `Space` and `Ctrl` zoom. Press `C` to hide or show

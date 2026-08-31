@@ -9,8 +9,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 use heliobound_audio::{EcholocationInterference, GameAudio, SoundEffect};
 use heliobound_core::{
-    AssetCatalog, Camera, MapCatalog, PlanetConfig, ProceduralPlanet, Ray, Vec3, VoxelCell,
-    VoxelCoord, VoxelMaterial, VoxelWorld,
+    AssetCatalog, Camera, CompiledMap, MapCatalog, MapMarker, PlanetConfig, ProceduralPlanet, Ray,
+    Vec3, VoxelBounds, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld,
 };
 #[cfg(test)]
 use heliobound_core::{DoomMapConfig, DoomMapGenerator};
@@ -841,9 +841,14 @@ impl AppState {
 
     fn start_map_viewer(&mut self) {
         self.mode = AppMode::MapViewer;
-        self.map_viewer = Some(MapViewerState::new(build_map_catalog_from(
-            &self.map_catalog,
-        )));
+        self.map_viewer = Some(MapViewerState::with_catalog_errors(
+            build_map_catalog_from(&self.map_catalog),
+            self.map_catalog
+                .errors
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        ));
         self.camera = self
             .map_viewer
             .as_ref()
@@ -3840,6 +3845,10 @@ struct PreviewMap {
     radius: f32,
     dimensions: [i32; 3],
     definition: String,
+    map_id: Option<String>,
+    declared_bounds: Option<VoxelBounds>,
+    marker_labels: Vec<String>,
+    asset_labels: Vec<String>,
 }
 
 impl PreviewMap {
@@ -3859,7 +3868,57 @@ impl PreviewMap {
             radius,
             dimensions,
             definition: definition.into(),
+            map_id: None,
+            declared_bounds: None,
+            marker_labels: Vec::new(),
+            asset_labels: Vec::new(),
         }
+    }
+
+    /// A viewer preview always receives a fresh session, matching gameplay's
+    /// startup boundary. Metadata remains read-only inspector data.
+    fn from_compiled(name: impl Into<String>, map: &CompiledMap) -> Self {
+        let session = map.fresh_session();
+        let mut preview = Self::new(name, session.world, compiled_start_camera(map), "hbmap");
+        preview.map_id = Some(map.metadata.id.clone());
+        preview.declared_bounds = Some(map.metadata.bounds);
+        preview.marker_labels = std::iter::once(marker_label(&map.player_start))
+            .chain(map.markers.iter().map(marker_label))
+            .collect();
+        preview.asset_labels = map
+            .placed_assets
+            .iter()
+            .map(|asset| {
+                format!(
+                    "{} ({}) @ {},{},{} yaw {} scale {}",
+                    asset.id,
+                    asset.asset_id,
+                    asset.position.x,
+                    asset.position.y,
+                    asset.position.z,
+                    asset.yaw_degrees,
+                    asset.voxel_size
+                )
+            })
+            .collect();
+        preview
+    }
+}
+
+fn marker_label(marker: &MapMarker) -> String {
+    match marker {
+        MapMarker::PlayerSpawn { id, .. } => format!("{id} (player spawn)"),
+        MapMarker::Exit { id, .. } => format!("{id} (exit)"),
+        MapMarker::EnemySpawn { id, .. } => format!("{id} (enemy spawn)"),
+        MapMarker::Pickup { id, .. } => format!("{id} (pickup)"),
+        MapMarker::InteractableDoor { id, .. } => format!("{id} (door)"),
+        MapMarker::WallWeapon { id, .. } => format!("{id} (wall weapon)"),
+        MapMarker::LiminalObjective { id, .. } => format!("{id} (objective)"),
+        MapMarker::EchoReceiver { id, .. } => format!("{id} (receiver)"),
+        MapMarker::EchoPipe { id, .. } => format!("{id} (pipe)"),
+        MapMarker::EchoDoor { id, .. } => format!("{id} (echo door)"),
+        MapMarker::LiminalRoom { id, .. } => format!("{id} (room)"),
+        MapMarker::LiminalConnection { id, .. } => format!("{id} (connection)"),
     }
 }
 
@@ -3886,10 +3945,15 @@ struct MapViewerState {
     view: MapViewerView,
     ceilings_hidden: bool,
     ceilingless_world: Option<VoxelWorld>,
+    catalog_errors: Vec<String>,
 }
 
 impl MapViewerState {
     fn new(maps: Vec<PreviewMap>) -> Self {
+        Self::with_catalog_errors(maps, Vec::new())
+    }
+
+    fn with_catalog_errors(maps: Vec<PreviewMap>, catalog_errors: Vec<String>) -> Self {
         assert!(!maps.is_empty(), "map viewer requires at least one map");
         let target = maps[0].center;
         let distance = map_viewer_default_distance(&maps[0]);
@@ -3903,6 +3967,7 @@ impl MapViewerState {
             view: MapViewerView::FreeFlight,
             ceilings_hidden: false,
             ceilingless_world: None,
+            catalog_errors,
         }
     }
 
@@ -5692,47 +5757,25 @@ fn build_map_catalog_from(maps: &MapCatalog) -> Vec<PreviewMap> {
     let drone_start_camera = drone_gate_runner_start_camera(&drone_runner);
 
     vec![
-        PreviewMap::new(
-            "procedural city",
-            compiled_map_world(maps, "city"),
-            compiled_start_camera(required_compiled_map(maps, "city")),
-            "hbmap",
-        ),
-        PreviewMap::new(
-            "doomlike arena",
-            compiled_map_world(maps, "doom"),
-            compiled_start_camera(required_compiled_map(maps, "doom")),
-            "hbmap",
-        ),
+        PreviewMap::from_compiled("procedural city", required_compiled_map(maps, "city")),
+        PreviewMap::from_compiled("doomlike arena", required_compiled_map(maps, "doom")),
         PreviewMap::new(
             "corn maze",
             corn_maze.world,
             corn_start_camera,
             "CLI generator",
         ),
-        PreviewMap::new(
-            "Starhusk bar",
-            compiled_map_world(maps, "bar"),
-            compiled_start_camera(required_compiled_map(maps, "bar")),
-            "hbmap",
-        ),
+        PreviewMap::from_compiled("Starhusk bar", required_compiled_map(maps, "bar")),
         PreviewMap::new(
             "voxel sandbox",
             sandbox.clone(),
             sandbox_start_camera(&sandbox),
             "CLI generator",
         ),
-        PreviewMap::new(
-            "Heliobound Zombies",
-            compiled_map_world(maps, "zombies"),
-            compiled_start_camera(required_compiled_map(maps, "zombies")),
-            "hbmap",
-        ),
-        PreviewMap::new(
+        PreviewMap::from_compiled("Heliobound Zombies", required_compiled_map(maps, "zombies")),
+        PreviewMap::from_compiled(
             "liminal office",
-            compiled_map_world(maps, "liminal-office"),
-            compiled_start_camera(required_compiled_map(maps, "liminal-office")),
-            "hbmap",
+            required_compiled_map(maps, "liminal-office"),
         ),
         PreviewMap::new(
             "drone gate course",
@@ -5740,12 +5783,7 @@ fn build_map_catalog_from(maps: &MapCatalog) -> Vec<PreviewMap> {
             drone_start_camera,
             "CLI generator",
         ),
-        PreviewMap::new(
-            "echolocation",
-            compiled_map_world(maps, "echolocation"),
-            compiled_start_camera(required_compiled_map(maps, "echolocation")),
-            "hbmap",
-        ),
+        PreviewMap::from_compiled("echolocation", required_compiled_map(maps, "echolocation")),
     ]
 }
 
@@ -8732,20 +8770,85 @@ fn render_map_viewer_scene(scene: &mut Scene, viewer: &MapViewerState, mouse_cap
         y: 7,
         z: 120,
         text: format!(
-            "C ceilings {}  R reset  planet flight omitted: analytic terrain, not a finite voxel map",
+            "C ceilings {}  R reset  preview flight ignores collision; static blueprint solids are inspected below",
             if viewer.ceilings_hidden { "hidden" } else { "shown" },
         ),
+        style: TextStyle::default(),
+    });
+    let bounds = map
+        .declared_bounds
+        .or_else(|| map.world.bounds())
+        .map(|bounds| {
+            format!(
+                "{}, {}, {} to {}, {}, {}",
+                bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x, bounds.max.y, bounds.max.z
+            )
+        })
+        .unwrap_or_else(|| "empty".to_string());
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 9,
+        z: 120,
+        text: format!(
+            "INSPECT  id {}  source {}  bounds [{}]  collision: {} static solid voxels",
+            map.map_id.as_deref().unwrap_or("legacy"),
+            map.definition,
+            bounds,
+            map.world.voxel_count(),
+        ),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 11,
+        z: 120,
+        text: inspector_line("ASSETS", &map.asset_labels),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 13,
+        z: 120,
+        text: inspector_line("MARKERS", &map.marker_labels),
         style: TextStyle::default(),
     });
     for (index, preview) in viewer.maps.iter().enumerate() {
         let marker = if index == viewer.selected { '>' } else { ' ' };
         scene.overlays.push(Overlay {
             x: 2,
-            y: 11 + index as i32,
+            y: 16 + index as i32,
             z: 120,
             text: format!("{}{} {}", marker, index + 1, preview.name),
             style: TextStyle::default(),
         });
+    }
+    for (index, error) in viewer.catalog_errors.iter().take(3).enumerate() {
+        scene.overlays.push(Overlay {
+            x: 2,
+            y: 27 + index as i32,
+            z: 120,
+            text: format!("MAP CATALOG ERROR: {error}"),
+            style: TextStyle::default(),
+        });
+    }
+}
+
+fn inspector_line(label: &str, entries: &[String]) -> String {
+    const MAX_SHOWN: usize = 3;
+    if entries.is_empty() {
+        return format!("{label} 0");
+    }
+    let shown = entries
+        .iter()
+        .take(MAX_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("; ");
+    let remaining = entries.len().saturating_sub(MAX_SHOWN);
+    if remaining == 0 {
+        format!("{label} {}  {shown}", entries.len())
+    } else {
+        format!("{label} {}  {shown}; +{remaining} more", entries.len())
     }
 }
 
@@ -11100,6 +11203,76 @@ mod tests {
             .overlays
             .iter()
             .any(|overlay| overlay.text.contains("FREE FLIGHT")));
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("INSPECT  id city")));
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("collision:")));
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("MARKERS") && overlay.text.contains("player")));
+    }
+
+    #[test]
+    fn compiled_map_previews_keep_fresh_session_inspector_data() {
+        let app = AppState::new_with_drone_course_nonce(0, false);
+        let previews = build_map_catalog_from(&app.map_catalog);
+        let city = previews
+            .iter()
+            .find(|preview| preview.map_id.as_deref() == Some("city"))
+            .expect("city compiled preview");
+        let blueprint = required_compiled_map(&app.map_catalog, "city");
+
+        assert_eq!(city.declared_bounds, Some(blueprint.metadata.bounds));
+        assert_eq!(
+            city.world.voxels(),
+            blueprint.fresh_session().world.voxels()
+        );
+        assert!(city
+            .marker_labels
+            .iter()
+            .any(|label| label.contains("player spawn")));
+        assert!(city.asset_labels.is_empty());
+    }
+
+    #[test]
+    fn map_viewer_reports_catalog_errors_without_hiding_previews() {
+        let map = PreviewMap::new(
+            "test map",
+            build_block_asset(VoxelMaterial::Stone),
+            Camera::new(Vec3::new(1.0, 2.0, 3.0)),
+            "legacy",
+        );
+        let viewer = MapViewerState::with_catalog_errors(
+            vec![map],
+            vec!["broken.hbmap.json: invalid map".to_string()],
+        );
+        let mut scene = Scene::new(VIEWPORT);
+
+        render_map_viewer_scene(&mut scene, &viewer, false);
+
+        assert!(scene.overlays.iter().any(|overlay| overlay
+            .text
+            .contains("MAP CATALOG ERROR: broken.hbmap.json")));
+        assert_eq!(viewer.maps.len(), 1);
+    }
+
+    #[test]
+    fn map_inspector_summarizes_asset_instances_without_losing_their_identity() {
+        let assets = vec![
+            "east-airlock (spaceship-airlock-door) @ 3,1,-2 yaw 90 scale 1".to_string(),
+            "desk (office-desk) @ 6,1,-2 yaw 0 scale 0.5".to_string(),
+        ];
+
+        let line = inspector_line("ASSETS", &assets);
+
+        assert!(line.contains("ASSETS 2"));
+        assert!(line.contains("east-airlock (spaceship-airlock-door)"));
+        assert!(line.contains("desk (office-desk)"));
     }
 
     #[test]
