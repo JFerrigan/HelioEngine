@@ -53,6 +53,7 @@ const BOOST_MULTIPLIER: f32 = 8.0;
 const WALK_BOOST_MULTIPLIER: f32 = 2.25;
 const WALK_EYE_HEIGHT: f32 = 3.2;
 const WALK_COLLISION_RADIUS: f32 = 0.34;
+const WALK_GROUND_CONTACT_EPSILON: f32 = 0.08;
 // Five times the former jump height. With 30 u/s² gravity this reaches about
 // 9.2 voxels above the ground, giving the player a clearly readable hop.
 const WALK_JUMP_SPEED: f32 = 23.5;
@@ -5130,11 +5131,19 @@ fn has_standing_clearance(city: &VoxelWorld, position: Vec3, profile: WalkProfil
 fn walking_ground_y(world: &VoxelWorld, position: Vec3, profile: WalkProfile) -> Option<i32> {
     let x = position.x.floor() as i32;
     let z = position.z.floor() as i32;
-    let min_y = (position.y - profile.eye_height).floor() as i32;
-    let max_y = position.y.floor() as i32;
-    (min_y..=max_y)
-        .rev()
-        .find(|&y| world.get(VoxelCoord::new(x, y, z)).is_some())
+    let foot_y = position.y - profile.eye_height;
+    let ground_y = foot_y.round() as i32;
+
+    // Only a voxel touching the player's feet provides support. Looking
+    // anywhere through the full body column made the floor remain "ground"
+    // during the first voxel of a jump, cancelling its upward velocity.
+    if (foot_y - ground_y as f32).abs() <= WALK_GROUND_CONTACT_EPSILON
+        && world.get(VoxelCoord::new(x, ground_y, z)).is_some()
+    {
+        Some(ground_y)
+    } else {
+        None
+    }
 }
 
 fn walking_landing_y(
@@ -9878,7 +9887,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "documents the ground-contact bug; enable when fixing jump grounding"]
     fn one_jump_press_keeps_rising_after_leaving_the_floor() {
         let mut world = VoxelWorld::new();
         fill_cuboid(
