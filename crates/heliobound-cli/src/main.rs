@@ -132,6 +132,11 @@ const SANDBOX_EYE_HEIGHT: f32 = 2.7;
 const SANDBOX_SPEED: f32 = 9.0;
 const SANDBOX_COLLISION_RADIUS: f32 = 0.32;
 const SANDBOX_REACH: f32 = 8.0;
+const SANDBOX_WALK_PROFILE: WalkProfile = WalkProfile {
+    eye_height: SANDBOX_EYE_HEIGHT,
+    speed: SANDBOX_SPEED,
+    collision_radius: SANDBOX_COLLISION_RADIUS,
+};
 const LIMINAL_SEED: u64 = 0xA551_011C_E0FF_1CE5;
 const LIMINAL_ROOM_HEIGHT: i32 = 8;
 const LIMINAL_HALL_HALF_WIDTH: i32 = 5;
@@ -688,6 +693,11 @@ impl AppState {
                 (AppMode::VoxelSandbox, PhysicalKey::Code(KeyCode::Escape)) => {
                     return KeyboardAction::ReleaseMouse;
                 }
+                (AppMode::VoxelSandbox, PhysicalKey::Code(KeyCode::KeyF)) => {
+                    self.sandbox.toggle_movement_mode(&mut self.camera);
+                    self.walk_motion = WalkMotion::default();
+                    return KeyboardAction::None;
+                }
                 (AppMode::VoxelSandbox, key) => {
                     if let Some(index) = asset_digit_index(key) {
                         self.sandbox.select_block(index);
@@ -842,6 +852,7 @@ impl AppState {
         self.sandbox = VoxelSandboxState::new();
         self.camera = sandbox_start_camera(&self.sandbox.world);
         self.input = PlayerInput::default();
+        self.walk_motion = WalkMotion::default();
     }
 
     fn start_zombies(&mut self) {
@@ -864,6 +875,7 @@ impl AppState {
         self.liminal.start_position = session.player_start.position;
         self.camera = compiled_start_camera(map);
         self.input = PlayerInput::default();
+        self.walk_motion = WalkMotion::default();
     }
 
     fn start_drone_gate_runner(&mut self) {
@@ -971,9 +983,10 @@ impl AppState {
                 scene
             }
             AppMode::BarScene => {
-                update_walking_camera_with_profile(
+                update_jumping_walking_camera(
                     &mut self.camera,
-                    &self.input,
+                    &mut self.input,
+                    &mut self.walk_motion,
                     &self.bar_scene,
                     BAR_WALK_PROFILE,
                     dt,
@@ -1008,7 +1021,22 @@ impl AppState {
                 scene
             }
             AppMode::VoxelSandbox => {
-                update_sandbox_camera(&mut self.camera, &self.input, &self.sandbox.world, dt);
+                match self.sandbox.movement_mode {
+                    SandboxMovementMode::Flight => update_sandbox_camera(
+                        &mut self.camera,
+                        &self.input,
+                        &self.sandbox.world,
+                        dt,
+                    ),
+                    SandboxMovementMode::Walking => update_jumping_walking_camera(
+                        &mut self.camera,
+                        &mut self.input,
+                        &mut self.walk_motion,
+                        &self.sandbox.world,
+                        SANDBOX_WALK_PROFILE,
+                        dt,
+                    ),
+                }
                 let mut scene =
                     self.city_builder
                         .build(&self.sandbox.world, &self.camera, self.tick);
@@ -1054,9 +1082,10 @@ impl AppState {
                 scene
             }
             AppMode::Liminal => {
-                update_walking_camera_with_profile(
+                update_jumping_walking_camera(
                     &mut self.camera,
-                    &self.input,
+                    &mut self.input,
+                    &mut self.walk_motion,
                     &self.liminal.world,
                     LIMINAL_WALK_PROFILE,
                     dt,
@@ -3546,11 +3575,27 @@ enum AssetSource {
     Imported,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SandboxMovementMode {
+    Flight,
+    Walking,
+}
+
+impl SandboxMovementMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Flight => "flight",
+            Self::Walking => "walking",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct VoxelSandboxState {
     world: VoxelWorld,
     selected_block: usize,
     palette: Vec<VoxelMaterial>,
+    movement_mode: SandboxMovementMode,
 }
 
 impl VoxelSandboxState {
@@ -3558,6 +3603,7 @@ impl VoxelSandboxState {
         Self {
             world: build_voxel_sandbox_world(),
             selected_block: 0,
+            movement_mode: SandboxMovementMode::Flight,
             palette: vec![
                 VoxelMaterial::Grass,
                 VoxelMaterial::Dirt,
@@ -3578,6 +3624,19 @@ impl VoxelSandboxState {
     fn select_block(&mut self, index: usize) {
         if index < self.palette.len() {
             self.selected_block = index;
+        }
+    }
+
+    fn toggle_movement_mode(&mut self, camera: &mut Camera) {
+        self.movement_mode = match self.movement_mode {
+            SandboxMovementMode::Flight => SandboxMovementMode::Walking,
+            SandboxMovementMode::Walking => SandboxMovementMode::Flight,
+        };
+
+        if self.movement_mode == SandboxMovementMode::Walking {
+            if let Some(position) = nearest_sandbox_walking_position(&self.world, camera.position) {
+                camera.position = position;
+            }
         }
     }
 
@@ -5236,6 +5295,39 @@ fn terrain_surface_y(world: &VoxelWorld, x: f32, z: f32) -> Option<i32> {
     (0..=32)
         .rev()
         .find(|y| world.get(VoxelCoord::new(x, *y, z)).is_some())
+}
+
+fn nearest_sandbox_walking_position(world: &VoxelWorld, origin: Vec3) -> Option<Vec3> {
+    let origin_x = origin.x.floor() as i32;
+    let origin_z = origin.z.floor() as i32;
+
+    // Terrain can be too uneven for the walking capsule at the exact flight
+    // position. Pick the nearest solid, collision-free square so toggling
+    // walking never leaves the player embedded in a slope.
+    for radius in 0..=8_i32 {
+        for z in (origin_z - radius)..=(origin_z + radius) {
+            for x in (origin_x - radius)..=(origin_x + radius) {
+                if radius > 0 && (x - origin_x).abs() != radius && (z - origin_z).abs() != radius {
+                    continue;
+                }
+                let Some(surface_y) = terrain_surface_y(world, x as f32 + 0.5, z as f32 + 0.5)
+                else {
+                    continue;
+                };
+                let candidate = Vec3::new(
+                    x as f32 + 0.5,
+                    surface_y as f32 + SANDBOX_WALK_PROFILE.eye_height,
+                    z as f32 + 0.5,
+                );
+                if can_walk_to_with_profile(world, candidate, SANDBOX_WALK_PROFILE)
+                    && walking_ground_y(world, candidate, SANDBOX_WALK_PROFILE).is_some()
+                {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn horizontal_distance(a: Vec3, b: Vec3) -> f32 {
@@ -8269,7 +8361,7 @@ fn render_bar_scene(scene: &mut Scene, mouse_captured: bool) {
         y: 2,
         z: 120,
         text: format!(
-            "STARHUSK BAR  granular voxel crowd  mouse {}  M menu",
+            "STARHUSK BAR  Space jump  mouse {}  M menu",
             if mouse_captured { "locked" } else { "free" }
         ),
         style: TextStyle::default(),
@@ -8393,7 +8485,8 @@ fn render_voxel_sandbox_scene(
         y: 2,
         z: 120,
         text: format!(
-            "VOXEL SANDBOX  block {} {}  mouse {}  M menu",
+            "VOXEL SANDBOX  {}  block {} {}  mouse {}  M menu",
+            sandbox.movement_mode.label(),
             sandbox.selected_block + 1,
             material_label(sandbox.selected_material()),
             if mouse_captured { "locked" } else { "free" }
@@ -8411,7 +8504,15 @@ fn render_voxel_sandbox_scene(
         x: 2,
         y: 6,
         z: 120,
-        text: "WASD move  Space/Ctrl rise/drop  Shift boost  left remove  right place".to_string(),
+        text: match sandbox.movement_mode {
+            SandboxMovementMode::Flight => {
+                "F walking  WASD move  Space/Ctrl rise/drop  Shift boost  left remove  right place"
+            }
+            SandboxMovementMode::Walking => {
+                "F flight  WASD move  Space jump  Shift boost  left remove  right place"
+            }
+        }
+        .to_string(),
         style: TextStyle::default(),
     });
     scene.overlays.push(Overlay {
@@ -8918,7 +9019,7 @@ fn render_liminal_scene(scene: &mut Scene, liminal: &LiminalState, mouse_capture
         y: 2,
         z: 120,
         text: format!(
-            "LIMINAL OFFICE  room {}  type {}  mouse {}",
+            "LIMINAL OFFICE  room {}  type {}  Space jump  mouse {}",
             liminal.current_room_label(),
             liminal.current_room_type_label(),
             if mouse_captured { "locked" } else { "free" }
@@ -10568,6 +10669,31 @@ mod tests {
     }
 
     #[test]
+    fn voxel_sandbox_toggles_between_flight_and_grounded_walking() {
+        let mut app = AppState::new();
+        app.start_voxel_sandbox();
+        assert_eq!(app.sandbox.movement_mode, SandboxMovementMode::Flight);
+
+        let action = app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyF), ElementState::Pressed);
+
+        assert_eq!(action, KeyboardAction::None);
+        assert_eq!(app.sandbox.movement_mode, SandboxMovementMode::Walking);
+        let surface = terrain_surface_y(
+            &app.sandbox.world,
+            app.camera.position.x,
+            app.camera.position.z,
+        )
+        .unwrap();
+        assert_eq!(
+            app.camera.position.y,
+            surface as f32 + SANDBOX_WALK_PROFILE.eye_height
+        );
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyF), ElementState::Pressed);
+        assert_eq!(app.sandbox.movement_mode, SandboxMovementMode::Flight);
+    }
+
+    #[test]
     fn menu_can_start_zombies_mode() {
         let mut app = AppState::new();
 
@@ -10939,6 +11065,7 @@ mod tests {
             world,
             selected_block: 0,
             palette: vec![VoxelMaterial::Grass],
+            movement_mode: SandboxMovementMode::Flight,
         };
         let camera = Camera::new(Vec3::new(0.5, 2.5, -3.5)).looking_at(0.0, 0.0);
 
@@ -10958,6 +11085,7 @@ mod tests {
             world,
             selected_block: 0,
             palette: vec![VoxelMaterial::Wood],
+            movement_mode: SandboxMovementMode::Flight,
         };
         let camera = Camera::new(Vec3::new(0.5, 2.5, -3.5)).looking_at(0.0, 0.0);
 
