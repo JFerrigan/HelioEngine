@@ -303,6 +303,7 @@ const ECHO_PLAYER_STEP_DISTANCE: f32 = 2.6;
 const ECHO_PUZZLE_SIGNAL_SPEED: f32 = 6.0;
 const ECHO_RECEIVER_OUTPUT_SECONDS: f32 = 3.0;
 const ECHO_RECEIVER_COORD: VoxelCoord = VoxelCoord::new(-36, 1, 0);
+const ECHO_PRESSURE_PLATE_COORD: VoxelCoord = VoxelCoord::new(-30, 0, 3);
 const ECHO_DOOR_X: i32 = -21;
 const ECHOLOCATION_WALK_PROFILE: WalkProfile = WalkProfile {
     speed: 10.0,
@@ -1975,6 +1976,12 @@ struct EchoReceiver {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+struct EchoPressurePlate {
+    coord: VoxelCoord,
+    output_seconds: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct EchoPipePoint {
     position: Vec3,
     distance: f32,
@@ -2003,6 +2010,7 @@ enum EchoDoorTransition {
 #[derive(Clone, Debug, PartialEq)]
 struct EchoPuzzle {
     receiver: EchoReceiver,
+    pressure_plate: EchoPressurePlate,
     pipe: Vec<EchoPipePoint>,
     door: EchoPuzzleDoor,
     time: f32,
@@ -2034,6 +2042,10 @@ impl EchoPuzzle {
         Self {
             receiver: EchoReceiver {
                 coord: ECHO_RECEIVER_COORD,
+                output_seconds: ECHO_RECEIVER_OUTPUT_SECONDS,
+            },
+            pressure_plate: EchoPressurePlate {
+                coord: ECHO_PRESSURE_PLATE_COORD,
                 output_seconds: ECHO_RECEIVER_OUTPUT_SECONDS,
             },
             pipe,
@@ -2077,8 +2089,8 @@ impl EchoPuzzle {
         self.signal_active_at(self.endpoint_distance(), self.time)
     }
 
-    fn record_activation(&mut self, time: f32) {
-        let end = time + self.receiver.output_seconds;
+    fn record_activation(&mut self, time: f32, output_seconds: f32) {
+        let end = time + output_seconds;
         if let Some(current) = self.emissions.last_mut() {
             if time <= current.end {
                 current.end = current.end.max(end);
@@ -2087,6 +2099,16 @@ impl EchoPuzzle {
         }
         self.emissions
             .push(EchoEmissionInterval { start: time, end });
+    }
+
+    fn pressure_plate_pressed(&self, position: Vec3) -> bool {
+        position.x.floor() as i32 == self.pressure_plate.coord.x
+            && position.z.floor() as i32 == self.pressure_plate.coord.z
+            && (position.y
+                - ECHOLOCATION_WALK_PROFILE.eye_height
+                - self.pressure_plate.coord.y as f32)
+                .abs()
+                <= WALK_GROUND_CONTACT_EPSILON
     }
 }
 
@@ -2399,10 +2421,24 @@ impl EchoLocationState {
         self.puzzle.transitions.clear();
         receiver_hits.sort_by(|a, b| a.total_cmp(b));
         for hit_time in receiver_hits {
-            self.puzzle.record_activation(hit_time);
+            self.puzzle
+                .record_activation(hit_time, self.puzzle.receiver.output_seconds);
             effects.push(spatial_puzzle_effect(
                 PuzzleSoundEffect::Receiver,
                 echo_receiver_sound_position(self.puzzle.receiver.coord),
+                player_position,
+                listener_right,
+            ));
+        }
+        if self.puzzle.pressure_plate_pressed(player_position) {
+            // The plate feeds the same emission intervals as a receiver hit,
+            // so its signal visibly propagates along the pipe before opening
+            // the door rather than opening it immediately.
+            self.puzzle
+                .record_activation(frame_start, self.puzzle.pressure_plate.output_seconds);
+            effects.push(spatial_puzzle_effect(
+                PuzzleSoundEffect::Receiver,
+                echo_pressure_plate_sound_position(self.puzzle.pressure_plate.coord),
                 player_position,
                 listener_right,
             ));
@@ -5394,6 +5430,14 @@ fn echo_receiver_sound_position(coord: VoxelCoord) -> Vec3 {
     )
 }
 
+fn echo_pressure_plate_sound_position(coord: VoxelCoord) -> Vec3 {
+    Vec3::new(
+        coord.x as f32 + 0.5,
+        coord.y as f32 + 0.15,
+        coord.z as f32 + 0.5,
+    )
+}
+
 fn echo_door_sound_position() -> Vec3 {
     Vec3::new(ECHO_DOOR_X as f32 + 0.5, 2.5, 0.5)
 }
@@ -5702,6 +5746,10 @@ fn build_echolocation_map(seed: u64) -> (VoxelWorld, Vec3, EchoPuzzle) {
     world.set(
         puzzle.receiver.coord,
         VoxelCell::new(VoxelMaterial::Receiver),
+    );
+    world.set(
+        puzzle.pressure_plate.coord,
+        VoxelCell::new(VoxelMaterial::PressurePlate),
     );
 
     (world, Vec3::new(-28.5, WALK_EYE_HEIGHT, -0.5), puzzle)
@@ -8564,6 +8612,7 @@ fn material_label(material: VoxelMaterial) -> &'static str {
         VoxelMaterial::Receiver => "receiver",
         VoxelMaterial::SignalPipe => "signal pipe",
         VoxelMaterial::PuzzleDoor => "puzzle door",
+        VoxelMaterial::PressurePlate => "pressure plate",
         VoxelMaterial::Custom(_) => "asset",
     }
 }
@@ -10244,6 +10293,7 @@ mod tests {
             VoxelMaterial::Receiver => "Receiver",
             VoxelMaterial::SignalPipe => "SignalPipe",
             VoxelMaterial::PuzzleDoor => "PuzzleDoor",
+            VoxelMaterial::PressurePlate => "PressurePlate",
             VoxelMaterial::Custom(_) => panic!("legacy map contains unsupported custom material"),
         }
     }
@@ -12972,6 +13022,46 @@ mod tests {
     }
 
     #[test]
+    fn pressure_plate_uses_the_delayed_receiver_wire_path() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        let plate_position = Vec3::new(
+            ECHO_PRESSURE_PLATE_COORD.x as f32 + 0.5,
+            ECHOLOCATION_WALK_PROFILE.eye_height + ECHO_PRESSURE_PLATE_COORD.y as f32,
+            ECHO_PRESSURE_PLATE_COORD.z as f32 + 0.5,
+        );
+        let listener_right = Vec3::new(1.0, 0.0, 0.0);
+
+        echo.update_puzzle(
+            0.1,
+            Vec::new(),
+            plate_position,
+            listener_right,
+            &mut Vec::new(),
+        );
+        assert!(echo.puzzle.receiver_active());
+        assert!(!echo.puzzle.door_open);
+
+        let delay = echo.puzzle.endpoint_distance() / ECHO_PUZZLE_SIGNAL_SPEED;
+        echo.update_puzzle(
+            delay - 0.11,
+            Vec::new(),
+            plate_position,
+            listener_right,
+            &mut Vec::new(),
+        );
+        assert!(!echo.puzzle.door_open);
+
+        echo.update_puzzle(
+            0.02,
+            Vec::new(),
+            plate_position,
+            listener_right,
+            &mut Vec::new(),
+        );
+        assert!(echo.puzzle.door_open);
+    }
+
+    #[test]
     fn receiver_signal_head_advances_at_six_voxels_per_second() {
         let mut puzzle = EchoPuzzle::new();
         puzzle.emissions = vec![EchoEmissionInterval {
@@ -12998,6 +13088,10 @@ mod tests {
         assert_eq!(material_label(VoxelMaterial::Receiver), "receiver");
         assert_eq!(material_label(VoxelMaterial::SignalPipe), "signal pipe");
         assert_eq!(material_label(VoxelMaterial::PuzzleDoor), "puzzle door");
+        assert_eq!(
+            material_label(VoxelMaterial::PressurePlate),
+            "pressure plate"
+        );
         let (assets, _) = build_asset_catalog();
         for name in ["receiver block", "signal pipe block", "puzzle door block"] {
             assert!(assets.iter().any(|asset| asset.name == name));

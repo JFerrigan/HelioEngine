@@ -692,6 +692,7 @@ fn material(s: &str) -> Result<VoxelMaterial, String> {
         "Receiver" => Receiver,
         "SignalPipe" => SignalPipe,
         "PuzzleDoor" => PuzzleDoor,
+        "PressurePlate" => PressurePlate,
         _ => return Err(format!("unknown material '{s}'")),
     })
 }

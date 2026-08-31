@@ -99,6 +99,7 @@ impl MaterialGlyphMap {
             VoxelMaterial::Receiver => shade(intensity, ".:rR"),
             VoxelMaterial::SignalPipe => shade(intensity, ".-=+"),
             VoxelMaterial::PuzzleDoor => shade(intensity, "|#HM"),
+            VoxelMaterial::PressurePlate => shade(intensity, "._=+"),
             VoxelMaterial::Custom(_) => shade(intensity, ".:+#@"),
         }
     }
@@ -140,6 +141,7 @@ fn material_base_color(material: VoxelMaterial) -> [u8; 3] {
         VoxelMaterial::Receiver => [0x54, 0x68, 0x72],
         VoxelMaterial::SignalPipe => [0x3d, 0x54, 0x61],
         VoxelMaterial::PuzzleDoor => [0x65, 0x70, 0x78],
+        VoxelMaterial::PressurePlate => [0xd7, 0x9a, 0x3a],
         VoxelMaterial::Custom(color) => color,
     }
 }

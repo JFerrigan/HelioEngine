@@ -54,6 +54,7 @@ pub enum VoxelMaterial {
     Receiver,
     SignalPipe,
     PuzzleDoor,
+    PressurePlate,
     /// A color supplied by an imported voxel asset's palette.
     Custom([u8; 3]),
 }
