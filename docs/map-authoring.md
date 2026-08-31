@@ -226,7 +226,9 @@ mode state and must not mutate the canonical blueprint.
    ID, source type, and load errors.
 4. Register the existing City, Corn Maze, and Sandbox algorithms as the three
    generator-region types above. Their recipe files then replace large voxel
-   dumps without changing their deterministic output.
+   dumps without changing their deterministic output. The implementation order
+   and editor preparation work are tracked in [the map migration and editor
+   roadmap](map-editor.md).
 
 ## Required tests and acceptance
 

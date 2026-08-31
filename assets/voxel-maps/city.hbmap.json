@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "id": "city",
+  "name": "Procedural City",
+  "mode": "city",
+  "category": "procedural",
+  "bounds": { "min": [-72, 0, -72], "max": [72, 33, 72] },
+  "player_start": {
+    "id": "player-start",
+    "kind": "player_spawn",
+    "position": [0.5, 3.2, -55.5],
+    "yaw_degrees": 0
+  },
+  "operations": [
+    {
+      "kind": "generator_region",
+      "id": "city-world",
+      "generator": "city",
+      "bounds": { "min": [-72, 0, -72], "max": [72, 33, 72] },
+      "seed": 1372963194,
+      "parameters": { "road_width": 5, "block_size": 16, "max_height": 32 }
+    }
+  ],
+  "markers": []
+}

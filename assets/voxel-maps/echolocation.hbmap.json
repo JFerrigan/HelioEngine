@@ -1408,6 +1408,34 @@
       ]
     },
     {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        39,
+        6,
+        -9
+      ],
+      "min": [
+        24,
+        1,
+        -9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Stone",
+      "max": [
+        39,
+        6,
+        9
+      ],
+      "min": [
+        24,
+        1,
+        9
+      ]
+    },
+    {
       "kind": "clear_box",
       "max": [
         32,
@@ -1453,7 +1481,7 @@
       "material": "Stone",
       "max": [
         27,
-        5,
+        6,
         13
       ],
       "min": [
@@ -1467,7 +1495,7 @@
       "material": "Stone",
       "max": [
         33,
-        5,
+        6,
         13
       ],
       "min": [

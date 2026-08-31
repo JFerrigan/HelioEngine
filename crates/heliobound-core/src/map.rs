@@ -1,6 +1,8 @@
 //! Strict, startup-loadable v1 map blueprints.  The catalog deliberately owns
 //! no mutable game state: callers clone `CompiledMap::world` for a session.
-use crate::{Vec3, VoxelBounds, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld};
+use crate::{
+    CityConfig, CityGenerator, Vec3, VoxelBounds, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld,
+};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -532,6 +534,14 @@ struct RawBounds {
     min: [i32; 3],
     max: [i32; 3],
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CityGeneratorParameters {
+    road_width: i32,
+    block_size: i32,
+    max_height: i32,
+}
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum RawOperation {
@@ -869,11 +879,66 @@ fn compile_file(path: &Path, assets: &AssetCatalog) -> Result<CompiledMap, Strin
                 operations.push(MapOperation::PlaceAsset(placed.clone()));
                 placed_assets.push(placed)
             }
-            RawOperation::GeneratorRegion { id, generator, .. } => {
+            RawOperation::GeneratorRegion {
+                id,
+                generator,
+                bounds: region,
+                seed,
+                parameters,
+            } => {
                 if !op_ids.insert(id.clone()) {
                     return Err("duplicate operation id".into());
                 };
-                return Err(format!("generator '{generator}' not registered"));
+                let region = bounds(region)?;
+                check_box(map_bounds, region)?;
+                match generator.as_str() {
+                    "city" => {
+                        let parameters: CityGeneratorParameters =
+                            serde_json::from_value(parameters).map_err(|error| {
+                                format!("invalid city generator parameters: {error}")
+                            })?;
+                        let half_extent = region.max.x;
+                        if region.min.x != -half_extent
+                            || region.min.z != -half_extent
+                            || region.max.z != half_extent
+                            || region.min.y != 0
+                            || half_extent < 8
+                        {
+                            return Err(
+                                "city generator region must be a square from [-extent, 0, -extent] to [extent, y, extent]"
+                                    .into(),
+                            );
+                        }
+                        let generated = CityGenerator::new(CityConfig {
+                            seed,
+                            half_extent,
+                            block_size: parameters.block_size,
+                            road_width: parameters.road_width,
+                            max_height: parameters.max_height,
+                        })
+                        .generate();
+                        let generated_bounds = generated
+                            .bounds()
+                            .ok_or("city generator produced an empty world")?;
+                        if !inside(region, generated_bounds.min)
+                            || !inside(region, generated_bounds.max)
+                        {
+                            return Err("city generator output lies outside its region".into());
+                        }
+                        for z in generated_bounds.min.z..=generated_bounds.max.z {
+                            for y in generated_bounds.min.y..=generated_bounds.max.y {
+                                for x in generated_bounds.min.x..=generated_bounds.max.x {
+                                    let voxel = VoxelCoord::new(x, y, z);
+                                    if let Some(cell) = generated.get(voxel) {
+                                        world.set(voxel, cell);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => return Err(format!("generator '{generator}' not registered")),
+                }
+                operations.push(MapOperation::GeneratorRegion { id, generator });
             }
         }
     }
@@ -1177,6 +1242,22 @@ mod tests {
         let c = MapCatalog::discover(&d, &AssetCatalog::default());
         assert_eq!(c.maps.len(), 1);
         assert_eq!(c.maps[0].world.voxel_count(), 7);
+        let _ = fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn city_generator_region_compiles_deterministically() {
+        let d = dir();
+        fs::write(d.join("city.hbmap.json"), r#"{"format_version":1,"id":"city","name":"City","mode":"city","category":"procedural","bounds":{"min":[-8,0,-8],"max":[8,20,8]},"player_start":{"id":"start","kind":"player_spawn","position":[0.5,1.7,-5.5],"yaw_degrees":0},"operations":[{"kind":"generator_region","id":"city-world","generator":"city","bounds":{"min":[-8,0,-8],"max":[8,20,8]},"seed":12,"parameters":{"road_width":3,"block_size":8,"max_height":12}}],"markers":[]}"#).unwrap();
+        let a = MapCatalog::discover(&d, &AssetCatalog::default());
+        let b = MapCatalog::discover(&d, &AssetCatalog::default());
+        assert!(a.errors.is_empty(), "{:?}", a.errors);
+        assert_eq!(a.maps[0].world.voxel_count(), b.maps[0].world.voxel_count());
+        assert_eq!(a.maps[0].world.bounds(), b.maps[0].world.bounds());
+        assert!(matches!(
+            a.maps[0].operations[0],
+            MapOperation::GeneratorRegion { .. }
+        ));
         let _ = fs::remove_dir_all(d);
     }
 }

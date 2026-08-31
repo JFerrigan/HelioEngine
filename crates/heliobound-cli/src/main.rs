@@ -9,8 +9,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 use heliobound_audio::{EcholocationInterference, GameAudio, SoundEffect};
 use heliobound_core::{
-    AssetCatalog, Camera, CityConfig, CityGenerator, MapCatalog, PlanetConfig, ProceduralPlanet,
-    Ray, Vec3, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld,
+    AssetCatalog, Camera, MapCatalog, PlanetConfig, ProceduralPlanet, Ray, Vec3, VoxelCell,
+    VoxelCoord, VoxelMaterial, VoxelWorld,
 };
 #[cfg(test)]
 use heliobound_core::{DoomMapConfig, DoomMapGenerator};
@@ -520,7 +520,7 @@ impl AppState {
         Self {
             mode: AppMode::Menu,
             planet: build_demo_planet(),
-            city: build_demo_city(),
+            city: compiled_map_world(&map_catalog, "city"),
             map_catalog,
             doom_map,
             bar_scene,
@@ -796,7 +796,9 @@ impl AppState {
 
     fn start_city(&mut self) {
         self.mode = AppMode::CityWalk;
-        self.camera = city_start_camera();
+        let map = required_compiled_map(&self.map_catalog, "city");
+        self.city = map.fresh_session().world;
+        self.camera = compiled_start_camera(map);
         self.input = PlayerInput::default();
         self.walk_motion = WalkMotion::default();
         self.city_figures = CityFigureState::new();
@@ -5660,7 +5662,10 @@ fn build_demo_planet() -> ProceduralPlanet {
     })
 }
 
+#[cfg(test)]
 fn build_demo_city() -> VoxelWorld {
+    use heliobound_core::{CityConfig, CityGenerator};
+
     CityGenerator::new(CityConfig {
         seed: 0x51D5_C17A,
         half_extent: 72,
@@ -5677,7 +5682,6 @@ fn build_doom_map() -> VoxelWorld {
 }
 
 fn build_map_catalog_from(maps: &MapCatalog) -> Vec<PreviewMap> {
-    let city = build_demo_city();
     let corn_maze = CornMazeState::new();
     let corn_start_camera = corn_maze_start_camera(&corn_maze);
     let sandbox = build_voxel_sandbox_world();
@@ -5687,9 +5691,9 @@ fn build_map_catalog_from(maps: &MapCatalog) -> Vec<PreviewMap> {
     vec![
         PreviewMap::new(
             "procedural city",
-            city,
-            city_start_camera(),
-            "core generator",
+            compiled_map_world(maps, "city"),
+            compiled_start_camera(required_compiled_map(maps, "city")),
+            "hbmap",
         ),
         PreviewMap::new(
             "doomlike arena",
@@ -5911,6 +5915,17 @@ fn stamp_echo_pressure_extension(world: &mut VoxelWorld, puzzle: &EchoPuzzle) {
             VoxelMaterial::Stone,
         );
     }
+    // The legacy hull convention puts its side shell just beyond the walkable
+    // floor edge. Keep that outer shell on the new room too, so no floor edge
+    // opens directly to void even where the inner wall is later modified.
+    for z in [-9, 9] {
+        fill_cuboid(
+            world,
+            VoxelCoord::new(24, 1, z),
+            VoxelCoord::new(39, 6, z),
+            VoxelMaterial::Stone,
+        );
+    }
     fill_cuboid(
         world,
         VoxelCoord::new(ECHO_PRESSURE_DOOR_X, 6, -8),
@@ -5957,7 +5972,7 @@ fn stamp_echo_pressure_extension(world: &mut VoxelWorld, puzzle: &EchoPuzzle) {
         fill_cuboid(
             world,
             VoxelCoord::new(x, 1, 9),
-            VoxelCoord::new(x, 5, 13),
+            VoxelCoord::new(x, 6, 13),
             VoxelMaterial::Stone,
         );
     }
@@ -10525,6 +10540,7 @@ mod tests {
         let liminal = LiminalState::new_seeded(LIMINAL_SEED);
         let echolocation = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
         let legacy = [
+            ("city", build_demo_city(), city_start_camera().position),
             ("bar", build_bar_scene(), bar_start_camera().position),
             ("doom", build_doom_map(), doom_start_camera().position),
             (
