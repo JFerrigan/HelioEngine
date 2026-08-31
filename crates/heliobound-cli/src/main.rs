@@ -10214,6 +10214,42 @@ mod tests {
             assert_eq!(camera.position.y, WALK_EYE_HEIGHT - 6.0);
             assert!(!motion.airborne);
         }
+
+        #[test]
+        #[ignore = "known landing defect: corner collision can cancel a fall without choosing a landing surface"]
+        fn descending_onto_a_platform_edge_does_not_freeze_above_it() {
+            let mut world = VoxelWorld::new();
+            // The player's center is just beyond this platform, while its
+            // collision-radius corner still overlaps it. This is the position
+            // reached when a jump only partly clears a raised ledge.
+            floor(
+                &mut world,
+                VoxelCoord::new(0, 1, -1),
+                VoxelCoord::new(0, 1, 1),
+            );
+            let mut camera = Camera::new(Vec3::new(1.15, WALK_EYE_HEIGHT + 2.1, 0.5));
+            let mut input = PlayerInput::default();
+            let mut motion = WalkMotion {
+                vertical_velocity: 0.0,
+                airborne: true,
+            };
+
+            for _ in 0..12 {
+                step(&mut camera, &mut input, &mut motion, &world, 0.1);
+            }
+
+            // Current behavior leaves the camera with feet inside the
+            // platform's vertical range and resets velocity to zero every
+            // frame. A resolution must either snap to valid support or keep
+            // falling/resolve horizontally; it must never freeze here.
+            assert!(
+                camera.position.y >= WALK_EYE_HEIGHT + 2.0,
+                "froze at camera y={} (foot y={}), vertical velocity={}",
+                camera.position.y,
+                camera.position.y - WALK_EYE_HEIGHT,
+                motion.vertical_velocity
+            );
+        }
     }
 
     /// One-off canonical exporter for migrated maps. It reads each checked-in
