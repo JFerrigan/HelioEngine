@@ -9,8 +9,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 use heliobound_audio::{EcholocationInterference, GameAudio, SoundEffect};
 use heliobound_core::{
-    AssetCatalog, Camera, CompiledMap, MapCatalog, MapMarker, PlanetConfig, ProceduralPlanet, Ray,
-    Vec3, VoxelBounds, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld,
+    AssetCatalog, Camera, CompiledMap, EditableMap, MapCatalog, MapMarker, PlanetConfig,
+    ProceduralPlanet, Ray, Vec3, VoxelBounds, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld,
 };
 #[cfg(test)]
 use heliobound_core::{DoomMapConfig, DoomMapGenerator};
@@ -387,6 +387,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                             audio.set_echolocation_interference(EcholocationInterference::Inactive);
                             mouse_captured = set_mouse_captured(&window, false);
                         }
+                        KeyboardAction::EnterDevToolsMenu => {
+                            app.enter_dev_tools_menu();
+                            audio.leave_ambience();
+                            mouse_captured = set_mouse_captured(&window, false);
+                        }
                         KeyboardAction::StartScene => {
                             // Restarts and mode changes must not carry an old search bed
                             // into the new simulation before its first redraw.
@@ -449,6 +454,7 @@ enum AppMode {
     BarScene,
     AssetViewer,
     MapViewer,
+    MapEditor,
     VoxelSandbox,
     Zombies,
     Liminal,
@@ -468,6 +474,7 @@ enum KeyboardAction {
     Exit,
     ReleaseMouse,
     EnterMenu,
+    EnterDevToolsMenu,
     StartScene,
 }
 
@@ -483,6 +490,7 @@ struct AppState {
     corn_maze: CornMazeState,
     asset_viewer: AssetViewerState,
     map_viewer: Option<MapViewerState>,
+    map_editor: Option<MapEditorState>,
     sandbox: VoxelSandboxState,
     /// Immutable Zombies geometry; doors and purchased-weapon visuals are
     /// layered onto a fresh clone each frame.
@@ -537,6 +545,7 @@ impl AppState {
             corn_maze: CornMazeState::new(),
             asset_viewer: AssetViewerState::new(),
             map_viewer: None,
+            map_editor: None,
             sandbox: VoxelSandboxState::new(),
             zombies_map: zombies_blueprint.clone(),
             zombies_blueprint,
@@ -664,6 +673,10 @@ impl AppState {
                     self.start_map_viewer();
                     return KeyboardAction::StartScene;
                 }
+                (AppMode::DevToolsMenu, PhysicalKey::Code(KeyCode::Digit4)) => {
+                    self.start_map_editor();
+                    return KeyboardAction::StartScene;
+                }
                 (AppMode::GamesMenu | AppMode::DevToolsMenu, PhysicalKey::Code(KeyCode::KeyM))
                 | (
                     AppMode::GamesMenu | AppMode::DevToolsMenu,
@@ -733,6 +746,57 @@ impl AppState {
                         }
                         PhysicalKey::Code(KeyCode::KeyC) => {
                             viewer.toggle_ceilings();
+                            return KeyboardAction::None;
+                        }
+                        _ => {}
+                    }
+                }
+                (AppMode::MapEditor, PhysicalKey::Code(KeyCode::KeyM)) => {
+                    return KeyboardAction::EnterDevToolsMenu;
+                }
+                (AppMode::MapEditor, PhysicalKey::Code(KeyCode::Escape)) => {
+                    return KeyboardAction::ReleaseMouse;
+                }
+                (AppMode::MapEditor, key) => {
+                    let editor = self
+                        .map_editor
+                        .as_mut()
+                        .expect("map editor mode requires editor state");
+                    if let Some(index) = asset_digit_index(key) {
+                        editor.select(index);
+                        return KeyboardAction::None;
+                    }
+                    match key {
+                        PhysicalKey::Code(KeyCode::ArrowDown) => {
+                            editor.select_next();
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowUp) => {
+                            editor.select_previous();
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::Space) => {
+                            editor.open_selected();
+                            self.camera = editor.camera();
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::KeyN) | PhysicalKey::Code(KeyCode::Period) => {
+                            editor.open_next();
+                            self.camera = editor.camera();
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::KeyP) | PhysicalKey::Code(KeyCode::Comma) => {
+                            editor.open_previous();
+                            self.camera = editor.camera();
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::KeyR) => {
+                            editor.reset_working_copy();
+                            self.camera = editor.camera();
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::KeyC) => {
+                            editor.toggle_ceilings();
                             return KeyboardAction::None;
                         }
                         _ => {}
@@ -832,8 +896,18 @@ impl AppState {
         if self.mode == AppMode::MapViewer {
             self.map_viewer = None;
         }
+        if self.mode == AppMode::MapEditor {
+            self.map_editor = None;
+        }
         self.mode = AppMode::Menu;
         self.menu_selection = 0;
+        self.input = PlayerInput::default();
+    }
+
+    fn enter_dev_tools_menu(&mut self) {
+        self.map_editor = None;
+        self.mode = AppMode::DevToolsMenu;
+        self.menu_selection = 3;
         self.input = PlayerInput::default();
     }
 
@@ -841,7 +915,7 @@ impl AppState {
         match self.mode {
             AppMode::Menu => 2,
             AppMode::GamesMenu => 9,
-            AppMode::DevToolsMenu => 3,
+            AppMode::DevToolsMenu => 4,
             _ => unreachable!("only menu modes have menu entries"),
         }
     }
@@ -904,6 +978,10 @@ impl AppState {
             }
             (AppMode::DevToolsMenu, 2) => {
                 self.start_map_viewer();
+                KeyboardAction::StartScene
+            }
+            (AppMode::DevToolsMenu, 3) => {
+                self.start_map_editor();
                 KeyboardAction::StartScene
             }
             _ => unreachable!("menu selection must be in range"),
@@ -975,6 +1053,24 @@ impl AppState {
             .map_viewer
             .as_ref()
             .expect("new map viewer has state")
+            .camera();
+        self.input = PlayerInput::default();
+    }
+
+    fn start_map_editor(&mut self) {
+        self.mode = AppMode::MapEditor;
+        self.map_editor = Some(MapEditorState::new(
+            self.map_catalog.maps.clone(),
+            self.map_catalog
+                .errors
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        ));
+        self.camera = self
+            .map_editor
+            .as_ref()
+            .expect("new map editor has state")
             .camera();
         self.input = PlayerInput::default();
     }
@@ -1154,6 +1250,19 @@ impl AppState {
                 render_map_viewer_scene(&mut scene, viewer, mouse_captured);
                 scene
             }
+            AppMode::MapEditor => {
+                let editor = self
+                    .map_editor
+                    .as_mut()
+                    .expect("map editor mode requires editor state");
+                editor.update(&self.input, dt);
+                self.camera = editor.camera();
+                let mut scene =
+                    self.map_builder
+                        .build(editor.render_world(), &self.camera, self.tick);
+                render_map_editor_scene(&mut scene, editor, mouse_captured);
+                scene
+            }
             AppMode::VoxelSandbox => {
                 match self.sandbox.movement_mode {
                     SandboxMovementMode::Flight => update_sandbox_camera(
@@ -1314,6 +1423,14 @@ impl AppState {
                 viewer.rotate_with_mouse(delta_x, delta_y);
                 self.camera = viewer.camera();
             }
+            AppMode::MapEditor => {
+                let editor = self
+                    .map_editor
+                    .as_mut()
+                    .expect("map editor mode requires editor state");
+                editor.rotate_with_mouse(delta_x, delta_y);
+                self.camera = editor.camera();
+            }
         }
     }
 
@@ -1393,7 +1510,8 @@ fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
         | AppMode::GamesMenu
         | AppMode::DevToolsMenu
         | AppMode::AssetViewer
-        | AppMode::MapViewer => audio.leave_ambience(),
+        | AppMode::MapViewer
+        | AppMode::MapEditor => audio.leave_ambience(),
     }
 }
 
@@ -4074,6 +4192,152 @@ struct MapViewerState {
     ceilings_hidden: bool,
     ceilingless_world: Option<VoxelWorld>,
     catalog_errors: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapEditorPanel {
+    Browse,
+    Geometry,
+    Markers,
+    Assets,
+    Validate,
+    Save,
+}
+
+impl MapEditorPanel {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Browse => "BROWSE",
+            Self::Geometry => "GEOMETRY (UNAVAILABLE)",
+            Self::Markers => "MARKERS (UNAVAILABLE)",
+            Self::Assets => "ASSETS (UNAVAILABLE)",
+            Self::Validate => "VALIDATE (UNAVAILABLE)",
+            Self::Save => "SAVE (UNAVAILABLE)",
+        }
+    }
+}
+
+/// CLI-only shell around immutable catalog blueprints. `working` is always a
+/// new `CompiledMap::editable()` clone, never a reference into the catalog.
+#[derive(Clone, Debug)]
+struct MapEditorState {
+    maps: Vec<CompiledMap>,
+    selected: usize,
+    working: Option<EditableMap>,
+    camera: Camera,
+    ceilings_hidden: bool,
+    ceilingless_world: Option<VoxelWorld>,
+    active_panel: MapEditorPanel,
+    dirty: bool,
+    pending_confirmation: Option<&'static str>,
+    catalog_errors: Vec<String>,
+}
+
+impl MapEditorState {
+    fn new(maps: Vec<CompiledMap>, catalog_errors: Vec<String>) -> Self {
+        assert!(!maps.is_empty(), "map editor requires a compiled map");
+        let camera = map_viewer_camera(compiled_start_camera(&maps[0]));
+        Self {
+            maps,
+            selected: 0,
+            working: None,
+            camera,
+            ceilings_hidden: false,
+            ceilingless_world: None,
+            active_panel: MapEditorPanel::Browse,
+            dirty: false,
+            pending_confirmation: None,
+            catalog_errors,
+        }
+    }
+
+    fn selected_map(&self) -> &CompiledMap {
+        &self.maps[self.selected]
+    }
+
+    fn select(&mut self, index: usize) {
+        if index < self.maps.len() {
+            self.selected = index;
+        }
+    }
+
+    fn select_next(&mut self) {
+        self.select((self.selected + 1) % self.maps.len());
+    }
+
+    fn select_previous(&mut self) {
+        self.select((self.selected + self.maps.len() - 1) % self.maps.len());
+    }
+
+    fn open_selected(&mut self) {
+        let working = self.selected_map().editable();
+        let camera = map_viewer_camera(compiled_start_camera(self.selected_map()));
+        self.working = Some(working);
+        self.dirty = false;
+        self.pending_confirmation = None;
+        self.camera = camera;
+        self.rebuild_ceilingless_world();
+    }
+
+    fn open_next(&mut self) {
+        self.select_next();
+        self.open_selected();
+    }
+
+    fn open_previous(&mut self) {
+        self.select_previous();
+        self.open_selected();
+    }
+
+    fn reset_working_copy(&mut self) {
+        // Phase 4A has no mutation command, but keep the confirmation boundary
+        // explicit so future dirty tools cannot silently discard work.
+        self.pending_confirmation = Some("discard working copy");
+        self.open_selected();
+    }
+
+    fn update(&mut self, input: &PlayerInput, dt: f32) {
+        if self.working.is_some() {
+            update_map_viewer_free_camera(&mut self.camera, input, dt);
+        }
+    }
+
+    fn rotate_with_mouse(&mut self, delta_x: f32, delta_y: f32) {
+        if self.working.is_some() {
+            apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped);
+        }
+    }
+
+    fn camera(&self) -> Camera {
+        self.camera
+    }
+
+    fn toggle_ceilings(&mut self) {
+        self.ceilings_hidden = !self.ceilings_hidden;
+        self.rebuild_ceilingless_world();
+    }
+
+    fn render_world(&self) -> &VoxelWorld {
+        if let Some(world) = self.ceilingless_world.as_ref() {
+            return world;
+        }
+        self.working
+            .as_ref()
+            .map(|map| &map.world)
+            .unwrap_or(&self.selected_map().world)
+    }
+
+    fn rebuild_ceilingless_world(&mut self) {
+        self.ceilingless_world = self.ceilings_hidden.then(|| {
+            let world = self
+                .working
+                .as_ref()
+                .map(|map| &map.world)
+                .unwrap_or(&self.selected_map().world);
+            without_map_ceilings(world)
+        });
+    }
 }
 
 impl MapViewerState {
@@ -8690,6 +8954,7 @@ fn build_dev_tools_menu_scene(tick: u64, selection: usize) -> Scene {
             "1  ASSET VIEWER",
             "2  VOXEL SANDBOX",
             "3  MAP VIEWER",
+            "4  MAP EDITOR",
             "",
             "M / ESC  BACK",
         ],
@@ -8921,6 +9186,164 @@ fn render_map_viewer_scene(scene: &mut Scene, viewer: &MapViewerState, mouse_cap
         scene.overlays.push(Overlay {
             x: 2,
             y: 27 + index as i32,
+            z: 120,
+            text: format!("MAP CATALOG ERROR: {error}"),
+            style: TextStyle::default(),
+        });
+    }
+}
+
+fn render_map_editor_scene(scene: &mut Scene, editor: &MapEditorState, mouse_captured: bool) {
+    let map = editor.selected_map();
+    let working = editor.working.as_ref();
+    let world = editor.render_world();
+    let bounds = map.metadata.bounds;
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "MAP EDITOR  {} / {}  {}  {}  mouse {}  M Dev Tools",
+            editor.selected + 1,
+            editor.maps.len(),
+            map.metadata.name,
+            if working.is_some() {
+                "OPEN"
+            } else {
+                "SELECT MAP"
+            },
+            if mouse_captured { "locked" } else { "free" },
+        ),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 4,
+        z: 120,
+        text: format!(
+            "id {}  mode {:?}  source {}  bounds [{},{},{} to {},{},{}]",
+            map.metadata.id,
+            map.metadata.mode,
+            map.source.display(),
+            bounds.min.x,
+            bounds.min.y,
+            bounds.min.z,
+            bounds.max.x,
+            bounds.max.y,
+            bounds.max.z,
+        ),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 6,
+        z: 120,
+        text: format!(
+            "WORKING COPY: {}  panel {}  {} voxels  {} assets  {} markers",
+            if editor.dirty { "DIRTY" } else { "CLEAN" },
+            editor.active_panel.label(),
+            world.voxel_count(),
+            working.map_or(map.placed_assets.len(), |copy| copy.placed_assets.len()),
+            working.map_or(map.markers.len() + 1, |copy| copy.markers.len() + 1),
+        ),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 8,
+        z: 120,
+        text: format!(
+            "Up/Down select  Enter/Space open  N/P cycle/open  R reset  C ceilings {}  Escape release mouse",
+            if editor.ceilings_hidden { "hidden" } else { "shown" },
+        ),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 10,
+        z: 120,
+        text: "Phase 4A: geometry, markers, assets, validation, save, and playtest tools are unavailable."
+            .to_string(),
+        style: TextStyle::default(),
+    });
+    let markers = working
+        .map(|copy| {
+            std::iter::once(marker_label(&copy.player_start))
+                .chain(copy.markers.iter().map(marker_label))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            std::iter::once(marker_label(&map.player_start))
+                .chain(map.markers.iter().map(marker_label))
+                .collect()
+        });
+    let assets = working
+        .map(|copy| &copy.placed_assets)
+        .unwrap_or(&map.placed_assets)
+        .iter()
+        .map(|asset| {
+            format!(
+                "{} ({}) @ {},{},{} yaw {} scale {}",
+                asset.id,
+                asset.asset_id,
+                asset.position.x,
+                asset.position.y,
+                asset.position.z,
+                asset.yaw_degrees,
+                asset.voxel_size
+            )
+        })
+        .collect::<Vec<_>>();
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 12,
+        z: 120,
+        text: inspector_line("ASSETS", &assets),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 14,
+        z: 120,
+        text: inspector_line("MARKERS", &markers),
+        style: TextStyle::default(),
+    });
+    for (index, compiled) in editor.maps.iter().enumerate() {
+        scene.overlays.push(Overlay {
+            x: 2,
+            y: 17 + index as i32,
+            z: 120,
+            text: format!(
+                "{}{} {} ({})",
+                if index == editor.selected { '>' } else { ' ' },
+                index + 1,
+                compiled.metadata.name,
+                compiled.metadata.id,
+            ),
+            style: TextStyle::default(),
+        });
+    }
+    let legacy_y = 18 + editor.maps.len() as i32;
+    for (offset, line) in [
+        "READ-ONLY LEGACY: Corn Maze — CLI procedural generator.",
+        "READ-ONLY LEGACY: Voxel Sandbox — CLI procedural generator.",
+        "READ-ONLY LEGACY: Drone Gate — randomized procedural course.",
+    ]
+    .iter()
+    .enumerate()
+    {
+        scene.overlays.push(Overlay {
+            x: 2,
+            y: legacy_y + offset as i32,
+            z: 120,
+            text: (*line).to_string(),
+            style: TextStyle::default(),
+        });
+    }
+    for (offset, error) in editor.catalog_errors.iter().take(3).enumerate() {
+        scene.overlays.push(Overlay {
+            x: 2,
+            y: legacy_y + 4 + offset as i32,
             z: 120,
             text: format!("MAP CATALOG ERROR: {error}"),
             style: TextStyle::default(),
@@ -11007,12 +11430,12 @@ mod tests {
         assert_eq!(app.mode, AppMode::DevToolsMenu);
 
         app.handle_keyboard(&PhysicalKey::Code(KeyCode::ArrowUp), ElementState::Pressed);
-        assert_eq!(app.menu_selection, 2);
+        assert_eq!(app.menu_selection, 3);
         assert_eq!(
             app.handle_keyboard(&PhysicalKey::Code(KeyCode::Enter), ElementState::Pressed),
             KeyboardAction::StartScene
         );
-        assert_eq!(app.mode, AppMode::MapViewer);
+        assert_eq!(app.mode, AppMode::MapEditor);
     }
 
     #[test]
@@ -11330,6 +11753,76 @@ mod tests {
         app.enter_menu();
         assert_eq!(app.mode, AppMode::Menu);
         assert!(app.map_viewer.is_none());
+    }
+
+    #[test]
+    fn map_editor_menu_opens_isolated_clean_working_copies_and_reset_restores_source() {
+        let mut app = AppState::new();
+        open_dev_tools_menu(&mut app);
+
+        assert_eq!(
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit4), ElementState::Pressed),
+            KeyboardAction::StartScene
+        );
+        assert_eq!(app.mode, AppMode::MapEditor);
+        let editor = app.map_editor.as_ref().unwrap();
+        assert_eq!(editor.maps.len(), app.map_catalog.maps.len());
+        assert!(editor.working.is_none());
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Enter), ElementState::Pressed);
+        let coord = app.map_catalog.maps[0].metadata.bounds.min;
+        let blueprint_cell = app.map_catalog.maps[0].world.get(coord);
+        app.map_editor
+            .as_mut()
+            .unwrap()
+            .working
+            .as_mut()
+            .unwrap()
+            .world
+            .set(coord, VoxelCell::new(VoxelMaterial::Beacon));
+        assert_eq!(app.map_catalog.maps[0].world.get(coord), blueprint_cell);
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyR), ElementState::Pressed);
+        assert_eq!(
+            app.map_editor
+                .as_ref()
+                .unwrap()
+                .working
+                .as_ref()
+                .unwrap()
+                .world
+                .get(coord),
+            blueprint_cell
+        );
+        assert!(!app.map_editor.as_ref().unwrap().dirty);
+
+        assert_eq!(
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyM), ElementState::Pressed),
+            KeyboardAction::EnterDevToolsMenu
+        );
+        app.enter_dev_tools_menu();
+        assert_eq!(app.mode, AppMode::DevToolsMenu);
+        assert!(app.map_editor.is_none());
+    }
+
+    #[test]
+    fn map_editor_scene_identifies_phase_limits_and_legacy_read_only_maps() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        let scene = app.frame(0.0, true);
+
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("MAP EDITOR")));
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("READ-ONLY LEGACY: Corn Maze")));
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("tools are unavailable")));
     }
 
     #[test]

@@ -159,6 +159,18 @@ Acceptance: opening, leaving, or resetting an editor session cannot alter the
 catalogue blueprint; a dirty session is visibly distinguishable from a clean
 one; invalid catalog files remain non-blocking.
 
+Implementation status: the Phase 4A shell is available from `Dev Tools` as
+`4  MAP EDITOR`. It lists valid compiled `hbmap` maps in catalog order,
+creates a clean `EditableMap` only when a map is opened, and renders that
+working copy through the Map Viewer free-flight/ceiling-inspection path. Use
+Up/Down then Enter/Space to open, `N`/`P` to cycle opened maps, `R` to reset to
+source, `C` to show/hide ceilings, `M` to return to Dev Tools, and Escape to
+release mouse capture. Geometry, marker, asset, validation, save, and
+playtest tools remain intentionally unavailable; the clean-only state still
+reserves dirty, active-panel, selected-ID, and confirmation boundaries for
+later phases. Corn Maze, Voxel Sandbox, and Drone Gate are displayed with
+their procedural read-only status and cannot be selected for editing.
+
 ### Phase 4B: geometry tools
 
 Provide the smallest set that can make a useful room or repair a map.

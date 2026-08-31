@@ -33,6 +33,21 @@ menu.
 The planet-flight environment is not listed because it is analytic virtual
 terrain rather than a finite voxel map.
 
+## Map Editor (Phase 4A)
+
+`Dev Tools` now also has `4  MAP EDITOR`. It lists valid compiled `hbmap`
+entries in catalog order and opens an isolated, clean `EditableMap` working
+copy. Use Up/Down and Enter/Space to select and open a map, `N`/`P` to cycle
+opened editable maps, `R` to reset the copy to its immutable blueprint, `C`
+to hide/show dense ceilings, `M` to return to Dev Tools, and Escape to release
+the mouse. Its preview uses the same free-flight inspector camera as Map
+Viewer, but renders the working copy rather than the catalog blueprint.
+
+This first editor phase is inspection-only: geometry, markers, assets,
+validation, save, and playtest are explicitly unavailable. Corn Maze, Voxel
+Sandbox, and Drone Gate remain read-only because they are legacy procedural
+environments rather than compiled `*.hbmap.json` sources.
+
 ## Current map format
 
 Finite environments share the in-memory `VoxelWorld` representation from
