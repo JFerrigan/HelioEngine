@@ -17,7 +17,9 @@ The first interactive puzzle occupies the starting room. A closed bulkhead at `x
 - Forty voxels beyond the first bulkhead, the forward corridor reaches a
   pressure plate and a second sealed bulkhead. The plate sends a short delayed
   signal along its local wire to open that second door into a new room; it also
-  re-triggers the original receiver output.
+  re-triggers the original receiver output. That room has a permanent north
+  connector into the original beacon-side wing, keeping the map in one route
+  network once the puzzle doors are open.
 - The signal moves along the ordered pipe at 6 voxels per second. Each pipe sample is powered when the receiver was emitting at `current time - distance / 6`, producing visible leading and trailing edges. The 15-voxel route therefore delays the door by 2.5 seconds and preserves the 3-second crossing window.
 - The door clears from the shared voxel world on the delayed rising edge and is restored on the falling edge. When restored over the player or pursuer, that entity moves to the nearer predefined clear position; equal distances use its current side, then the starting-room side.
 - Closed door voxels block walking, pursuer navigation, sight, and newly emitted waves. Opening removes those voxels for all four systems. Waves cache their path at emission, so waves already in flight retain the path computed before a transition.

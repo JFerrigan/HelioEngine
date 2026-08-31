@@ -5868,6 +5868,14 @@ fn stamp_echo_pressure_extension(world: &mut VoxelWorld, puzzle: &EchoPuzzle) {
         VoxelCoord::new(22, 0, 3),
         VoxelMaterial::Basalt,
     );
+    // This route crosses old room boundaries. Clear their interior wall
+    // segments before rebuilding the corridor shell, otherwise they leave
+    // invisible navigation barriers across the new straight path.
+    clear_cuboid(
+        world,
+        VoxelCoord::new(-20, 1, -3),
+        VoxelCoord::new(22, 5, 3),
+    );
     for z in [-4, 4] {
         fill_cuboid(
             world,
@@ -5928,6 +5936,31 @@ fn stamp_echo_pressure_extension(world: &mut VoxelWorld, puzzle: &EchoPuzzle) {
         puzzle.pressure_plate.coord,
         VoxelCell::new(VoxelMaterial::PressurePlate),
     );
+
+    // Join the new room back into the original beacon-side wing. Both existing
+    // room shells are opened to full walking height before the connector's
+    // floor, ceiling, and side walls are restored.
+    clear_cuboid(world, VoxelCoord::new(28, 1, 8), VoxelCoord::new(32, 5, 14));
+    fill_cuboid(
+        world,
+        VoxelCoord::new(28, 0, 9),
+        VoxelCoord::new(32, 0, 13),
+        VoxelMaterial::Basalt,
+    );
+    fill_cuboid(
+        world,
+        VoxelCoord::new(28, 6, 9),
+        VoxelCoord::new(32, 6, 13),
+        VoxelMaterial::ShipHull,
+    );
+    for x in [27, 33] {
+        fill_cuboid(
+            world,
+            VoxelCoord::new(x, 1, 9),
+            VoxelCoord::new(x, 5, 13),
+            VoxelMaterial::Stone,
+        );
+    }
 }
 
 fn stamp_echo_room(world: &mut VoxelWorld, x: i32, z: i32, width: i32, depth: i32) {
@@ -13305,6 +13338,27 @@ mod tests {
                     })
                 );
             }
+        }
+    }
+
+    #[test]
+    fn echolocation_open_bulkheads_connect_start_far_room_and_beacon_side() {
+        let mut echo = EchoLocationState::new_seeded(ECHOLOCATION_SEED);
+        echo.set_puzzle_door_open(true);
+        echo.set_pressure_door_open(true);
+        let navigation =
+            NavigationField::build(&echo.world, echo.start_position, ECHOLOCATION_WALK_PROFILE)
+                .expect("the starting room must have a navigation field");
+
+        for (x, z, label) in [
+            (30, 0, "new pressure room"),
+            (24, 17, "original beacon-side room"),
+        ] {
+            assert_ne!(
+                navigation.distance(x, z),
+                Some(u16::MAX),
+                "{label} must remain connected to the starting room"
+            );
         }
     }
 
