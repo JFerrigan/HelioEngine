@@ -358,7 +358,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     if mouse_captured {
                         app.handle_mouse_button(button, state);
                         play_audio_events(&mut audio, app.drain_audio_events());
-                    } else if state == ElementState::Pressed && app.mode != AppMode::Menu {
+                    } else if state == ElementState::Pressed && !app.mode.is_menu() {
                         mouse_captured = set_mouse_captured(&window, true);
                         if mouse_captured && app.mode == AppMode::EchoLocation {
                             app.handle_mouse_button(button, state);
@@ -440,6 +440,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AppMode {
     Menu,
+    GamesMenu,
+    DevToolsMenu,
     PlanetFlight,
     CityWalk,
     CityShooter,
@@ -454,6 +456,12 @@ enum AppMode {
     EchoLocation,
 }
 
+impl AppMode {
+    fn is_menu(self) -> bool {
+        matches!(self, Self::Menu | Self::GamesMenu | Self::DevToolsMenu)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KeyboardAction {
     None,
@@ -465,6 +473,7 @@ enum KeyboardAction {
 
 struct AppState {
     mode: AppMode,
+    menu_selection: usize,
     planet: ProceduralPlanet,
     city: VoxelWorld,
     /// Immutable startup blueprints shared by game sessions and the map viewer.
@@ -519,6 +528,7 @@ impl AppState {
         let zombies_blueprint = compiled_map_world(&map_catalog, "zombies");
         Self {
             mode: AppMode::Menu,
+            menu_selection: 0,
             planet: build_demo_planet(),
             city: compiled_map_world(&map_catalog, "city"),
             map_catalog,
@@ -575,53 +585,91 @@ impl AppState {
 
         if pressed {
             match (self.mode, key) {
-                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit1)) => {
+                (
+                    AppMode::Menu | AppMode::GamesMenu | AppMode::DevToolsMenu,
+                    PhysicalKey::Code(KeyCode::ArrowDown),
+                ) => {
+                    self.menu_selection = (self.menu_selection + 1) % self.menu_entry_count();
+                    return KeyboardAction::None;
+                }
+                (
+                    AppMode::Menu | AppMode::GamesMenu | AppMode::DevToolsMenu,
+                    PhysicalKey::Code(KeyCode::ArrowUp),
+                ) => {
+                    self.menu_selection = (self.menu_selection + self.menu_entry_count() - 1)
+                        % self.menu_entry_count();
+                    return KeyboardAction::None;
+                }
+                (
+                    AppMode::Menu | AppMode::GamesMenu | AppMode::DevToolsMenu,
+                    PhysicalKey::Code(KeyCode::Enter | KeyCode::Space),
+                ) => {
+                    return self.activate_menu_selection();
+                }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::KeyG)) => {
+                    self.mode = AppMode::GamesMenu;
+                    self.menu_selection = 0;
+                    return KeyboardAction::None;
+                }
+                (AppMode::Menu, PhysicalKey::Code(KeyCode::KeyD)) => {
+                    self.mode = AppMode::DevToolsMenu;
+                    self.menu_selection = 0;
+                    return KeyboardAction::None;
+                }
+                (AppMode::GamesMenu, PhysicalKey::Code(KeyCode::Digit1)) => {
                     self.start_planet();
                     return KeyboardAction::StartScene;
                 }
-                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit2)) => {
+                (AppMode::GamesMenu, PhysicalKey::Code(KeyCode::Digit2)) => {
                     self.start_city();
                     return KeyboardAction::StartScene;
                 }
-                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit3)) => {
+                (AppMode::GamesMenu, PhysicalKey::Code(KeyCode::Digit3)) => {
                     self.start_shooter();
                     return KeyboardAction::StartScene;
                 }
-                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit4)) => {
+                (AppMode::GamesMenu, PhysicalKey::Code(KeyCode::Digit4)) => {
                     self.start_corn_maze();
                     return KeyboardAction::StartScene;
                 }
-                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit5)) => {
+                (AppMode::GamesMenu, PhysicalKey::Code(KeyCode::Digit5)) => {
                     self.start_bar();
                     return KeyboardAction::StartScene;
                 }
-                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit6)) => {
-                    self.start_asset_viewer();
-                    return KeyboardAction::StartScene;
-                }
-                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit7)) => {
-                    self.start_voxel_sandbox();
-                    return KeyboardAction::StartScene;
-                }
-                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit8)) => {
+                (AppMode::GamesMenu, PhysicalKey::Code(KeyCode::Digit6)) => {
                     self.start_zombies();
                     return KeyboardAction::StartScene;
                 }
-                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit9)) => {
+                (AppMode::GamesMenu, PhysicalKey::Code(KeyCode::Digit7)) => {
                     self.start_liminal();
                     return KeyboardAction::StartScene;
                 }
-                (AppMode::Menu, PhysicalKey::Code(KeyCode::Digit0)) => {
+                (AppMode::GamesMenu, PhysicalKey::Code(KeyCode::Digit8)) => {
                     self.start_drone_gate_runner();
                     return KeyboardAction::StartScene;
                 }
-                (AppMode::Menu, PhysicalKey::Code(KeyCode::KeyE)) => {
+                (AppMode::GamesMenu, PhysicalKey::Code(KeyCode::Digit9)) => {
                     self.start_echolocation();
                     return KeyboardAction::StartScene;
                 }
-                (AppMode::Menu, PhysicalKey::Code(KeyCode::KeyV)) => {
+                (AppMode::DevToolsMenu, PhysicalKey::Code(KeyCode::Digit1)) => {
+                    self.start_asset_viewer();
+                    return KeyboardAction::StartScene;
+                }
+                (AppMode::DevToolsMenu, PhysicalKey::Code(KeyCode::Digit2)) => {
+                    self.start_voxel_sandbox();
+                    return KeyboardAction::StartScene;
+                }
+                (AppMode::DevToolsMenu, PhysicalKey::Code(KeyCode::Digit3)) => {
                     self.start_map_viewer();
                     return KeyboardAction::StartScene;
+                }
+                (AppMode::GamesMenu | AppMode::DevToolsMenu, PhysicalKey::Code(KeyCode::KeyM))
+                | (
+                    AppMode::GamesMenu | AppMode::DevToolsMenu,
+                    PhysicalKey::Code(KeyCode::Escape),
+                ) => {
+                    return KeyboardAction::EnterMenu;
                 }
                 (AppMode::AssetViewer, PhysicalKey::Code(KeyCode::KeyM)) => {
                     return KeyboardAction::EnterMenu;
@@ -773,7 +821,7 @@ impl AppState {
             }
         }
 
-        if self.mode != AppMode::Menu {
+        if !self.mode.is_menu() {
             handle_movement_input(&mut self.input, key, state);
         }
 
@@ -785,7 +833,81 @@ impl AppState {
             self.map_viewer = None;
         }
         self.mode = AppMode::Menu;
+        self.menu_selection = 0;
         self.input = PlayerInput::default();
+    }
+
+    fn menu_entry_count(&self) -> usize {
+        match self.mode {
+            AppMode::Menu => 2,
+            AppMode::GamesMenu => 9,
+            AppMode::DevToolsMenu => 3,
+            _ => unreachable!("only menu modes have menu entries"),
+        }
+    }
+
+    fn activate_menu_selection(&mut self) -> KeyboardAction {
+        match (self.mode, self.menu_selection) {
+            (AppMode::Menu, 0) => {
+                self.mode = AppMode::GamesMenu;
+                self.menu_selection = 0;
+                KeyboardAction::None
+            }
+            (AppMode::Menu, 1) => {
+                self.mode = AppMode::DevToolsMenu;
+                self.menu_selection = 0;
+                KeyboardAction::None
+            }
+            (AppMode::GamesMenu, 0) => {
+                self.start_planet();
+                KeyboardAction::StartScene
+            }
+            (AppMode::GamesMenu, 1) => {
+                self.start_city();
+                KeyboardAction::StartScene
+            }
+            (AppMode::GamesMenu, 2) => {
+                self.start_shooter();
+                KeyboardAction::StartScene
+            }
+            (AppMode::GamesMenu, 3) => {
+                self.start_corn_maze();
+                KeyboardAction::StartScene
+            }
+            (AppMode::GamesMenu, 4) => {
+                self.start_bar();
+                KeyboardAction::StartScene
+            }
+            (AppMode::GamesMenu, 5) => {
+                self.start_zombies();
+                KeyboardAction::StartScene
+            }
+            (AppMode::GamesMenu, 6) => {
+                self.start_liminal();
+                KeyboardAction::StartScene
+            }
+            (AppMode::GamesMenu, 7) => {
+                self.start_drone_gate_runner();
+                KeyboardAction::StartScene
+            }
+            (AppMode::GamesMenu, 8) => {
+                self.start_echolocation();
+                KeyboardAction::StartScene
+            }
+            (AppMode::DevToolsMenu, 0) => {
+                self.start_asset_viewer();
+                KeyboardAction::StartScene
+            }
+            (AppMode::DevToolsMenu, 1) => {
+                self.start_voxel_sandbox();
+                KeyboardAction::StartScene
+            }
+            (AppMode::DevToolsMenu, 2) => {
+                self.start_map_viewer();
+                KeyboardAction::StartScene
+            }
+            _ => unreachable!("menu selection must be in range"),
+        }
     }
 
     fn start_planet(&mut self) {
@@ -918,7 +1040,9 @@ impl AppState {
         self.tick = self.tick.wrapping_add(1);
 
         match self.mode {
-            AppMode::Menu => build_menu_scene(self.tick),
+            AppMode::Menu => build_menu_scene(self.tick, self.menu_selection),
+            AppMode::GamesMenu => build_games_menu_scene(self.tick, self.menu_selection),
+            AppMode::DevToolsMenu => build_dev_tools_menu_scene(self.tick, self.menu_selection),
             AppMode::PlanetFlight => {
                 update_flight_camera(&mut self.camera, &self.input, dt);
                 self.planet_builder
@@ -1164,7 +1288,7 @@ impl AppState {
 
     fn apply_mouse_motion(&mut self, delta_x: f32, delta_y: f32) {
         match self.mode {
-            AppMode::Menu => {}
+            AppMode::Menu | AppMode::GamesMenu | AppMode::DevToolsMenu => {}
             AppMode::PlanetFlight => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Unrestricted)
             }
@@ -1265,7 +1389,11 @@ fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
         AppMode::PlanetFlight | AppMode::Liminal => audio.enter_doom_mode(),
         AppMode::DroneGateRunner => audio.enter_drone_mode(),
         AppMode::EchoLocation => audio.enter_doom_mode(),
-        AppMode::Menu | AppMode::AssetViewer | AppMode::MapViewer => audio.leave_ambience(),
+        AppMode::Menu
+        | AppMode::GamesMenu
+        | AppMode::DevToolsMenu
+        | AppMode::AssetViewer
+        | AppMode::MapViewer => audio.leave_ambience(),
     }
 }
 
@@ -8524,7 +8652,52 @@ fn npc_body_contains_voxel(position: Vec3, coord: VoxelCoord) -> bool {
         .any(|(x, y, z, _)| VoxelCoord::new(origin.x + *x, origin.y + *y, origin.z + *z) == coord)
 }
 
-fn build_menu_scene(tick: u64) -> Scene {
+fn build_menu_scene(tick: u64, selection: usize) -> Scene {
+    build_menu_screen(
+        tick,
+        "HELIOBOUND",
+        &["G  GAMES", "D  DEV TOOLS", "", "ESC  QUIT"],
+        selection,
+    )
+}
+
+fn build_games_menu_scene(tick: u64, selection: usize) -> Scene {
+    build_menu_screen(
+        tick,
+        "GAMES",
+        &[
+            "1  PLANET FLIGHT",
+            "2  CITY WALK",
+            "3  DOOMLIKE ARENA",
+            "4  CORN MAZE",
+            "5  STARHUSK BAR",
+            "6  HELIOBOUND ZOMBIES",
+            "7  LIMINAL OFFICE",
+            "8  DRONE GATE RUNNER",
+            "9  ECHOLOCATION",
+            "",
+            "M / ESC  BACK",
+        ],
+        selection,
+    )
+}
+
+fn build_dev_tools_menu_scene(tick: u64, selection: usize) -> Scene {
+    build_menu_screen(
+        tick,
+        "DEV TOOLS",
+        &[
+            "1  ASSET VIEWER",
+            "2  VOXEL SANDBOX",
+            "3  MAP VIEWER",
+            "",
+            "M / ESC  BACK",
+        ],
+        selection,
+    )
+}
+
+fn build_menu_screen(tick: u64, title: &str, entries: &[&str], selection: usize) -> Scene {
     let mut scene = Scene::new(VIEWPORT);
     let mut background = Layer {
         name: "menu".to_string(),
@@ -8552,103 +8725,25 @@ fn build_menu_scene(tick: u64) -> Scene {
 
     scene.layers.push(background);
     scene.overlays.push(Overlay {
-        x: 57,
+        x: 48,
         y: 30,
         z: 10,
-        text: "HELIOBOUND".to_string(),
+        text: title.to_string(),
         style: TextStyle::default(),
     });
-    scene.overlays.push(Overlay {
-        x: 48,
-        y: 37,
-        z: 10,
-        text: "1  PLANET FLIGHT".to_string(),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 48,
-        y: 41,
-        z: 10,
-        text: "2  CITY WALK".to_string(),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 48,
-        y: 45,
-        z: 10,
-        text: "3  DOOMLIKE ARENA".to_string(),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 48,
-        y: 49,
-        z: 10,
-        text: "4  CORN MAZE".to_string(),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 48,
-        y: 53,
-        z: 10,
-        text: "5  STARHUSK BAR".to_string(),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 48,
-        y: 57,
-        z: 10,
-        text: "6  ASSET VIEWER".to_string(),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 48,
-        y: 61,
-        z: 10,
-        text: "7  VOXEL SANDBOX".to_string(),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 48,
-        y: 65,
-        z: 10,
-        text: "8  HELIOBOUND ZOMBIES".to_string(),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 48,
-        y: 69,
-        z: 10,
-        text: "9  LIMINAL OFFICE".to_string(),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 48,
-        y: 73,
-        z: 10,
-        text: "0  DRONE GATE RUNNER".to_string(),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 48,
-        y: 77,
-        z: 10,
-        text: "E  ECHOLOCATION".to_string(),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 48,
-        y: 81,
-        z: 10,
-        text: "V  MAP VIEWER".to_string(),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 48,
-        y: 86,
-        z: 10,
-        text: "WASD MOVE   SHIFT BOOST   Q/E ROLL   M MENU".to_string(),
-        style: TextStyle::default(),
-    });
+    for (index, entry) in entries.iter().enumerate() {
+        scene.overlays.push(Overlay {
+            x: 48,
+            y: 37 + index as i32 * 4,
+            z: 10,
+            text: if index == selection {
+                format!("> {entry}")
+            } else {
+                format!("  {entry}")
+            },
+            style: TextStyle::default(),
+        });
+    }
     scene
 }
 
@@ -10251,6 +10346,22 @@ fn set_pixel(frame: &mut [u8], width: usize, height: usize, x: i32, y: i32, colo
 mod tests {
     use super::*;
 
+    fn open_games_menu(app: &mut AppState) {
+        assert_eq!(
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyG), ElementState::Pressed),
+            KeyboardAction::None
+        );
+        assert_eq!(app.mode, AppMode::GamesMenu);
+    }
+
+    fn open_dev_tools_menu(app: &mut AppState) {
+        assert_eq!(
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyD), ElementState::Pressed),
+            KeyboardAction::None
+        );
+        assert_eq!(app.mode, AppMode::DevToolsMenu);
+    }
+
     #[test]
     fn mouse_look_is_roll_relative() {
         let mut camera = Camera::new(Vec3::ZERO).with_roll(std::f32::consts::FRAC_PI_2);
@@ -10865,12 +10976,43 @@ mod tests {
     #[test]
     fn menu_can_start_city_mode() {
         let mut app = AppState::new();
+        open_games_menu(&mut app);
 
         let action =
             app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit2), ElementState::Pressed);
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::CityWalk);
+    }
+
+    #[test]
+    fn menu_arrow_selection_highlights_and_activates_submenu_entries() {
+        let mut app = AppState::new();
+
+        let scene = app.frame(0.0, false);
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text == "> G  GAMES"));
+
+        app.handle_keyboard(
+            &PhysicalKey::Code(KeyCode::ArrowDown),
+            ElementState::Pressed,
+        );
+        assert_eq!(app.menu_selection, 1);
+        assert_eq!(
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Space), ElementState::Pressed),
+            KeyboardAction::None
+        );
+        assert_eq!(app.mode, AppMode::DevToolsMenu);
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::ArrowUp), ElementState::Pressed);
+        assert_eq!(app.menu_selection, 2);
+        assert_eq!(
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Enter), ElementState::Pressed),
+            KeyboardAction::StartScene
+        );
+        assert_eq!(app.mode, AppMode::MapViewer);
     }
 
     #[test]
@@ -10988,6 +11130,7 @@ mod tests {
     #[test]
     fn menu_can_start_city_shooter_mode() {
         let mut app = AppState::new();
+        open_games_menu(&mut app);
 
         let action =
             app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit3), ElementState::Pressed);
@@ -10999,6 +11142,7 @@ mod tests {
     #[test]
     fn menu_can_start_corn_maze_mode() {
         let mut app = AppState::new();
+        open_games_menu(&mut app);
 
         let action =
             app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit4), ElementState::Pressed);
@@ -11010,6 +11154,7 @@ mod tests {
     #[test]
     fn menu_can_start_bar_scene_mode() {
         let mut app = AppState::new();
+        open_games_menu(&mut app);
 
         let action =
             app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit5), ElementState::Pressed);
@@ -11022,9 +11167,10 @@ mod tests {
     #[test]
     fn menu_can_start_asset_viewer_mode() {
         let mut app = AppState::new();
+        open_dev_tools_menu(&mut app);
 
         let action =
-            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit6), ElementState::Pressed);
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit1), ElementState::Pressed);
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::AssetViewer);
@@ -11172,8 +11318,10 @@ mod tests {
     #[test]
     fn menu_can_start_and_leave_map_viewer_mode() {
         let mut app = AppState::new();
+        open_dev_tools_menu(&mut app);
 
-        let action = app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyV), ElementState::Pressed);
+        let action =
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit3), ElementState::Pressed);
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::MapViewer);
@@ -11278,9 +11426,10 @@ mod tests {
     #[test]
     fn menu_can_start_voxel_sandbox_mode() {
         let mut app = AppState::new();
+        open_dev_tools_menu(&mut app);
 
         let action =
-            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit7), ElementState::Pressed);
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit2), ElementState::Pressed);
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::VoxelSandbox);
@@ -11325,9 +11474,10 @@ mod tests {
     #[test]
     fn menu_can_start_zombies_mode() {
         let mut app = AppState::new();
+        open_games_menu(&mut app);
 
         let action =
-            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit8), ElementState::Pressed);
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit6), ElementState::Pressed);
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::Zombies);
@@ -11338,9 +11488,10 @@ mod tests {
     #[test]
     fn menu_can_start_liminal_mode() {
         let mut app = AppState::new();
+        open_games_menu(&mut app);
 
         let action =
-            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit9), ElementState::Pressed);
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit7), ElementState::Pressed);
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::Liminal);
@@ -11351,9 +11502,10 @@ mod tests {
     #[test]
     fn menu_can_start_drone_gate_runner_mode() {
         let mut app = AppState::new_with_drone_course_nonce(0xD00D, false);
+        open_games_menu(&mut app);
 
         let action =
-            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit0), ElementState::Pressed);
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit8), ElementState::Pressed);
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::DroneGateRunner);
@@ -11367,9 +11519,10 @@ mod tests {
     #[test]
     fn drone_gate_runner_menu_selection_reaches_the_render_path() {
         let mut app = AppState::new_with_drone_course_nonce(0xD00D, false);
+        open_games_menu(&mut app);
 
         let action =
-            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit0), ElementState::Pressed);
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit8), ElementState::Pressed);
         let scene = app.frame(1.0 / 60.0, false);
 
         assert_eq!(action, KeyboardAction::StartScene);

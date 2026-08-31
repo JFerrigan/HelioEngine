@@ -1,7 +1,8 @@
 # Maps and the map viewer
 
-Press `V` on the main menu to open the map viewer. It presents canonical,
-freshly generated snapshots of every finite voxel gameplay environment:
+Open `Dev Tools` from the main menu, then select `3` (or use the arrow keys
+and `Enter`/`Space`) to open the map viewer. It presents canonical, freshly
+generated snapshots of every finite voxel gameplay environment:
 
 1. Procedural city
 2. Doomlike arena
