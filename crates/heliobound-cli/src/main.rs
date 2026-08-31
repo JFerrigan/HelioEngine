@@ -5682,6 +5682,9 @@ fn build_doom_map() -> VoxelWorld {
 }
 
 fn build_map_catalog_from(maps: &MapCatalog) -> Vec<PreviewMap> {
+    // These remain live procedural previews intentionally. Corn Maze, Sandbox,
+    // and Drone Gate will migrate only after each exposes a pure seeded
+    // procedural contract; do not replace them with serialized/editor maps.
     let corn_maze = CornMazeState::new();
     let corn_start_camera = corn_maze_start_camera(&corn_maze);
     let sandbox = build_voxel_sandbox_world();

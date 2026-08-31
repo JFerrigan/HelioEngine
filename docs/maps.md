@@ -34,7 +34,9 @@ Finite environments share the in-memory `VoxelWorld` representation from
 Echolocation blueprints are loaded at startup from versioned `*.hbmap.json`
 files in `assets/voxel-maps/`. Bad files are reported independently and do not
 hide other maps. The map viewer labels these entries `hbmap`; Corn Maze,
-Sandbox, and Drone Gate retain their legacy generators for now.
+Sandbox, and Drone Gate retain their legacy generators for now. They are
+deliberately deferred until each has a pure seeded procedural contract, rather
+than being converted into editor-authored map files.
 
 Most remaining maps are generators or stamping functions in Rust. The City
 generator is registered by the core map compiler; the other deferred map

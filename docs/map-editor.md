@@ -12,8 +12,8 @@ overlays.
 The first phase removes the remaining split between legacy builders and map
 files without changing their initial layouts.
 
-1. Migrate City Walk, Corn Maze, Voxel Sandbox, and any fixed Drone Gate
-   course that has a stable initial world.
+1. Migrate only environments with an already-stable authored or seeded source.
+   City Walk is the first such migration.
 2. Represent deterministic environments with registered
    `generator_region` operations rather than serializing their entire voxel
    output. The map records its seed, region, and exact generator parameters.
@@ -23,13 +23,19 @@ files without changing their initial layouts.
 4. Switch game startup and the map viewer to fresh sessions cloned from the
    compiled map. Delete the legacy static builder only after parity and
    gameplay regression tests pass.
-5. Keep Drone Gate procedural while each run intentionally generates a new
-   randomized course. It needs a separate fixed-course design before it can be
-   an authored blueprint.
+5. Keep Corn Maze, Voxel Sandbox, and Drone Gate on their legacy procedural
+   paths for now. Each needs a deliberately designed, pure seeded procedural
+   interface before migration; do not serialize its current generated output
+   or make it an editor-authored blueprint as a shortcut. Drone Gate also
+   intentionally generates a new randomized course every run.
 
 The first increment is City Walk: it is a deterministic core generator with a
 stable seed and is therefore the lowest-risk proof that `generator_region`
 can be authoritative.
+
+Corn Maze, Voxel Sandbox, and Drone Gate are therefore outside the current
+blueprint migration scope. Their future work is procedural-engine design, not
+map-editor work.
 
 ## Phase 2: make map data editor-ready
 
