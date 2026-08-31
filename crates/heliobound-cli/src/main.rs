@@ -54,10 +54,10 @@ const WALK_BOOST_MULTIPLIER: f32 = 2.25;
 const WALK_EYE_HEIGHT: f32 = 3.2;
 const WALK_COLLISION_RADIUS: f32 = 0.34;
 const WALK_GROUND_CONTACT_EPSILON: f32 = 0.08;
-// Five times the former jump height. With 30 u/s² gravity this reaches about
-// 9.2 voxels above the ground, giving the player a clearly readable hop.
-const WALK_JUMP_SPEED: f32 = 23.5;
-const WALK_GRAVITY: f32 = 30.0;
+// A compact, responsive hop: roughly 2.5 voxels high with a ~0.65 second
+// round trip, so it clears low obstacles without floating.
+const WALK_JUMP_SPEED: f32 = 15.5;
+const WALK_GRAVITY: f32 = 48.0;
 const CITY_FIGURE_EYE_HEIGHT: f32 = WALK_EYE_HEIGHT;
 const CITY_FIGURE_SPEED: f32 = 4.0;
 const CITY_FIGURE_GAZE_DISTANCE: f32 = 70.0;
@@ -9881,7 +9881,8 @@ mod tests {
             );
             peak_y = peak_y.max(camera.position.y);
         }
-        assert!(peak_y - WALK_EYE_HEIGHT > 8.0);
+        let jump_height = peak_y - WALK_EYE_HEIGHT;
+        assert!(jump_height > 2.0 && jump_height < 3.0);
         assert_eq!(camera.position.y, WALK_EYE_HEIGHT);
         assert!(!motion.airborne);
     }
