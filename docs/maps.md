@@ -43,10 +43,22 @@ to hide/show dense ceilings, `M` to return to Dev Tools, and Escape to release
 the mouse. Its preview uses the same free-flight inspector camera as Map
 Viewer, but renders the working copy rather than the catalog blueprint.
 
-This first editor phase is inspection-only: geometry, markers, assets,
-validation, save, and playtest are explicitly unavailable. Corn Maze, Voxel
-Sandbox, and Drone Gate remain read-only because they are legacy procedural
-environments rather than compiled `*.hbmap.json` sources.
+Phase 4A was inspection-only: markers, assets, validation, save, and playtest
+remain explicitly unavailable. Corn Maze, Voxel Sandbox, and Drone Gate remain
+read-only because they are legacy procedural environments rather than compiled
+`*.hbmap.json` sources.
+
+Phase 4B enables direct working-copy geometry: `I` ray-picks, `H`/`J`/`K`/`L`
+and `U`/`O` nudge the selected voxel, `[`/`]` choose a named material, and
+`1` through `6` select Inspect, Paint, Erase, Replace, Box Fill, and Box
+Erase. Press `B` to set an inclusive box corner and Enter/Space to apply the
+selected tool. Geometry edits remain in memory, are constrained to map bounds,
+and protect player and unit-scale asset cells; save/validation/playtest are
+still unavailable.
+
+Press `A` in Map Editor to begin an unsaved `Untitled Map`: a 20×20 grass
+ground with a centered player start and editable bounds. It remains in memory
+until the future Save As phase.
 
 ## Current map format
 

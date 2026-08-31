@@ -173,6 +173,22 @@ their procedural read-only status and cannot be selected for editing.
 
 ### Phase 4B: geometry tools
 
+Implementation status: direct geometry editing is available for an opened
+working copy. `I` ray-picks the center-facing voxel; `H`/`J`/`K`/`L` nudge x/z
+selection and `U`/`O` nudge y. `[`/`]` cycle the allowed named materials.
+Choose `1` Inspect, `2` Paint, `3` Erase, `4` Replace, `5` Box Fill, or `6`
+Box Erase; use `B` to set/clear the first box corner and Enter/Space to apply.
+Paint fills only empty direct cells, erase clears direct cells, and replace
+updates occupied direct cells. All edits stay within declared bounds, protect
+the player standing volume and unit-scale asset-owned cells, respect the
+per-box/final-world limits, render immediately, and set the working copy
+dirty. Undo/redo, validation, save, and playtest remain later phases.
+
+Press `A` at any time in Map Editor to create an unsaved `Untitled Map` with a
+20×20 grass ground plane, 17-voxel-high authoring bounds, and a valid centered
+player start. It is immediately editable and visibly dirty; Phase 4D Save As
+will provide the durable filename/ID workflow.
+
 Provide the smallest set that can make a useful room or repair a map.
 
 | Tool | Action | Constraints |
