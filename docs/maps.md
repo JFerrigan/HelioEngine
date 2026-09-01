@@ -37,28 +37,55 @@ terrain rather than a finite voxel map.
 
 `Dev Tools` now also has `4  MAP EDITOR`. It lists valid compiled `hbmap`
 entries in catalog order and opens an isolated, clean `EditableMap` working
-copy. Use Up/Down and Enter/Space to select and open a map, `N`/`P` to cycle
-opened editable maps, `R` to reset the copy to its immutable blueprint, `C`
-to hide/show dense ceilings, `M` to return to Dev Tools, and Escape to release
-the mouse. Its preview uses the same free-flight inspector camera as Map
+copy. Use Up/Down and Enter to select and open a map, `R` to reset the copy
+to its immutable blueprint, `C`
+to hide/show dense ceilings, `M` to return to Dev Tools (confirm `Y`/`N`
+before discarding a dirty copy), and Escape to release the mouse. The map list
+is shown only before a working copy is opened. Its preview uses the same
+free-flight inspector camera as Map
 Viewer, but renders the working copy rather than the catalog blueprint.
+As in Map Viewer, `Space` rises and `Ctrl` drops; Enter opens a map from the
+list or applies the active editor tool. The backtick key (`` ` ``) requests a
+whole-map save.
 
 Phase 4A was inspection-only: markers, assets, validation, save, and playtest
 remain explicitly unavailable. Corn Maze, Voxel Sandbox, and Drone Gate remain
 read-only because they are legacy procedural environments rather than compiled
 `*.hbmap.json` sources.
 
-Phase 4B enables direct working-copy geometry: `I` ray-picks, `H`/`J`/`K`/`L`
-and `U`/`O` nudge the selected voxel, `[`/`]` choose a named material, and
-`1` through `6` select Inspect, Paint, Erase, Replace, Box Fill, and Box
-Erase. Press `B` to set an inclusive box corner and Enter/Space to apply the
-selected tool. Geometry edits remain in memory, are constrained to map bounds,
-and protect player and unit-scale asset cells; save/validation/playtest are
-still unavailable.
+Phase 4B enables direct working-copy geometry: `I` ray-picks; a left click
+selects a new voxel, while clicking the selected voxel again applies the
+active tool;
+arrow keys move the selected voxel one cell forward, backward, left, or right
+relative to the camera view; and `U`/`O` nudge it vertically. `[`/`]` choose a named material, and
+`1` through `8` select Move, Add, Paint, Erase, Replace, Box Fill, Box
+Erase, and Asset; `,`/`.` cycle those tools. Add places a voxel on the face under the
+cursor, Minecraft-style. The active tool appears as a distinct 80×80-pixel,
+bottom-center icon. A compact top-right voxel preview shows
+the material currently under the center reticle. In a box tool, press `B` to set an inclusive box
+corner; the active box is color-highlighted. Enter applies the selected tool. Press backtick (`` ` ``) to save the whole working map; the
+centered prompt requires `Y` to save or `N` to cancel. Geometry edits remain
+in memory until saved, are constrained to map bounds,
+and protect player and unit-scale asset cells; validation remains unavailable.
+Choose the Asset tool with `8`, browse discovered assets with `[`/`]`, then
+click a face (or press Enter) to place its complete colored voxel model. The
+candidate follows the center mouse reticle over map faces as a dim ghost at
+its true authored voxel size; it is not a placeholder map cube. Unit-scale assets retain their
+collision cells, while smaller assets remain visual as defined by the map
+format.
 
-Press `A` in Map Editor to begin an unsaved `Untitled Map`: a 20×20 grass
-ground with a centered player start and editable bounds. It remains in memory
-until the future Save As phase.
+Press `F9` to test the current working world without saving it. The centered
+picker asks for `1` Explorer, `2` Flight, or `3` Shooter before opening the
+preview; `M` returns to the same editor copy. Explorer uses grounded `WASD`
+movement and `Space` to jump; Flight uses free `WASD` flight with `Space`/`Ctrl`
+for vertical movement; Shooter uses grounded movement plus a visible weapon
+and fires with a left click. The preview is explicitly labelled **UNSAVED
+EDITOR PREVIEW**.
+
+Press `X` from the unopened Map Editor list to begin an unsaved `Untitled
+Map`: a 20×20 grass ground with a centered player start and editable bounds.
+After confirmation, saving adds it to the Map Editor and Map Viewer catalogs
+immediately; `X` is blocked while a working copy is already open.
 
 ## Current map format
 

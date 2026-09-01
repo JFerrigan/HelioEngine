@@ -142,7 +142,7 @@ than growing without bound.
 Build the editor as a new Dev Tools menu entry, reusing Map Viewer catalog
 selection, camera, rendering, asset discovery, and diagnostic presentation.
 
-- Show only valid compiled `hbmap` files as editable; show source path, mode,
+- Show only valid compiled `hbmap` files as editable; show the stable ID,
   bounds, asset count, marker count, static voxel count, and catalog errors.
 - Load via `CompiledMap::editable` into an independent working copy. Starting,
   restarting, or returning to the viewer must always use the untouched compiled
@@ -163,37 +163,64 @@ Implementation status: the Phase 4A shell is available from `Dev Tools` as
 `4  MAP EDITOR`. It lists valid compiled `hbmap` maps in catalog order,
 creates a clean `EditableMap` only when a map is opened, and renders that
 working copy through the Map Viewer free-flight/ceiling-inspection path. Use
-Up/Down then Enter/Space to open, `N`/`P` to cycle opened maps, `R` to reset to
-source, `C` to show/hide ceilings, `M` to return to Dev Tools, and Escape to
-release mouse capture. Geometry, marker, asset, validation, save, and
+Up/Down then Enter to open, `R` to reset to source, `C` to show/hide ceilings,
+`M` to return to Dev Tools (confirm `Y`/`N`
+before discarding a dirty copy), and Escape to release mouse capture. The map
+list is shown only before a working copy is opened. Geometry, marker, asset, validation, save, and
 playtest tools remain intentionally unavailable; the clean-only state still
 reserves dirty, active-panel, selected-ID, and confirmation boundaries for
 later phases. Corn Maze, Voxel Sandbox, and Drone Gate are displayed with
 their procedural read-only status and cannot be selected for editing.
 
+The free-flight controls retain `Space` for rise and `Ctrl` for drop; Enter
+opens a listed map or applies the active edit tool. The backtick key (`` ` ``)
+requests a whole-map save and opens a confirmation prompt.
+
 ### Phase 4B: geometry tools
 
 Implementation status: direct geometry editing is available for an opened
-working copy. `I` ray-picks the center-facing voxel; `H`/`J`/`K`/`L` nudge x/z
-selection and `U`/`O` nudge y. `[`/`]` cycle the allowed named materials.
-Choose `1` Inspect, `2` Paint, `3` Erase, `4` Replace, `5` Box Fill, or `6`
-Box Erase; use `B` to set/clear the first box corner and Enter/Space to apply.
+working copy. `I` ray-picks the center-facing voxel; a left click selects a
+new voxel and clicking the selected voxel again applies the active tool; arrow
+keys move the selected voxel one cell forward, backward, left, or right
+relative to the horizontal camera view, and `U`/`O` nudge y. `[`/`]` cycle the allowed named materials, or browse assets when the Asset tool is active.
+Choose `1` Move, `2` Add, `3` Paint, `4` Erase, `5` Replace, `6` Box Fill,
+`7` Box Erase, or `8` Asset; `,`/`.` cycle the same tools. The Asset ghost follows the live center cursor ray and a click drops it on the targeted face. Add places the active material on
+the ray-hit face immediately, Minecraft-style. The active tool has a distinct
+80×80-pixel icon at the bottom center, and a compact
+top-right preview shows the material under the center reticle. While a box tool is active,
+use `B` to set/clear the first box corner; the inclusive box is
+color-highlighted until applied. Enter applies the tool.
+Backtick (`` ` ``) requests a save of the complete working map; a
+centered confirmation prompt requires `Y` to save or `N` to cancel.
 Paint fills only empty direct cells, erase clears direct cells, and replace
 updates occupied direct cells. All edits stay within declared bounds, protect
 the player standing volume and unit-scale asset-owned cells, respect the
 per-box/final-world limits, render immediately, and set the working copy
-dirty. Undo/redo, validation, save, and playtest remain later phases.
+dirty. Undo/redo and validation remain later phases.
 
-Press `A` at any time in Map Editor to create an unsaved `Untitled Map` with a
-20×20 grass ground plane, 17-voxel-high authoring bounds, and a valid centered
-player start. It is immediately editable and visibly dirty; Phase 4D Save As
-will provide the durable filename/ID workflow.
+`F9` opens a centered playtest-mode picker for the current in-memory working
+world: `1` Explorer, `2` Flight, or `3` Shooter. It does not save or update
+the catalog; its HUD is labelled **UNSAVED EDITOR PREVIEW**, and `M` returns to
+the same editor copy. Explorer has grounded `WASD` movement and `Space` to
+jump; Flight uses `WASD` plus `Space`/`Ctrl` for free vertical movement; and
+Shooter has the grounded controls, a visible viewmodel weapon, and left-click
+firing. Editor maps do not yet author encounters, so Shooter supplies the
+weapon and firing presentation without importing another map's enemies.
+
+Press `X` from the unopened Map Editor list to create an unsaved `Untitled
+Map` with a 20×20 grass ground plane, 17-voxel-high authoring bounds, and a
+valid centered player start. It is immediately editable and visibly dirty;
+while a working copy is open, `X` is refused rather than replacing it. Phase
+4D Save As will provide the durable filename/ID workflow. Once confirmed,
+saving adds the compiled map to the Map Editor and Map Viewer catalogs without
+requiring a restart.
 
 Provide the smallest set that can make a useful room or repair a map.
 
 | Tool | Action | Constraints |
 | --- | --- | --- |
-| Inspect | Ray-pick and report occupied/empty cell, material, asset ownership, and markers at the cell. | Never mutates. |
+| Move | Position the selected voxel with ray-pick or view-relative arrow keys. | Never mutates. |
+| Add | Place the active material in the empty cell adjoining a ray-hit face. | Refuse outside bounds, player volume, or asset-owned cells. |
 | Paint | Fill one selected empty/direct cell with the active material. | Refuse outside bounds, player volume, or asset-owned cells. |
 | Erase | Clear one selected direct cell. | Refuse partial asset erasure; warn when it removes required door/marker support geometry. |
 | Replace | Change a selected direct cell from one material to the active material. | One undoable command. |
@@ -209,7 +236,7 @@ re-compile after every individual cell edit; a full compiler validation occurs
 on demand and before saving.
 
 Picking uses the same DDA world ray as rendering. A face normal determines the
-default target: Paint selects the neighboring empty cell and Erase/Replace
+default target: Add selects the neighboring empty cell and Erase/Replace
 selects the hit solid cell. If the ray misses, keyboard coordinate entry and
 selection-box endpoints remain usable.
 

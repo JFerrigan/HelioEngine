@@ -1,9 +1,10 @@
 # Voxel Assets
 
 Heliobound supports drop-in, mixed-resolution voxel assets for the asset
-viewer. Imported assets are currently visual resources only: they are not
-placed in gameplay maps and do not participate in movement collision or
-echolocation.
+viewer and Map Editor. Imported assets can be placed into authored maps using
+their real voxel silhouette and palette; they are not represented by a generic
+map cube. Unit-scale assets participate in map collision, while smaller assets
+remain visual-only until a finer collision model is introduced.
 
 ## Add an asset
 
@@ -17,6 +18,9 @@ echolocation.
    until the next launch.
 4. Open `Dev Tools` from the main menu, then select `1` to open the asset
    viewer. Use `N` and `P` to browse assets and `M` to return to the menu.
+   In Map Editor, select tool `8`, browse the discovered assets with `[`/`]`,
+   and click a voxel face or press Enter to place the dim model preview. The
+   preview follows the center mouse reticle until it is dropped.
 
 Valid imported assets appear after the built-in catalog in deterministic
 filename order. The viewer shows each asset's voxel scale, physical dimensions,

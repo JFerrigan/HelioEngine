@@ -1,4 +1,4 @@
-use crate::scene::{Layer, Overlay, Scene, SceneCell, TextStyle, Viewport};
+use crate::scene::{Layer, Overlay, RenderVoxel, Scene, SceneCell, TextStyle, Viewport};
 use heliobound_core::{
     Camera, PlanetHit, PlanetTerrainClass, ProceduralPlanet, Ray, Vec3, VoxelBounds, VoxelCell,
     VoxelCoord, VoxelMaterial, VoxelWorld,
@@ -175,6 +175,19 @@ impl SceneBuilder {
         self.build_with_visibility(world, camera, tick, |_| true)
     }
 
+    /// Renders ordinary map voxels together with mixed-resolution asset
+    /// voxels. The latter are tested directly as AABBs, preserving their
+    /// authored size instead of rounding them into map-sized cubes.
+    pub fn build_with_render_voxels(
+        &self,
+        world: &VoxelWorld,
+        render_voxels: &[RenderVoxel],
+        camera: &Camera,
+        tick: u64,
+    ) -> Scene {
+        self.build_with_visibility_and_render_voxels(world, render_voxels, camera, tick, |_| true)
+    }
+
     /// Builds against the complete voxel world while allowing a caller to hide
     /// individual hit faces. Hidden hits remain blank occluders, so geometry
     /// behind them cannot leak into view.
@@ -182,7 +195,18 @@ impl SceneBuilder {
         &self,
         world: &VoxelWorld,
         camera: &Camera,
-        tick: u64,
+        _tick: u64,
+        is_visible: impl Fn(VoxelHit) -> bool,
+    ) -> Scene {
+        self.build_with_visibility_and_render_voxels(world, &[], camera, _tick, is_visible)
+    }
+
+    fn build_with_visibility_and_render_voxels(
+        &self,
+        world: &VoxelWorld,
+        render_voxels: &[RenderVoxel],
+        camera: &Camera,
+        _tick: u64,
         is_visible: impl Fn(VoxelHit) -> bool,
     ) -> Scene {
         let mut scene = Scene::new(self.config.viewport);
@@ -209,11 +233,19 @@ impl SceneBuilder {
                     glyph: background_glyph_for_direction(ray.direction),
                     style: TextStyle::default(),
                 });
-                if let Some(hit) = raycast(
+                let world_hit = raycast(
                     world,
                     ray,
                     self.config.max_distance.min(camera.max_distance),
-                ) {
+                );
+                let asset_hit = raycast_render_voxels(
+                    render_voxels,
+                    ray,
+                    self.config.max_distance.min(camera.max_distance),
+                );
+                if let Some(hit) = world_hit
+                    .filter(|hit| asset_hit.is_none_or(|asset| hit.distance <= asset.distance))
+                {
                     let visible = is_visible(hit);
                     voxels.cells.push(SceneCell {
                         x: x as i32,
@@ -229,6 +261,21 @@ impl SceneBuilder {
                             TextStyle::default()
                         },
                     });
+                } else if let Some(hit) = asset_hit {
+                    let mut style = self.materials.style_for_material(hit.material, hit.normal);
+                    if hit.ghost {
+                        style.fg = style.fg.map(|color| dim_hex_color(&color));
+                    }
+                    voxels.cells.push(SceneCell {
+                        x: x as i32,
+                        y: y as i32,
+                        glyph: self.materials.glyph_for_material(
+                            hit.material,
+                            hit.normal,
+                            hit.distance,
+                        ),
+                        style,
+                    });
                 }
             }
         }
@@ -240,10 +287,8 @@ impl SceneBuilder {
             y: height - 3,
             z: 100,
             text: format!(
-                "HELIOBOUND  tick {}  voxels {}  chunks {}  camera {:.1},{:.1},{:.1}",
-                tick,
+                "voxels {}  camera {:.1},{:.1},{:.1}",
                 world.voxel_count(),
-                world.chunk_count(),
                 camera.position.x,
                 camera.position.y,
                 camera.position.z
@@ -254,7 +299,7 @@ impl SceneBuilder {
         scene
     }
 
-    pub fn build_planet(&self, planet: &ProceduralPlanet, camera: &Camera, tick: u64) -> Scene {
+    pub fn build_planet(&self, planet: &ProceduralPlanet, camera: &Camera, _tick: u64) -> Scene {
         let mut scene = Scene::new(self.config.viewport);
         let height = self.config.viewport.height as i32;
 
@@ -299,8 +344,7 @@ impl SceneBuilder {
             y: height - 3,
             z: 100,
             text: format!(
-                "HELIOBOUND  tick {}  planet radius {:.0}  camera {:.0},{:.0},{:.0}  roll {:.1}",
-                tick,
+                "planet radius {:.0}  camera {:.0},{:.0},{:.0}  roll {:.1}",
                 planet.radius(),
                 camera.position.x,
                 camera.position.y,
@@ -312,6 +356,96 @@ impl SceneBuilder {
 
         scene
     }
+}
+
+#[derive(Clone, Copy)]
+struct RenderVoxelHit {
+    material: VoxelMaterial,
+    distance: f32,
+    normal: Vec3,
+    ghost: bool,
+}
+
+fn raycast_render_voxels(
+    voxels: &[RenderVoxel],
+    ray: Ray,
+    max_distance: f32,
+) -> Option<RenderVoxelHit> {
+    voxels
+        .iter()
+        .filter_map(|voxel| {
+            let (distance, normal) = intersect_render_voxel(*voxel, ray, max_distance)?;
+            Some(RenderVoxelHit {
+                material: voxel.material,
+                distance,
+                normal,
+                ghost: voxel.ghost,
+            })
+        })
+        .min_by(|a, b| a.distance.total_cmp(&b.distance))
+}
+
+fn intersect_render_voxel(voxel: RenderVoxel, ray: Ray, max_distance: f32) -> Option<(f32, Vec3)> {
+    let mut enter = f32::NEG_INFINITY;
+    let mut exit = f32::INFINITY;
+    let mut normal = Vec3::ZERO;
+    for (origin, direction, min, max, enter_normal) in [
+        (
+            ray.origin.x,
+            ray.direction.x,
+            voxel.min.x,
+            voxel.max.x,
+            Vec3::new(-1.0, 0.0, 0.0),
+        ),
+        (
+            ray.origin.y,
+            ray.direction.y,
+            voxel.min.y,
+            voxel.max.y,
+            Vec3::new(0.0, -1.0, 0.0),
+        ),
+        (
+            ray.origin.z,
+            ray.direction.z,
+            voxel.min.z,
+            voxel.max.z,
+            Vec3::new(0.0, 0.0, -1.0),
+        ),
+    ] {
+        if direction.abs() <= f32::EPSILON {
+            if origin < min || origin > max {
+                return None;
+            }
+            continue;
+        }
+        let mut near = (min - origin) / direction;
+        let mut far = (max - origin) / direction;
+        let mut axis_normal = enter_normal;
+        if near > far {
+            std::mem::swap(&mut near, &mut far);
+            axis_normal = axis_normal * -1.0;
+        }
+        if near > enter {
+            enter = near;
+            normal = axis_normal;
+        }
+        exit = exit.min(far);
+        if enter > exit {
+            return None;
+        }
+    }
+    let distance = if enter >= 0.0 { enter } else { exit };
+    (distance >= 0.0 && distance <= max_distance).then_some((distance, normal))
+}
+
+fn dim_hex_color(color: &str) -> String {
+    let channel = |offset| u8::from_str_radix(&color[offset..offset + 2], 16).unwrap_or(128);
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        channel(1) / 2,
+        channel(3) / 2,
+        channel(5) / 2
+    )
 }
 
 #[derive(Clone, Copy, Debug)]

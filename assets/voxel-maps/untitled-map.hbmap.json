@@ -1,0 +1,466 @@
+{
+  "format_version": 1,
+  "id": "untitled-map",
+  "name": "Untitled Map",
+  "mode": "bar",
+  "category": "authored",
+  "bounds": {
+    "min": [
+      -10,
+      0,
+      -10
+    ],
+    "max": [
+      9,
+      16,
+      9
+    ]
+  },
+  "player_start": {
+    "id": "player-start",
+    "kind": "player_spawn",
+    "position": [
+      0.5,
+      1.7000000476837158,
+      0.5
+    ],
+    "yaw_degrees": 180
+  },
+  "operations": [
+    {
+      "kind": "fill_box",
+      "material": "Grass",
+      "max": [
+        9,
+        0,
+        -1
+      ],
+      "min": [
+        -10,
+        0,
+        -10
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Grass",
+      "max": [
+        -4,
+        0,
+        9
+      ],
+      "min": [
+        -10,
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Regolith",
+      "max": [
+        4,
+        3,
+        7
+      ],
+      "min": [
+        -7,
+        1,
+        2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Regolith",
+      "max": [
+        -1,
+        0,
+        1
+      ],
+      "min": [
+        -3,
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Grass",
+      "max": [
+        9,
+        0,
+        9
+      ],
+      "min": [
+        -3,
+        0,
+        2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Regolith",
+      "max": [
+        -3,
+        1,
+        -6
+      ],
+      "min": [
+        -3,
+        1,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Regolith",
+      "max": [
+        -1,
+        1,
+        -4
+      ],
+      "min": [
+        -3,
+        1,
+        -4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Regolith",
+      "max": [
+        -3,
+        1,
+        0
+      ],
+      "min": [
+        -3,
+        1,
+        0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Regolith",
+      "max": [
+        -1,
+        1,
+        -3
+      ],
+      "min": [
+        -2,
+        1,
+        -3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Regolith",
+      "max": [
+        -2,
+        1,
+        -1
+      ],
+      "min": [
+        -2,
+        1,
+        -2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Grass",
+      "max": [
+        9,
+        0,
+        1
+      ],
+      "min": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        1,
+        1,
+        -6
+      ],
+      "min": [
+        0,
+        1,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "SiliconLife",
+      "max": [
+        3,
+        1,
+        -9
+      ],
+      "min": [
+        2,
+        1,
+        -9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        3,
+        1,
+        -1
+      ],
+      "min": [
+        2,
+        1,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        4,
+        1,
+        -6
+      ],
+      "min": [
+        3,
+        1,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "ShipHull",
+      "max": [
+        3,
+        1,
+        -2
+      ],
+      "min": [
+        3,
+        1,
+        -3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        4,
+        1,
+        1
+      ],
+      "min": [
+        4,
+        1,
+        1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "CarbonLife",
+      "max": [
+        5,
+        1,
+        -8
+      ],
+      "min": [
+        5,
+        1,
+        -9
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Regolith",
+      "max": [
+        5,
+        2,
+        -5
+      ],
+      "min": [
+        5,
+        1,
+        -5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "SignalPipe",
+      "max": [
+        5,
+        1,
+        -3
+      ],
+      "min": [
+        5,
+        1,
+        -4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Zombie",
+      "max": [
+        6,
+        1,
+        -8
+      ],
+      "min": [
+        6,
+        1,
+        -8
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Zombie",
+      "max": [
+        6,
+        1,
+        -6
+      ],
+      "min": [
+        6,
+        1,
+        -6
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "PressurePlate",
+      "max": [
+        6,
+        1,
+        -4
+      ],
+      "min": [
+        6,
+        1,
+        -5
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "SignalPipe",
+      "max": [
+        6,
+        1,
+        -2
+      ],
+      "min": [
+        6,
+        1,
+        -3
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Habitat",
+      "max": [
+        6,
+        1,
+        2
+      ],
+      "min": [
+        6,
+        1,
+        2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "SignalPipe",
+      "max": [
+        7,
+        1,
+        -4
+      ],
+      "min": [
+        7,
+        1,
+        -4
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Gate",
+      "max": [
+        7,
+        1,
+        -2
+      ],
+      "min": [
+        7,
+        1,
+        -2
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Receiver",
+      "max": [
+        8,
+        1,
+        -1
+      ],
+      "min": [
+        7,
+        1,
+        -1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Glass",
+      "max": [
+        8,
+        1,
+        1
+      ],
+      "min": [
+        7,
+        1,
+        1
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Receiver",
+      "max": [
+        8,
+        1,
+        0
+      ],
+      "min": [
+        8,
+        1,
+        0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Regolith",
+      "max": [
+        9,
+        1,
+        -8
+      ],
+      "min": [
+        9,
+        1,
+        -8
+      ]
+    }
+  ],
+  "markers": []
+}

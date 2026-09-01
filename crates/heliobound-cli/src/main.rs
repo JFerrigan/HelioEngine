@@ -2,22 +2,22 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 use heliobound_audio::{EcholocationInterference, GameAudio, SoundEffect};
 use heliobound_core::{
-    AssetCatalog, Camera, CompiledMap, EditableMap, MapCatalog, MapMarker, MapMetadata,
+    export_map, AssetCatalog, Camera, CompiledMap, EditableMap, MapCatalog, MapMarker, MapMetadata,
     PlanetConfig, ProceduralPlanet, Ray, Vec3, VoxelBounds, VoxelCell, VoxelCoord, VoxelMaterial,
     VoxelWorld,
 };
 #[cfg(test)]
 use heliobound_core::{DoomMapConfig, DoomMapGenerator};
 use heliobound_gfx::{
-    raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay, Scene, SceneBuilder, SceneCell,
-    TextStyle, Viewport,
+    raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay, PixelSprite, RenderVoxel, Scene,
+    SceneBuilder, SceneCell, TextStyle, Viewport,
 };
 use pixels::{PixelsBuilder, SurfaceTexture};
 use serde::Deserialize;
@@ -361,7 +361,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         play_audio_events(&mut audio, app.drain_audio_events());
                     } else if state == ElementState::Pressed && !app.mode.is_menu() {
                         mouse_captured = set_mouse_captured(&window, true);
-                        if mouse_captured && app.mode == AppMode::EchoLocation {
+                        if mouse_captured
+                            && matches!(app.mode, AppMode::EchoLocation | AppMode::MapEditor)
+                        {
                             app.handle_mouse_button(button, state);
                         }
                     }
@@ -456,6 +458,7 @@ enum AppMode {
     AssetViewer,
     MapViewer,
     MapEditor,
+    MapPlaytest,
     VoxelSandbox,
     Zombies,
     Liminal,
@@ -493,6 +496,7 @@ struct AppState {
     asset_viewer: AssetViewerState,
     map_viewer: Option<MapViewerState>,
     map_editor: Option<MapEditorState>,
+    map_playtest: Option<MapPlaytestState>,
     sandbox: VoxelSandboxState,
     /// Immutable Zombies geometry; doors and purchased-weapon visuals are
     /// layered onto a fresh clone each frame.
@@ -549,6 +553,7 @@ impl AppState {
             asset_viewer: AssetViewerState::new(),
             map_viewer: None,
             map_editor: None,
+            map_playtest: None,
             sandbox: VoxelSandboxState::new(),
             zombies_map: zombies_blueprint.clone(),
             zombies_blueprint,
@@ -755,6 +760,13 @@ impl AppState {
                     }
                 }
                 (AppMode::MapEditor, PhysicalKey::Code(KeyCode::KeyM)) => {
+                    let editor = self
+                        .map_editor
+                        .as_mut()
+                        .expect("map editor mode requires editor state");
+                    if editor.request_leave() {
+                        return KeyboardAction::None;
+                    }
                     return KeyboardAction::EnterDevToolsMenu;
                 }
                 (AppMode::MapEditor, PhysicalKey::Code(KeyCode::Escape)) => {
@@ -765,6 +777,44 @@ impl AppState {
                         .map_editor
                         .as_mut()
                         .expect("map editor mode requires editor state");
+                    match editor.pending_confirmation {
+                        Some("save") => match key {
+                            PhysicalKey::Code(KeyCode::KeyY) => {
+                                let saved = editor.confirm_save();
+                                if saved {
+                                    self.refresh_map_catalog();
+                                }
+                                return KeyboardAction::None;
+                            }
+                            PhysicalKey::Code(KeyCode::KeyN) => {
+                                editor.cancel_save();
+                                return KeyboardAction::None;
+                            }
+                            _ => return KeyboardAction::None,
+                        },
+                        Some("leave") => match key {
+                            PhysicalKey::Code(KeyCode::KeyY) => {
+                                return KeyboardAction::EnterDevToolsMenu;
+                            }
+                            PhysicalKey::Code(KeyCode::KeyN) => {
+                                editor.cancel_leave();
+                                return KeyboardAction::None;
+                            }
+                            _ => return KeyboardAction::None,
+                        },
+                        Some("playtest") => {
+                            if matches!(key, PhysicalKey::Code(KeyCode::KeyN | KeyCode::Escape)) {
+                                editor.cancel_playtest();
+                                return KeyboardAction::None;
+                            }
+                            if let Some(mode) = editor.choose_playtest(key) {
+                                self.start_map_playtest(mode);
+                                return KeyboardAction::StartScene;
+                            }
+                            return KeyboardAction::None;
+                        }
+                        _ => {}
+                    }
                     if editor.working.is_none() {
                         if let Some(index) = asset_digit_index(key) {
                             editor.select(index);
@@ -800,8 +850,14 @@ impl AppState {
                             editor.ray_pick();
                             return KeyboardAction::None;
                         }
-                        PhysicalKey::Code(KeyCode::KeyA) => {
-                            editor.create_new_map();
+                        PhysicalKey::Code(KeyCode::KeyX) => {
+                            if editor.working.is_none() {
+                                editor.create_new_map();
+                            } else {
+                                editor.inspection =
+                                    "X new-map is only available from the unopened editor list."
+                                        .into();
+                            }
                             self.camera = editor.camera();
                             return KeyboardAction::None;
                         }
@@ -809,70 +865,112 @@ impl AppState {
                             editor.toggle_box_anchor();
                             return KeyboardAction::None;
                         }
+                        PhysicalKey::Code(KeyCode::Backquote) => {
+                            editor.request_save();
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::F9) => {
+                            editor.request_playtest();
+                            return KeyboardAction::None;
+                        }
                         PhysicalKey::Code(KeyCode::BracketLeft) => {
-                            editor.cycle_material(-1);
+                            if editor.tool == MapEditorTool::Asset {
+                                editor.cycle_asset(-1);
+                            } else {
+                                editor.cycle_material(-1);
+                            }
                             return KeyboardAction::None;
                         }
                         PhysicalKey::Code(KeyCode::BracketRight) => {
-                            editor.cycle_material(1);
+                            if editor.tool == MapEditorTool::Asset {
+                                editor.cycle_asset(1);
+                            } else {
+                                editor.cycle_material(1);
+                            }
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::Comma) if editor.working.is_some() => {
+                            editor.cycle_tool(-1);
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::Period) if editor.working.is_some() => {
+                            editor.cycle_tool(1);
                             return KeyboardAction::None;
                         }
                         PhysicalKey::Code(KeyCode::Digit1) if editor.working.is_some() => {
-                            editor.select_tool(MapEditorTool::Inspect);
+                            editor.select_tool(MapEditorTool::Move);
                             return KeyboardAction::None;
                         }
                         PhysicalKey::Code(KeyCode::Digit2) if editor.working.is_some() => {
-                            editor.select_tool(MapEditorTool::Paint);
+                            editor.select_tool(MapEditorTool::Add);
                             return KeyboardAction::None;
                         }
                         PhysicalKey::Code(KeyCode::Digit3) if editor.working.is_some() => {
-                            editor.select_tool(MapEditorTool::Erase);
+                            editor.select_tool(MapEditorTool::Paint);
                             return KeyboardAction::None;
                         }
                         PhysicalKey::Code(KeyCode::Digit4) if editor.working.is_some() => {
-                            editor.select_tool(MapEditorTool::Replace);
+                            editor.select_tool(MapEditorTool::Erase);
                             return KeyboardAction::None;
                         }
                         PhysicalKey::Code(KeyCode::Digit5) if editor.working.is_some() => {
-                            editor.select_tool(MapEditorTool::BoxFill);
+                            editor.select_tool(MapEditorTool::Replace);
                             return KeyboardAction::None;
                         }
                         PhysicalKey::Code(KeyCode::Digit6) if editor.working.is_some() => {
+                            editor.select_tool(MapEditorTool::BoxFill);
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::Digit7) if editor.working.is_some() => {
                             editor.select_tool(MapEditorTool::BoxErase);
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::Digit8) if editor.working.is_some() => {
+                            editor.select_tool(MapEditorTool::Asset);
                             return KeyboardAction::None;
                         }
                         _ => {}
                     }
                     match key {
                         PhysicalKey::Code(KeyCode::ArrowDown) => {
-                            if editor.working.is_none() {
+                            if editor.working.is_some() {
+                                editor.nudge_selection_relative_to_view(
+                                    MapEditorSelectionDirection::Backward,
+                                );
+                            } else {
                                 editor.select_next();
                             }
                             return KeyboardAction::None;
                         }
                         PhysicalKey::Code(KeyCode::ArrowUp) => {
-                            if editor.working.is_none() {
+                            if editor.working.is_some() {
+                                editor.nudge_selection_relative_to_view(
+                                    MapEditorSelectionDirection::Forward,
+                                );
+                            } else {
                                 editor.select_previous();
                             }
                             return KeyboardAction::None;
                         }
-                        PhysicalKey::Code(KeyCode::Enter | KeyCode::Space) => {
+                        PhysicalKey::Code(KeyCode::ArrowLeft) if editor.working.is_some() => {
+                            editor.nudge_selection_relative_to_view(
+                                MapEditorSelectionDirection::Left,
+                            );
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowRight) if editor.working.is_some() => {
+                            editor.nudge_selection_relative_to_view(
+                                MapEditorSelectionDirection::Right,
+                            );
+                            return KeyboardAction::None;
+                        }
+                        PhysicalKey::Code(KeyCode::Enter) => {
                             if editor.working.is_some() {
                                 editor.apply_tool();
                             } else {
                                 editor.open_selected();
+                                self.camera = editor.camera();
                             }
-                            self.camera = editor.camera();
-                            return KeyboardAction::None;
-                        }
-                        PhysicalKey::Code(KeyCode::KeyN) | PhysicalKey::Code(KeyCode::Period) => {
-                            editor.open_next();
-                            self.camera = editor.camera();
-                            return KeyboardAction::None;
-                        }
-                        PhysicalKey::Code(KeyCode::KeyP) | PhysicalKey::Code(KeyCode::Comma) => {
-                            editor.open_previous();
-                            self.camera = editor.camera();
                             return KeyboardAction::None;
                         }
                         PhysicalKey::Code(KeyCode::KeyR) => {
@@ -889,6 +987,13 @@ impl AppState {
                 }
                 (AppMode::VoxelSandbox, PhysicalKey::Code(KeyCode::KeyM)) => {
                     return KeyboardAction::EnterMenu;
+                }
+                (AppMode::MapPlaytest, PhysicalKey::Code(KeyCode::KeyM)) => {
+                    self.leave_map_playtest();
+                    return KeyboardAction::None;
+                }
+                (AppMode::MapPlaytest, PhysicalKey::Code(KeyCode::Escape)) => {
+                    return KeyboardAction::ReleaseMouse;
                 }
                 (AppMode::VoxelSandbox, PhysicalKey::Code(KeyCode::Escape)) => {
                     return KeyboardAction::ReleaseMouse;
@@ -1161,6 +1266,62 @@ impl AppState {
         self.input = PlayerInput::default();
     }
 
+    fn start_map_playtest(&mut self, mode: MapPlaytestMode) {
+        let editor = self
+            .map_editor
+            .as_ref()
+            .expect("map playtest requires an editor state");
+        let working = editor
+            .working
+            .as_ref()
+            .expect("map playtest requires an opened working copy");
+        let requested_camera = match working.player_start {
+            MapMarker::PlayerSpawn {
+                position,
+                yaw_degrees,
+                ..
+            } => Camera::new(position).looking_at((yaw_degrees as f32).to_radians(), 0.0),
+            _ => unreachable!("editable maps always have a player spawn"),
+        };
+        let camera =
+            map_playtest_start_camera(requested_camera, &working.world, working.metadata.bounds);
+        self.map_playtest = Some(MapPlaytestState {
+            world: working.world.clone(),
+            mode,
+            return_camera: editor.camera,
+            // Editor maps do not yet author encounter markers. Keep the
+            // shooter focused on first-person controls and its weapon rather
+            // than importing Doom's unrelated enemy roster.
+            shooter: ShooterState::empty(),
+            viewmodel_bob: ViewmodelBob::default(),
+        });
+        self.mode = AppMode::MapPlaytest;
+        self.camera = camera;
+        self.input = PlayerInput::default();
+        self.walk_motion = WalkMotion::default();
+    }
+
+    fn leave_map_playtest(&mut self) {
+        let playtest = self
+            .map_playtest
+            .take()
+            .expect("map playtest mode requires playtest state");
+        self.mode = AppMode::MapEditor;
+        self.camera = playtest.return_camera;
+        self.input = PlayerInput::default();
+        self.walk_motion = WalkMotion::default();
+    }
+
+    /// Saving an editor map is the one runtime path that adds a map file.
+    /// Re-discover immediately so returning to the editor list (or Map Viewer)
+    /// shows the new compiled blueprint without an application restart.
+    fn refresh_map_catalog(&mut self) {
+        let Some(directory) = map_directory() else {
+            return;
+        };
+        self.map_catalog = MapCatalog::discover(directory, &self.asset_catalog);
+    }
+
     fn start_voxel_sandbox(&mut self) {
         self.mode = AppMode::VoxelSandbox;
         self.sandbox = VoxelSandboxState::new();
@@ -1343,10 +1504,64 @@ impl AppState {
                     .expect("map editor mode requires editor state");
                 editor.update(&self.input, dt);
                 self.camera = editor.camera();
-                let mut scene =
-                    self.map_builder
-                        .build(editor.render_world(), &self.camera, self.tick);
+                let render_world = editor.highlighted_render_world();
+                let render_assets = editor.render_asset_voxels();
+                let mut scene = self.map_builder.build_with_render_voxels(
+                    &render_world,
+                    &render_assets,
+                    &self.camera,
+                    self.tick,
+                );
                 render_map_editor_scene(&mut scene, editor, mouse_captured);
+                scene
+            }
+            AppMode::MapPlaytest => {
+                let playtest = self
+                    .map_playtest
+                    .as_mut()
+                    .expect("map playtest mode requires playtest state");
+                match playtest.mode {
+                    MapPlaytestMode::Flight => {
+                        update_flight_camera(&mut self.camera, &self.input, dt);
+                    }
+                    MapPlaytestMode::Explorer => update_jumping_walking_camera(
+                        &mut self.camera,
+                        &mut self.input,
+                        &mut self.walk_motion,
+                        &playtest.world,
+                        STANDARD_WALK_PROFILE,
+                        dt,
+                    ),
+                    MapPlaytestMode::Shooter => {
+                        let before_move = self.camera.position;
+                        update_jumping_walking_camera(
+                            &mut self.camera,
+                            &mut self.input,
+                            &mut self.walk_motion,
+                            &playtest.world,
+                            STANDARD_WALK_PROFILE,
+                            dt,
+                        );
+                        playtest.viewmodel_bob.update(
+                            horizontal_distance(before_move, self.camera.position),
+                            moving_on_ground(&self.input),
+                            dt,
+                        );
+                        playtest.shooter.update_effects(dt);
+                    }
+                }
+                let mut scene = self
+                    .city_builder
+                    .build(&playtest.world, &self.camera, self.tick);
+                render_map_playtest_scene(&mut scene, playtest, mouse_captured);
+                if playtest.mode == MapPlaytestMode::Shooter {
+                    render_map_playtest_shooter_scene(
+                        &mut scene,
+                        &self.camera,
+                        playtest,
+                        &self.weapon_asset,
+                    );
+                }
                 scene
             }
             AppMode::VoxelSandbox => {
@@ -1500,6 +1715,9 @@ impl AppState {
             | AppMode::EchoLocation => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped)
             }
+            AppMode::MapPlaytest => {
+                apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped)
+            }
             AppMode::AssetViewer => self.asset_viewer.rotate_with_mouse(delta_x, delta_y),
             AppMode::MapViewer => {
                 let viewer = self
@@ -1524,6 +1742,14 @@ impl AppState {
         match (self.mode, button, state) {
             (AppMode::CityShooter, MouseButton::Left, ElementState::Pressed) => self.fire_weapon(),
             (AppMode::Zombies, MouseButton::Left, ElementState::Pressed) => self.fire_weapon(),
+            (AppMode::MapPlaytest, MouseButton::Left, ElementState::Pressed)
+                if self
+                    .map_playtest
+                    .as_ref()
+                    .is_some_and(|playtest| playtest.mode == MapPlaytestMode::Shooter) =>
+            {
+                self.fire_map_playtest_weapon()
+            }
             (AppMode::EchoLocation, MouseButton::Left, ElementState::Pressed) => {
                 self.echolocation.begin_pulse_charge()
             }
@@ -1537,6 +1763,12 @@ impl AppState {
             }
             (AppMode::VoxelSandbox, MouseButton::Right, ElementState::Pressed) => {
                 self.sandbox.place_block(&self.camera)
+            }
+            (AppMode::MapEditor, MouseButton::Left, ElementState::Pressed) => {
+                self.map_editor
+                    .as_mut()
+                    .expect("map editor mode requires editor state")
+                    .click_pick_or_apply_tool();
             }
             _ => {}
         }
@@ -1554,6 +1786,15 @@ impl AppState {
                 self.audio_events.push(SoundEffect::EchoPing);
             }
         }
+    }
+
+    fn fire_map_playtest_weapon(&mut self) {
+        let playtest = self
+            .map_playtest
+            .as_mut()
+            .expect("map playtest mode requires playtest state");
+        self.audio_events
+            .extend(playtest.shooter.fire(&playtest.world, &self.camera));
     }
 
     fn drain_audio_events(&mut self) -> Vec<SoundEffect> {
@@ -1589,7 +1830,7 @@ fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
         AppMode::CornMaze => audio.enter_corn_maze_mode(),
         AppMode::BarScene | AppMode::VoxelSandbox => audio.enter_bar_mode(),
         AppMode::CityShooter | AppMode::Zombies => audio.enter_doom_mode(),
-        AppMode::PlanetFlight | AppMode::Liminal => audio.enter_doom_mode(),
+        AppMode::PlanetFlight | AppMode::Liminal | AppMode::MapPlaytest => audio.enter_doom_mode(),
         AppMode::DroneGateRunner => audio.enter_drone_mode(),
         AppMode::EchoLocation => audio.enter_doom_mode(),
         AppMode::Menu
@@ -4293,7 +4534,9 @@ enum MapEditorPanel {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MapEditorTool {
-    Inspect,
+    Move,
+    Add,
+    Asset,
     Paint,
     Erase,
     Replace,
@@ -4301,10 +4544,45 @@ enum MapEditorTool {
     BoxErase,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapEditorSelectionDirection {
+    Forward,
+    Backward,
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapPlaytestMode {
+    Explorer,
+    Flight,
+    Shooter,
+}
+
+impl MapPlaytestMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Explorer => "EXPLORER",
+            Self::Flight => "FLIGHT",
+            Self::Shooter => "SHOOTER",
+        }
+    }
+}
+
+struct MapPlaytestState {
+    world: VoxelWorld,
+    mode: MapPlaytestMode,
+    return_camera: Camera,
+    shooter: ShooterState,
+    viewmodel_bob: ViewmodelBob,
+}
+
 impl MapEditorTool {
     fn label(self) -> &'static str {
         match self {
-            Self::Inspect => "INSPECT",
+            Self::Move => "MOVE",
+            Self::Add => "ADD",
+            Self::Asset => "ASSET",
             Self::Paint => "PAINT",
             Self::Erase => "ERASE",
             Self::Replace => "REPLACE",
@@ -4312,6 +4590,257 @@ impl MapEditorTool {
             Self::BoxErase => "BOX ERASE",
         }
     }
+
+    fn is_box(self) -> bool {
+        matches!(self, Self::BoxFill | Self::BoxErase)
+    }
+
+    fn icon(self) -> ToolIcon {
+        match self {
+            Self::Move => ToolIcon::new(
+                [
+                    "       ##       ",
+                    "      ####      ",
+                    "       ##       ",
+                    "       ##       ",
+                    "       ##       ",
+                    "       ##       ",
+                    "################",
+                    "################",
+                    "       ##       ",
+                    "       ##       ",
+                    "       ##       ",
+                    "       ##       ",
+                    "      ####      ",
+                    "       ##       ",
+                    "                ",
+                    "                ",
+                ],
+                "#8de6ff",
+            ),
+            Self::Add => ToolIcon::new(
+                [
+                    "                ",
+                    "   ##########   ",
+                    "   ##      ##   ",
+                    "   ##  ##  ##   ",
+                    "   ##  ##  ##   ",
+                    "   ##  ##  ##   ",
+                    "   ## #### ##   ",
+                    "   ## #### ##   ",
+                    "   ##  ##  ##   ",
+                    "   ##  ##  ##   ",
+                    "   ##      ##   ",
+                    "   ##########   ",
+                    "                ",
+                    "                ",
+                    "                ",
+                    "                ",
+                ],
+                "#83ff9d",
+            ),
+            Self::Asset => ToolIcon::new(
+                [
+                    "                ",
+                    "     ######     ",
+                    "   ##########   ",
+                    "  ###    ###    ",
+                    " ###      ###   ",
+                    "###        ###  ",
+                    "###        ###  ",
+                    "###        ###  ",
+                    "###        ###  ",
+                    "###        ###  ",
+                    " ###      ###   ",
+                    "  ###    ###    ",
+                    "   ##########   ",
+                    "     ######     ",
+                    "                ",
+                    "                ",
+                ],
+                "#ffd166",
+            ),
+            Self::Paint => ToolIcon::new(
+                [
+                    "          ####  ",
+                    "         ####   ",
+                    "        ####    ",
+                    "       ####     ",
+                    "      ####      ",
+                    "     ####       ",
+                    "    ####        ",
+                    "   ####         ",
+                    "  ####          ",
+                    " ####           ",
+                    "####            ",
+                    "###             ",
+                    " ##             ",
+                    "                ",
+                    "                ",
+                    "                ",
+                ],
+                "#ffcb70",
+            ),
+            Self::Erase => ToolIcon::new(
+                [
+                    "      ########  ",
+                    "     ########## ",
+                    "    ##########  ",
+                    "   ##########   ",
+                    "  ##########    ",
+                    " ##########     ",
+                    "##########      ",
+                    "##########      ",
+                    " ##########     ",
+                    "  ##########    ",
+                    "   ##########   ",
+                    "    ##########  ",
+                    "     ########## ",
+                    "      ########  ",
+                    "                ",
+                    "                ",
+                ],
+                "#ff6f7b",
+            ),
+            Self::Replace => ToolIcon::new(
+                [
+                    "                ",
+                    "   ##      ##   ",
+                    "  ####    ####  ",
+                    " ######  ###### ",
+                    "   ##      ##   ",
+                    "   ##      ##   ",
+                    "   ##      ##   ",
+                    "   ##      ##   ",
+                    "   ##      ##   ",
+                    "   ##      ##   ",
+                    "   ##      ##   ",
+                    " ######  ###### ",
+                    "  ####    ####  ",
+                    "   ##      ##   ",
+                    "                ",
+                    "                ",
+                ],
+                "#d49cff",
+            ),
+            Self::BoxFill => ToolIcon::new(
+                [
+                    "                ",
+                    "  ############  ",
+                    "  ##        ##  ",
+                    "  ##        ##  ",
+                    "  ##        ##  ",
+                    "  ##        ##  ",
+                    "  ##  ####  ##  ",
+                    "  ##  ####  ##  ",
+                    "  ##  ####  ##  ",
+                    "  ##  ####  ##  ",
+                    "  ##        ##  ",
+                    "  ##        ##  ",
+                    "  ############  ",
+                    "                ",
+                    "                ",
+                    "                ",
+                ],
+                "#64dcff",
+            ),
+            Self::BoxErase => ToolIcon::new(
+                [
+                    "                ",
+                    "  ############  ",
+                    "  ##        ##  ",
+                    "  ## ##  ## ##  ",
+                    "  ##  ####  ##  ",
+                    "  ##   ##   ##  ",
+                    "  ##   ##   ##  ",
+                    "  ##  ####  ##  ",
+                    "  ##  ####  ##  ",
+                    "  ##   ##   ##  ",
+                    "  ##   ##   ##  ",
+                    "  ##  ####  ##  ",
+                    "  ############  ",
+                    "                ",
+                    "                ",
+                    "                ",
+                ],
+                "#ff8291",
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ToolIcon {
+    rows: [u16; 16],
+    foreground: &'static str,
+}
+
+impl ToolIcon {
+    fn new(pattern: [&str; 16], foreground: &'static str) -> Self {
+        let mut rows = [0; 16];
+        for (index, line) in pattern.into_iter().enumerate() {
+            debug_assert_eq!(line.chars().count(), 16, "tool icons are 16 pixels wide");
+            rows[index] = line.chars().enumerate().fold(0, |bits, (column, pixel)| {
+                bits | if pixel == '#' { 1 << (15 - column) } else { 0 }
+            });
+        }
+        Self { rows, foreground }
+    }
+}
+
+fn voxel_preview_rows() -> [u16; 16] {
+    ToolIcon::new(
+        [
+            "                ",
+            "       ##       ",
+            "     ######     ",
+            "   ##########   ",
+            "  ############  ",
+            "  ############  ",
+            "  ############  ",
+            "  ############  ",
+            "  ############  ",
+            "  ############  ",
+            "  ############  ",
+            "  ############  ",
+            "   ##########   ",
+            "     ######     ",
+            "       ##       ",
+            "                ",
+        ],
+        "#ffffff",
+    )
+    .rows
+}
+
+fn material_preview_color(material: VoxelMaterial) -> String {
+    let [red, green, blue] = match material {
+        VoxelMaterial::Regolith => [0xa8, 0x86, 0x62],
+        VoxelMaterial::Basalt => [0x55, 0x5a, 0x60],
+        VoxelMaterial::Ocean => [0x2d, 0x7d, 0xc9],
+        VoxelMaterial::Ice => [0xb8, 0xeb, 0xff],
+        VoxelMaterial::Grass => [0x67, 0xb8, 0x47],
+        VoxelMaterial::Dirt => [0x8a, 0x5b, 0x36],
+        VoxelMaterial::Stone => [0x8e, 0x93, 0x96],
+        VoxelMaterial::Sand => [0xd8, 0xc2, 0x7a],
+        VoxelMaterial::Wood => [0xa0, 0x63, 0x32],
+        VoxelMaterial::Leaves => [0x34, 0x8f, 0x45],
+        VoxelMaterial::Zombie => [0x8a, 0xd1, 0x67],
+        VoxelMaterial::CornStalk => [0xb8, 0xc9, 0x44],
+        VoxelMaterial::CarbonLife => [0xdf, 0x75, 0x9e],
+        VoxelMaterial::SiliconLife => [0xa8, 0x9d, 0xff],
+        VoxelMaterial::Habitat => [0x9c, 0xa7, 0xb2],
+        VoxelMaterial::ShipHull => [0xc2, 0xc8, 0xd2],
+        VoxelMaterial::Glass => [0x9f, 0xf5, 0xff],
+        VoxelMaterial::Beacon => [0xff, 0xda, 0x63],
+        VoxelMaterial::Gate => [0xff, 0x74, 0x39],
+        VoxelMaterial::Receiver => [0x54, 0x68, 0x72],
+        VoxelMaterial::SignalPipe => [0x3d, 0x54, 0x61],
+        VoxelMaterial::PuzzleDoor => [0x65, 0x70, 0x78],
+        VoxelMaterial::PressurePlate => [0xd7, 0x9a, 0x3a],
+        VoxelMaterial::Custom(color) => color,
+    };
+    format!("#{red:02x}{green:02x}{blue:02x}")
 }
 
 const MAP_EDITOR_MATERIALS: [VoxelMaterial; 23] = [
@@ -4340,19 +4869,6 @@ const MAP_EDITOR_MATERIALS: [VoxelMaterial; 23] = [
     VoxelMaterial::PressurePlate,
 ];
 
-impl MapEditorPanel {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Browse => "BROWSE",
-            Self::Geometry => "GEOMETRY (UNAVAILABLE)",
-            Self::Markers => "MARKERS (UNAVAILABLE)",
-            Self::Assets => "ASSETS (UNAVAILABLE)",
-            Self::Validate => "VALIDATE (UNAVAILABLE)",
-            Self::Save => "SAVE (UNAVAILABLE)",
-        }
-    }
-}
-
 /// CLI-only shell around immutable catalog blueprints. `working` is always a
 /// new `CompiledMap::editable()` clone, never a reference into the catalog.
 #[derive(Clone, Debug)]
@@ -4367,14 +4883,15 @@ struct MapEditorState {
     active_panel: MapEditorPanel,
     dirty: bool,
     pending_confirmation: Option<&'static str>,
-    pending_selection: Option<usize>,
     catalog_errors: Vec<String>,
     tool: MapEditorTool,
     material_index: usize,
+    asset_index: usize,
     selection: Option<VoxelCoord>,
     box_anchor: Option<VoxelCoord>,
     inspection: String,
     is_new_map: bool,
+    source_path: Option<PathBuf>,
 }
 
 impl MapEditorState {
@@ -4392,14 +4909,15 @@ impl MapEditorState {
             active_panel: MapEditorPanel::Browse,
             dirty: false,
             pending_confirmation: None,
-            pending_selection: None,
             catalog_errors,
-            tool: MapEditorTool::Inspect,
+            tool: MapEditorTool::Move,
             material_index: 0,
+            asset_index: 0,
             selection: None,
             box_anchor: None,
             inspection: "No voxel selected.".to_string(),
             is_new_map: false,
+            source_path: None,
         }
     }
 
@@ -4427,21 +4945,15 @@ impl MapEditorState {
         self.working = Some(working);
         self.dirty = false;
         self.pending_confirmation = None;
-        self.pending_selection = None;
         self.is_new_map = false;
+        self.source_path = Some(self.selected_map().source.clone());
+        self.tool = MapEditorTool::Move;
         self.selection = Some(self.selected_map().metadata.bounds.min);
         self.box_anchor = None;
-        self.inspection = "Working copy opened; use I to ray-pick or H/J/K/L/U/O to nudge.".into();
+        self.inspection =
+            "Working copy opened; use I to ray-pick or arrow keys to move the selection.".into();
         self.camera = camera;
         self.rebuild_ceilingless_world();
-    }
-
-    fn open_next(&mut self) {
-        self.request_open((self.selected + 1) % self.maps.len());
-    }
-
-    fn open_previous(&mut self) {
-        self.request_open((self.selected + self.maps.len() - 1) % self.maps.len());
     }
 
     fn reset_working_copy(&mut self) {
@@ -4450,17 +4962,6 @@ impl MapEditorState {
             self.inspection = "Dirty copy: press R again to discard it and reset to source.".into();
             return;
         }
-        self.open_selected();
-    }
-
-    fn request_open(&mut self, target: usize) {
-        if self.dirty && self.pending_selection != Some(target) {
-            self.pending_selection = Some(target);
-            self.inspection =
-                "Dirty copy: press N or P again to discard it and open that map.".into();
-            return;
-        }
-        self.select(target);
         self.open_selected();
     }
 
@@ -4482,24 +4983,27 @@ impl MapEditorState {
             metadata: MapMetadata {
                 id: "untitled-map".into(),
                 name: "Untitled Map".into(),
-                mode: "bar".into(),
+                // A blank ground plane is a neutral sandbox map, not a Bar
+                // scenario with its own gameplay expectations.
+                mode: "sandbox".into(),
                 category: "authored".into(),
                 bounds,
             },
             world,
             player_start: MapMarker::PlayerSpawn {
                 id: "player-start".into(),
-                position: Vec3::new(0.5, 1.7, 0.5),
+                position: Vec3::new(0.5, WALK_EYE_HEIGHT, 0.5),
                 yaw_degrees: 180,
             },
             markers: Vec::new(),
             placed_assets: Vec::new(),
         });
         self.is_new_map = true;
+        self.source_path = None;
         self.dirty = true;
         self.pending_confirmation = None;
-        self.pending_selection = None;
         self.active_panel = MapEditorPanel::Geometry;
+        self.tool = MapEditorTool::Move;
         self.selection = Some(VoxelCoord::new(1, 1, 1));
         self.box_anchor = None;
         self.camera = map_viewer_camera(
@@ -4541,6 +5045,93 @@ impl MapEditorState {
             .unwrap_or(&self.selected_map().world)
     }
 
+    fn hovered_material(&self) -> Option<VoxelMaterial> {
+        self.working.as_ref().and_then(|_| {
+            raycast(
+                self.render_world(),
+                Ray::new(self.camera.position, self.camera.forward()),
+                f32::INFINITY,
+            )
+            .map(|hit| hit.cell.material)
+        })
+    }
+
+    /// The selection is a rendering overlay, never a working-map mutation.
+    /// A saturated custom material makes both occupied and empty target cells
+    /// easy to find in the ASCII view.
+    fn highlighted_render_world(&self) -> VoxelWorld {
+        let mut world = self.render_world().clone();
+        if let Some((min, max)) = self.box_bounds() {
+            let cells = (max.x as i64 - min.x as i64 + 1)
+                * (max.y as i64 - min.y as i64 + 1)
+                * (max.z as i64 - min.z as i64 + 1);
+            if cells <= 1_000_000 {
+                let color = match self.tool {
+                    MapEditorTool::BoxFill => [64, 220, 255],
+                    MapEditorTool::BoxErase => [255, 96, 96],
+                    _ => unreachable!("box bounds require a box tool"),
+                };
+                for z in min.z..=max.z {
+                    for y in min.y..=max.y {
+                        for x in min.x..=max.x {
+                            world.set(
+                                VoxelCoord::new(x, y, z),
+                                VoxelCell::new(VoxelMaterial::Custom(color)),
+                            );
+                        }
+                    }
+                }
+                return world;
+            }
+        }
+        if let Some(coord) = self.selection {
+            world.set(coord, VoxelCell::new(VoxelMaterial::Custom([255, 64, 220])));
+        }
+        world
+    }
+
+    fn render_asset_voxels(&self) -> Vec<RenderVoxel> {
+        let mut voxels = self
+            .working
+            .as_ref()
+            .into_iter()
+            .flat_map(|working| working.placed_assets.iter())
+            .filter_map(|placed| {
+                self.assets
+                    .assets
+                    .get(&placed.asset_id)
+                    .map(|asset| (placed, asset))
+            })
+            // Unit-scale assets already live in the collision voxel world.
+            .filter(|(_, asset)| asset.voxel_size != 1.0)
+            .flat_map(|(placed, asset)| placed_asset_render_voxels(placed, asset, false))
+            .collect::<Vec<_>>();
+        if self.tool == MapEditorTool::Asset {
+            if let (Some(anchor), Some(asset)) =
+                (self.asset_placement_anchor(), self.selected_asset())
+            {
+                voxels.extend(placed_asset_render_voxels_at(anchor, 0, asset, true));
+            }
+        }
+        voxels
+    }
+
+    /// Asset placement deliberately follows the live center cursor ray rather
+    /// than the editor's durable voxel selection. This keeps the model ghost
+    /// under the mouse as the player looks around and makes one click a drop.
+    fn asset_placement_anchor(&self) -> Option<VoxelCoord> {
+        let working = self.working.as_ref()?;
+        let hit = raycast(
+            &working.world,
+            Ray::new(self.camera.position, self.camera.forward()),
+            f32::INFINITY,
+        )?;
+        Some(offset_coord(
+            hit.coord,
+            placement_normal(hit.normal, self.camera.forward()),
+        ))
+    }
+
     fn rebuild_ceilingless_world(&mut self) {
         self.ceilingless_world = self.ceilings_hidden.then(|| {
             let world = self
@@ -4556,6 +5147,40 @@ impl MapEditorState {
         MAP_EDITOR_MATERIALS[self.material_index]
     }
 
+    fn selected_asset(&self) -> Option<&heliobound_core::AssetDefinition> {
+        self.assets.assets.values().nth(self.asset_index)
+    }
+
+    fn cycle_asset(&mut self, direction: i32) {
+        let len = self.assets.assets.len() as i32;
+        if len > 0 {
+            self.asset_index = (self.asset_index as i32 + direction).rem_euclid(len) as usize;
+        }
+    }
+
+    fn request_playtest(&mut self) {
+        if self.working.is_some() {
+            self.pending_confirmation = Some("playtest");
+        } else {
+            self.inspection = "Open or create a map before playtesting.".into();
+        }
+    }
+
+    fn choose_playtest(&mut self, key: &PhysicalKey) -> Option<MapPlaytestMode> {
+        let mode = match key {
+            PhysicalKey::Code(KeyCode::Digit1) => MapPlaytestMode::Explorer,
+            PhysicalKey::Code(KeyCode::Digit2) => MapPlaytestMode::Flight,
+            PhysicalKey::Code(KeyCode::Digit3) => MapPlaytestMode::Shooter,
+            _ => return None,
+        };
+        self.pending_confirmation = None;
+        Some(mode)
+    }
+
+    fn cancel_playtest(&mut self) {
+        self.pending_confirmation = None;
+    }
+
     fn cycle_material(&mut self, direction: i32) {
         let len = MAP_EDITOR_MATERIALS.len() as i32;
         self.material_index = (self.material_index as i32 + direction).rem_euclid(len) as usize;
@@ -4564,6 +5189,28 @@ impl MapEditorState {
     fn select_tool(&mut self, tool: MapEditorTool) {
         self.active_panel = MapEditorPanel::Geometry;
         self.tool = tool;
+        if !tool.is_box() {
+            self.box_anchor = None;
+        }
+    }
+
+    fn cycle_tool(&mut self, direction: i32) {
+        const TOOLS: [MapEditorTool; 8] = [
+            MapEditorTool::Move,
+            MapEditorTool::Add,
+            MapEditorTool::Paint,
+            MapEditorTool::Erase,
+            MapEditorTool::Replace,
+            MapEditorTool::BoxFill,
+            MapEditorTool::BoxErase,
+            MapEditorTool::Asset,
+        ];
+        let index = TOOLS
+            .iter()
+            .position(|tool| *tool == self.tool)
+            .expect("map editor tool must be selectable") as i32;
+        let next = (index + direction).rem_euclid(TOOLS.len() as i32) as usize;
+        self.select_tool(TOOLS[next]);
     }
 
     fn nudge_selection(&mut self, delta: VoxelCoord) {
@@ -4579,6 +5226,32 @@ impl MapEditorState {
             self.selection = Some(candidate);
             self.inspection = format!("Selected {},{},{}.", candidate.x, candidate.y, candidate.z);
         }
+    }
+
+    /// Arrow-key movement follows the horizontal camera heading. At diagonal
+    /// headings, select the nearest grid axis so every keypress advances by
+    /// exactly one voxel.
+    fn nudge_selection_relative_to_view(&mut self, direction: MapEditorSelectionDirection) {
+        let forward = horizontal(self.camera.forward());
+        if forward.length() <= f32::EPSILON {
+            self.inspection = "Selection movement needs a horizontal camera heading.".into();
+            return;
+        }
+        // Derive horizontal right from the viewing direction so camera roll
+        // never turns an arrow-key selection move into a vertical action.
+        let right = Vec3::new(forward.z, 0.0, -forward.x);
+        let movement = match direction {
+            MapEditorSelectionDirection::Forward => forward,
+            MapEditorSelectionDirection::Backward => forward * -1.0,
+            MapEditorSelectionDirection::Left => right * -1.0,
+            MapEditorSelectionDirection::Right => right,
+        };
+        let delta = if movement.x.abs() >= movement.z.abs() {
+            VoxelCoord::new(movement.x.signum() as i32, 0, 0)
+        } else {
+            VoxelCoord::new(0, 0, movement.z.signum() as i32)
+        };
+        self.nudge_selection(delta);
     }
 
     fn ray_pick(&mut self) {
@@ -4607,7 +5280,59 @@ impl MapEditorState {
         }
     }
 
+    /// Add is direct face placement. Other tools first pick a different voxel;
+    /// clicking the selected voxel again is the mouse equivalent of Enter.
+    fn click_pick_or_apply_tool(&mut self) {
+        let hit = self.working.as_ref().and_then(|working| {
+            raycast(
+                &working.world,
+                Ray::new(self.camera.position, self.camera.forward()),
+                f32::INFINITY,
+            )
+        });
+        let Some(hit) = hit else {
+            self.inspection = "Ray missed the working world.".into();
+            return;
+        };
+        if self.tool == MapEditorTool::Asset {
+            let anchor = offset_coord(
+                hit.coord,
+                placement_normal(hit.normal, self.camera.forward()),
+            );
+            self.selection = Some(anchor);
+            self.place_selected_asset(anchor);
+            return;
+        }
+        if self.tool == MapEditorTool::Add {
+            self.selection = Some(offset_coord(
+                hit.coord,
+                placement_normal(hit.normal, self.camera.forward()),
+            ));
+            self.apply_tool();
+            return;
+        }
+        if self.selection == Some(hit.coord) {
+            self.apply_tool();
+            return;
+        }
+        self.selection = Some(hit.coord);
+        self.inspection = format!(
+            "Hit {},{},{}: {:?} face {},{},{}.",
+            hit.coord.x,
+            hit.coord.y,
+            hit.coord.z,
+            hit.cell.material,
+            hit.normal.x,
+            hit.normal.y,
+            hit.normal.z,
+        );
+    }
+
     fn toggle_box_anchor(&mut self) {
+        if !self.tool.is_box() {
+            self.inspection = "Choose Box Fill or Box Erase before setting a box corner.".into();
+            return;
+        }
         let Some(selection) = self.selection else {
             return;
         };
@@ -4617,7 +5342,101 @@ impl MapEditorState {
         };
     }
 
+    fn request_save(&mut self) {
+        if self.working.is_none() {
+            self.inspection = "Open or create a map before saving.".into();
+            return;
+        }
+        self.pending_confirmation = Some("save");
+    }
+
+    /// Returns true when a dirty working copy needs an explicit discard choice
+    /// before the editor may return to Dev Tools.
+    fn request_leave(&mut self) -> bool {
+        if self.pending_confirmation.is_some() {
+            return true;
+        }
+        if self.dirty {
+            self.pending_confirmation = Some("leave");
+            self.inspection = "Unsaved changes: discard them and return to Dev Tools?".into();
+            return true;
+        }
+        false
+    }
+
+    fn confirm_save(&mut self) -> bool {
+        self.pending_confirmation = None;
+        let Some(working) = self.working.as_ref() else {
+            return false;
+        };
+        let exported = match export_map(working, &self.assets) {
+            Ok(exported) => exported,
+            Err(error) => {
+                self.inspection = format!("Save blocked: {error}");
+                return false;
+            }
+        };
+        let target = match self.source_path.clone() {
+            Some(path) => path,
+            None => match map_directory() {
+                Some(directory) => directory.join(format!("{}.hbmap.json", working.metadata.id)),
+                None => {
+                    self.inspection = "Save blocked: map directory is unavailable.".into();
+                    return false;
+                }
+            },
+        };
+        if self.source_path.is_none() && target.exists() {
+            self.inspection = format!(
+                "Save blocked: {} already exists; rename support arrives with Save As.",
+                target.display()
+            );
+            return false;
+        }
+        let file_name = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("map.hbmap.json");
+        let temporary = target.with_file_name(format!(".{file_name}.tmp"));
+        if let Err(error) = fs::write(&temporary, exported) {
+            self.inspection = format!("Save failed: {error}");
+            return false;
+        }
+        if let Err(error) = fs::rename(&temporary, &target) {
+            let _ = fs::remove_file(&temporary);
+            self.inspection = format!("Save failed: {error}");
+            return false;
+        }
+        self.source_path = Some(target.clone());
+        self.is_new_map = false;
+        self.dirty = false;
+        self.inspection = format!(
+            "Saved {}. It now appears in the map catalog.",
+            target.display()
+        );
+        true
+    }
+
+    fn cancel_save(&mut self) {
+        self.pending_confirmation = None;
+        self.inspection = "Save cancelled.".into();
+    }
+
+    fn cancel_leave(&mut self) {
+        self.pending_confirmation = None;
+        self.inspection = "Still editing the working copy.".into();
+    }
+
     fn apply_tool(&mut self) {
+        if self.tool == MapEditorTool::Asset {
+            let Some(anchor) = self.asset_placement_anchor() else {
+                self.inspection = "Point at a map surface before placing an asset.".into();
+                return;
+            };
+            self.selection = Some(anchor);
+            self.place_selected_asset(anchor);
+            return;
+        }
         let Some(selected) = self.selection else {
             self.inspection = "Select a voxel first.".into();
             return;
@@ -4626,6 +5445,11 @@ impl MapEditorState {
         let player_cells = self.player_volume_cells();
         let material = self.selected_material();
         let tool = self.tool;
+        if tool == MapEditorTool::Move {
+            self.inspection =
+                "Move tool: use arrows, U/O, or ray-pick to position the selection.".into();
+            return;
+        }
         let Some(working) = self.working.as_mut() else {
             self.inspection = "Open a compiled map before editing.".into();
             return;
@@ -4659,8 +5483,10 @@ impl MapEditorState {
             self.inspection = "Box exceeds the 1,000,000 voxel limit.".into();
             return;
         }
-        if matches!(tool, MapEditorTool::Paint | MapEditorTool::BoxFill)
-            && working.world.voxel_count().saturating_add(cells as usize) > 4_000_000
+        if matches!(
+            tool,
+            MapEditorTool::Add | MapEditorTool::Paint | MapEditorTool::BoxFill
+        ) && working.world.voxel_count().saturating_add(cells as usize) > 4_000_000
         {
             self.inspection = "Edit could exceed the 4,000,000 final-world voxel limit.".into();
             return;
@@ -4678,8 +5504,10 @@ impl MapEditorState {
                     }
                     let before = working.world.get(coord);
                     match tool {
-                        MapEditorTool::Inspect => {}
-                        MapEditorTool::Paint | MapEditorTool::BoxFill => {
+                        MapEditorTool::Move | MapEditorTool::Asset => {
+                            unreachable!("non-geometry tool returns before editing")
+                        }
+                        MapEditorTool::Add | MapEditorTool::Paint | MapEditorTool::BoxFill => {
                             if before.is_none() {
                                 working.world.set(coord, VoxelCell::new(material));
                                 changed += 1;
@@ -4706,6 +5534,73 @@ impl MapEditorState {
             self.rebuild_ceilingless_world();
         }
         self.inspection = format!("{} changed {} direct voxel(s).", tool.label(), changed);
+    }
+
+    fn place_selected_asset(&mut self, position: VoxelCoord) {
+        let Some(asset) = self.selected_asset().cloned() else {
+            self.inspection = "No imported voxel assets are available.".into();
+            return;
+        };
+        let Some(working) = self.working.as_mut() else {
+            self.inspection = "Open a map before placing an asset.".into();
+            return;
+        };
+        let bounds = working.metadata.bounds;
+        let rendered = placed_asset_render_voxels_at(position, 0, &asset, false);
+        let inside = rendered.iter().all(|voxel| {
+            voxel.min.x >= bounds.min.x as f32
+                && voxel.min.y >= bounds.min.y as f32
+                && voxel.min.z >= bounds.min.z as f32
+                && voxel.max.x <= bounds.max.x as f32 + 1.0
+                && voxel.max.y <= bounds.max.y as f32 + 1.0
+                && voxel.max.z <= bounds.max.z as f32 + 1.0
+        });
+        if !inside {
+            self.inspection = "Asset preview extends outside the map bounds.".into();
+            return;
+        }
+        let mut suffix = 1;
+        let id = loop {
+            let candidate = format!("{}-{}", asset.id, suffix);
+            if !working
+                .placed_assets
+                .iter()
+                .any(|placed| placed.id == candidate)
+            {
+                break candidate;
+            }
+            suffix += 1;
+        };
+        let placed = heliobound_core::PlacedAsset {
+            id,
+            asset_id: asset.id.clone(),
+            position,
+            yaw_degrees: 0,
+            voxel_size: asset.voxel_size,
+        };
+        // Preserve the compiler's unit-scale collision contract. Smaller
+        // assets remain visual only and are rendered at their authored scale.
+        if asset.voxel_size == 1.0 {
+            for (voxel, material) in &asset.voxels {
+                let voxel = rotate_editor_voxel(*voxel, placed.yaw_degrees);
+                working.world.set(
+                    VoxelCoord::new(
+                        position.x + voxel.x,
+                        position.y + voxel.y,
+                        position.z + voxel.z,
+                    ),
+                    VoxelCell::new(*material),
+                );
+            }
+        }
+        let name = asset.name.clone();
+        working.placed_assets.push(placed);
+        self.dirty = true;
+        self.rebuild_ceilingless_world();
+        self.inspection = format!(
+            "Placed {name} at {},{},{}.",
+            position.x, position.y, position.z
+        );
     }
 
     fn inside_bounds(&self, coord: VoxelCoord) -> bool {
@@ -4767,6 +5662,81 @@ impl MapEditorState {
             }
             _ => "none".into(),
         }
+    }
+
+    fn box_bounds(&self) -> Option<(VoxelCoord, VoxelCoord)> {
+        if !self.tool.is_box() {
+            return None;
+        }
+        let (anchor, selection) = (self.box_anchor?, self.selection?);
+        Some((
+            VoxelCoord::new(
+                anchor.x.min(selection.x),
+                anchor.y.min(selection.y),
+                anchor.z.min(selection.z),
+            ),
+            VoxelCoord::new(
+                anchor.x.max(selection.x),
+                anchor.y.max(selection.y),
+                anchor.z.max(selection.z),
+            ),
+        ))
+    }
+}
+
+fn placed_asset_render_voxels(
+    placed: &heliobound_core::PlacedAsset,
+    asset: &heliobound_core::AssetDefinition,
+    ghost: bool,
+) -> Vec<RenderVoxel> {
+    placed_asset_render_voxels_at(placed.position, placed.yaw_degrees, asset, ghost)
+}
+
+fn placed_asset_render_voxels_at(
+    position: VoxelCoord,
+    yaw_degrees: u16,
+    asset: &heliobound_core::AssetDefinition,
+    ghost: bool,
+) -> Vec<RenderVoxel> {
+    asset
+        .voxels
+        .iter()
+        .map(|(voxel, material)| {
+            let size = asset.voxel_size;
+            let local_min = Vec3::new(
+                (voxel.x as f32 - asset.pivot[0]) * size,
+                (voxel.y as f32 - asset.pivot[1]) * size,
+                (voxel.z as f32 - asset.pivot[2]) * size,
+            );
+            let local_max = local_min + Vec3::new(size, size, size);
+            let (min, max) = rotate_asset_bounds(local_min, local_max, yaw_degrees);
+            let anchor = Vec3::new(position.x as f32, position.y as f32, position.z as f32);
+            RenderVoxel {
+                min: anchor + min,
+                max: anchor + max,
+                material: *material,
+                ghost,
+            }
+        })
+        .collect()
+}
+
+fn rotate_asset_bounds(min: Vec3, max: Vec3, yaw_degrees: u16) -> (Vec3, Vec3) {
+    match yaw_degrees {
+        0 => (min, max),
+        90 => (
+            Vec3::new(min.z, min.y, -max.x),
+            Vec3::new(max.z, max.y, -min.x),
+        ),
+        180 => (
+            Vec3::new(-max.x, min.y, -max.z),
+            Vec3::new(-min.x, max.y, -min.z),
+        ),
+        270 => (
+            Vec3::new(-max.z, min.y, min.x),
+            Vec3::new(-min.z, max.y, max.x),
+        ),
+        _ => unreachable!("asset yaw is validated"),
     }
 }
 
@@ -5078,13 +6048,28 @@ impl ShooterState {
         }
     }
 
-    fn update(&mut self, city: &VoxelWorld, player_position: Vec3, dt: f32) -> bool {
+    fn empty() -> Self {
+        Self {
+            enemies: Vec::new(),
+            bullet_traces: Vec::new(),
+            health: 100,
+            kills: 0,
+            shots_fired: 0,
+            shot_flash_timer: 0.0,
+        }
+    }
+
+    fn update_effects(&mut self, dt: f32) {
         self.shot_flash_timer = (self.shot_flash_timer - dt).max(0.0);
         for trace in &mut self.bullet_traces {
             trace.time_left = (trace.time_left - dt).max(0.0);
         }
         self.bullet_traces
             .retain(|trace| trace.time_left > f32::EPSILON);
+    }
+
+    fn update(&mut self, city: &VoxelWorld, player_position: Vec3, dt: f32) -> bool {
+        self.update_effects(dt);
 
         let mut player_hurt = false;
         for enemy in &mut self.enemies {
@@ -6649,6 +7634,35 @@ fn compiled_start_camera(map: &heliobound_core::CompiledMap) -> Camera {
         } => Camera::new(position).looking_at((yaw_degrees as f32).to_radians(), 0.0),
         _ => unreachable!("compiled maps always have a player spawn"),
     }
+}
+
+/// Editor playtests use the shared walking controller, whose camera is at eye
+/// height. Older editor-created maps wrote a 1.7-unit start point, so find the
+/// supporting floor beneath that authored horizontal position and place the
+/// camera at the controller's standing height. This keeps those existing maps
+/// playable without mutating their working copy or saved blueprint.
+fn map_playtest_start_camera(
+    mut camera: Camera,
+    world: &VoxelWorld,
+    bounds: VoxelBounds,
+) -> Camera {
+    let x = camera.position.x.floor() as i32;
+    let z = camera.position.z.floor() as i32;
+    let highest_possible_floor = (camera.position.y.floor() as i32).min(bounds.max.y);
+    if let Some(floor_y) = (bounds.min.y..=highest_possible_floor)
+        .rev()
+        .find(|&y| world.get(VoxelCoord::new(x, y, z)).is_some())
+    {
+        let standing_position = Vec3::new(
+            camera.position.x,
+            floor_y as f32 + WALK_EYE_HEIGHT,
+            camera.position.z,
+        );
+        if can_walk_to_with_profile(world, standing_position, STANDARD_WALK_PROFILE) {
+            camera.position = standing_position;
+        }
+    }
+    camera
 }
 
 /// Migrated gameplay maps have no procedural fallback: the checked-in hbmap
@@ -9642,43 +10656,28 @@ fn render_map_viewer_scene(scene: &mut Scene, viewer: &MapViewerState, mouse_cap
     }
 }
 
-fn render_map_editor_scene(scene: &mut Scene, editor: &MapEditorState, mouse_captured: bool) {
+fn render_map_editor_scene(scene: &mut Scene, editor: &MapEditorState, _mouse_captured: bool) {
     let map = editor.selected_map();
     let working = editor.working.as_ref();
     let world = editor.render_world();
     let metadata = working.map(|copy| &copy.metadata).unwrap_or(&map.metadata);
     let bounds = metadata.bounds;
+    if working.is_none() {
+        scene.overlays.push(Overlay {
+            x: 2,
+            y: 2,
+            z: 120,
+            text: "SELECT A MAP  Up/Down + Enter  X new 20x20 map".to_string(),
+            style: TextStyle::default(),
+        });
+    }
     scene.overlays.push(Overlay {
         x: 2,
-        y: 2,
+        y: if working.is_some() { 2 } else { 4 },
         z: 120,
         text: format!(
-            "MAP EDITOR  {} / {}  {}  {}  mouse {}  M Dev Tools",
-            editor.selected + 1,
-            editor.maps.len(),
-            metadata.name,
-            if working.is_some() {
-                "OPEN"
-            } else {
-                "SELECT MAP"
-            },
-            if mouse_captured { "locked" } else { "free" },
-        ),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 2,
-        y: 4,
-        z: 120,
-        text: format!(
-            "id {}  mode {:?}  source {}  bounds [{},{},{} to {},{},{}]",
+            "id {}  bounds [{},{},{} to {},{},{}]",
             metadata.id,
-            metadata.mode,
-            if editor.is_new_map {
-                "UNSAVED 20x20 TEMPLATE".to_string()
-            } else {
-                map.source.display().to_string()
-            },
             bounds.min.x,
             bounds.min.y,
             bounds.min.z,
@@ -9690,141 +10689,259 @@ fn render_map_editor_scene(scene: &mut Scene, editor: &MapEditorState, mouse_cap
     });
     scene.overlays.push(Overlay {
         x: 2,
-        y: 6,
+        y: if working.is_some() { 4 } else { 6 },
         z: 120,
         text: format!(
-            "WORKING COPY: {}  panel {}  {} voxels  {} assets  {} markers",
-            if editor.dirty { "DIRTY" } else { "CLEAN" },
-            editor.active_panel.label(),
+            "{} voxels  {} assets  {} markers",
             world.voxel_count(),
             working.map_or(map.placed_assets.len(), |copy| copy.placed_assets.len()),
             working.map_or(map.markers.len() + 1, |copy| copy.markers.len() + 1),
         ),
         style: TextStyle::default(),
     });
-    scene.overlays.push(Overlay {
-        x: 2,
-        y: 8,
-        z: 120,
-        text: format!(
-            "Tool {}  material {:?}  selected {}  anchor {}  box {}",
+    let tool_details = if editor.tool == MapEditorTool::Asset {
+        let asset = editor.selected_asset();
+        format!(
+            "Tool ASSET  {}  selected {}  [ / ] browse",
+            asset
+                .map(|asset| format!("{} ({})", asset.name, asset.id))
+                .unwrap_or_else(|| "no assets found".into()),
+            editor
+                .selection
+                .map(|coord| format!("{},{},{}", coord.x, coord.y, coord.z))
+                .unwrap_or_else(|| "none".into()),
+        )
+    } else if editor.tool.is_box() {
+        format!(
+            "Tool {}  material {:?}  selected {}  box {}",
             editor.tool.label(),
             editor.selected_material(),
             editor
                 .selection
                 .map(|coord| format!("{},{},{}", coord.x, coord.y, coord.z))
                 .unwrap_or_else(|| "none".into()),
+            editor.box_description(),
+        )
+    } else {
+        format!(
+            "Tool {}  material {:?}  selected {}",
+            editor.tool.label(),
+            editor.selected_material(),
             editor
-                .box_anchor
+                .selection
                 .map(|coord| format!("{},{},{}", coord.x, coord.y, coord.z))
                 .unwrap_or_else(|| "none".into()),
-            editor.box_description(),
-        ),
+        )
+    };
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: if working.is_some() { 6 } else { 8 },
+        z: 120,
+        text: tool_details,
         style: TextStyle::default(),
     });
     scene.overlays.push(Overlay {
-        x: 2,
-        y: 10,
-        z: 120,
-        text: format!(
-            "A new 20x20  I ray-pick  H/J/K/L/U/O nudge  [/] material  1 inspect 2 paint 3 erase 4 replace 5 box fill 6 box erase  B anchor  Enter apply",
-        ),
+        x: (VIEWPORT.width / 2) as i32,
+        y: (VIEWPORT.height / 2) as i32,
+        z: 119,
+        text: "+".to_string(),
         style: TextStyle::default(),
     });
-    scene.overlays.push(Overlay {
-        x: 2,
-        y: 12,
-        z: 120,
-        text: format!(
-            "Up/Down select  Enter/Space open  N/P cycle/open  R reset  C ceilings {}  Escape release mouse  {}",
-            if editor.ceilings_hidden { "hidden" } else { "shown" },
-            editor.inspection,
-        ),
-        style: TextStyle::default(),
+    let tool_icon = editor.tool.icon();
+    scene.pixel_sprites.push(PixelSprite {
+        x: FRAME_WIDTH as i32 / 2 - 40,
+        y: FRAME_HEIGHT as i32 - 88,
+        z: 121,
+        rows: tool_icon.rows,
+        scale: 5,
+        fg: tool_icon.foreground.to_string(),
+        bg: None,
     });
-    let markers = working
-        .map(|copy| {
-            std::iter::once(marker_label(&copy.player_start))
-                .chain(copy.markers.iter().map(marker_label))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_else(|| {
-            std::iter::once(marker_label(&map.player_start))
-                .chain(map.markers.iter().map(marker_label))
-                .collect()
-        });
-    let assets = working
-        .map(|copy| &copy.placed_assets)
-        .unwrap_or(&map.placed_assets)
-        .iter()
-        .map(|asset| {
-            format!(
-                "{} ({}) @ {},{},{} yaw {} scale {}",
-                asset.id,
-                asset.asset_id,
-                asset.position.x,
-                asset.position.y,
-                asset.position.z,
-                asset.yaw_degrees,
-                asset.voxel_size
-            )
-        })
-        .collect::<Vec<_>>();
-    scene.overlays.push(Overlay {
-        x: 2,
-        y: 14,
-        z: 120,
-        text: inspector_line("ASSETS", &assets),
-        style: TextStyle::default(),
-    });
-    scene.overlays.push(Overlay {
-        x: 2,
-        y: 16,
-        z: 120,
-        text: inspector_line("MARKERS", &markers),
-        style: TextStyle::default(),
-    });
-    for (index, compiled) in editor.maps.iter().enumerate() {
-        scene.overlays.push(Overlay {
-            x: 2,
-            y: 19 + index as i32,
-            z: 120,
-            text: format!(
-                "{}{} {} ({})",
-                if index == editor.selected { '>' } else { ' ' },
-                index + 1,
-                compiled.metadata.name,
-                compiled.metadata.id,
-            ),
-            style: TextStyle::default(),
+    if let Some(material) = editor.hovered_material() {
+        scene.pixel_sprites.push(PixelSprite {
+            x: FRAME_WIDTH as i32 - 24,
+            y: 16,
+            z: 121,
+            rows: voxel_preview_rows(),
+            scale: 1,
+            fg: material_preview_color(material),
+            bg: Some("#000000".to_string()),
         });
     }
-    let legacy_y = 20 + editor.maps.len() as i32;
-    for (offset, line) in [
-        "READ-ONLY LEGACY: Corn Maze — CLI procedural generator.",
-        "READ-ONLY LEGACY: Voxel Sandbox — CLI procedural generator.",
-        "READ-ONLY LEGACY: Drone Gate — randomized procedural course.",
+    if let Some((title, prompt)) = match editor.pending_confirmation {
+        Some("save") => Some((
+            format!("| SAVE {} voxel(s) to disk?         |", world.voxel_count()),
+            "| Are you sure?  Y yes / N no      |".to_string(),
+        )),
+        Some("leave") => Some((
+            "| DISCARD unsaved working copy?     |".to_string(),
+            "| Are you sure?  Y yes / N no      |".to_string(),
+        )),
+        Some("playtest") => Some((
+            "| PLAYTEST: choose a mode          |".to_string(),
+            "| 1 explorer  2 flight  3 shooter |".to_string(),
+        )),
+        _ => None,
+    } {
+        for (index, line) in [
+            "+----------------------------------+",
+            title.as_str(),
+            "|                                  |",
+            prompt.as_str(),
+            "+----------------------------------+",
+        ]
+        .iter()
+        .enumerate()
+        {
+            scene.overlays.push(Overlay {
+                x: 62,
+                y: 38 + index as i32,
+                z: 130,
+                text: (*line).to_string(),
+                style: TextStyle::default(),
+            });
+        }
+    }
+    let selected_voxel = editor
+        .selection
+        .map(|coord| {
+            let contents = working
+                .map(|copy| copy.world.get(coord))
+                .unwrap_or_else(|| map.world.get(coord))
+                .map(|cell| format!("{:?}", cell.material))
+                .unwrap_or_else(|| "empty".into());
+            format!("SELECTED {},{},{}  {contents}", coord.x, coord.y, coord.z)
+        })
+        .unwrap_or_else(|| "SELECTED none".into());
+    let controls_y = if working.is_some() { 10 } else { 34 };
+    for (index, line) in [
+        selected_voxel.as_str(),
+        "",
+        "EDITOR CONTROLS",
+        "X      new 20x20 map",
+        "I      ray-pick voxel",
+        "Click  Add: place on face",
+        "Arrows move by view",
+        "U/O    move up/down",
+        "[ / ]  material / asset",
+        "1-8    choose tool",
+        ",/.    cycle tool",
+        "B      box corner",
+        "8      asset place",
+        "Enter  apply tool",
+        "`      save map",
+        "F9     test world",
+        "Space  rise",
+        "Ctrl   drop",
+        "R      reset source",
+        "C      ceilings",
+        "M      Dev Tools",
+        "Esc    release mouse",
     ]
     .iter()
     .enumerate()
     {
         scene.overlays.push(Overlay {
             x: 2,
-            y: legacy_y + offset as i32,
+            y: controls_y + index as i32 * 2,
             z: 120,
             text: (*line).to_string(),
             style: TextStyle::default(),
         });
     }
-    for (offset, error) in editor.catalog_errors.iter().take(3).enumerate() {
-        scene.overlays.push(Overlay {
-            x: 2,
-            y: legacy_y + 4 + offset as i32,
-            z: 120,
-            text: format!("MAP CATALOG ERROR: {error}"),
-            style: TextStyle::default(),
-        });
+    if working.is_none() {
+        for (index, compiled) in editor.maps.iter().enumerate() {
+            scene.overlays.push(Overlay {
+                x: 2,
+                y: 19 + index as i32,
+                z: 120,
+                text: format!(
+                    "{}{} {} ({})",
+                    if index == editor.selected { '>' } else { ' ' },
+                    index + 1,
+                    compiled.metadata.name,
+                    compiled.metadata.id,
+                ),
+                style: TextStyle::default(),
+            });
+        }
+        let legacy_y = 20 + editor.maps.len() as i32;
+        for (offset, line) in [
+            "READ-ONLY LEGACY: Corn Maze — CLI procedural generator.",
+            "READ-ONLY LEGACY: Voxel Sandbox — CLI procedural generator.",
+            "READ-ONLY LEGACY: Drone Gate — randomized procedural course.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            scene.overlays.push(Overlay {
+                x: 2,
+                y: legacy_y + offset as i32,
+                z: 120,
+                text: (*line).to_string(),
+                style: TextStyle::default(),
+            });
+        }
+        for (offset, error) in editor.catalog_errors.iter().take(3).enumerate() {
+            scene.overlays.push(Overlay {
+                x: 2,
+                y: legacy_y + 4 + offset as i32,
+                z: 120,
+                text: format!("MAP CATALOG ERROR: {error}"),
+                style: TextStyle::default(),
+            });
+        }
     }
+}
+
+fn render_map_playtest_scene(scene: &mut Scene, playtest: &MapPlaytestState, mouse_captured: bool) {
+    let controls = match playtest.mode {
+        MapPlaytestMode::Explorer => "WASD walk  Space jump",
+        MapPlaytestMode::Flight => "WASD fly  Space/Ctrl up/down",
+        MapPlaytestMode::Shooter => "WASD walk  Space jump  click fire",
+    };
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "UNSAVED EDITOR PREVIEW  {}  {}  M return  mouse {}",
+            playtest.mode.label(),
+            controls,
+            if mouse_captured { "locked" } else { "free" }
+        ),
+        style: hud_style(),
+    });
+    scene.overlays.push(Overlay {
+        x: (VIEWPORT.width / 2) as i32,
+        y: (VIEWPORT.height / 2) as i32,
+        z: 120,
+        text: "+".to_string(),
+        style: TextStyle::default(),
+    });
+}
+
+fn render_map_playtest_shooter_scene(
+    scene: &mut Scene,
+    camera: &Camera,
+    playtest: &MapPlaytestState,
+    weapon_asset: &PreviewAsset,
+) {
+    scene.layers.push(Layer {
+        name: "bullets".to_string(),
+        z: 35,
+        cells: bullet_cells(scene.viewport, camera, &playtest.shooter.bullet_traces),
+    });
+    scene.layers.push(Layer {
+        name: "weapon".to_string(),
+        z: 40,
+        cells: weapon_viewmodel_cells(
+            scene.viewport,
+            weapon_asset,
+            playtest.shooter.shot_flash_timer > 0.0,
+            playtest.viewmodel_bob.offset(),
+        ),
+    });
 }
 
 fn inspector_line(label: &str, entries: &[String]) -> String {
@@ -11111,6 +12228,39 @@ fn render_scene(scene: &Scene, frame: &mut [u8], width: usize, height: usize) {
         }
     }
 
+    for sprite in &scene.pixel_sprites {
+        let foreground = parse_hex_color(&sprite.fg).unwrap_or([0xf0, 0xc6, 0x5b, 0xff]);
+        let scale = i32::from(sprite.scale.max(1));
+        if let Some(background) = sprite.bg.as_deref().and_then(parse_hex_color) {
+            fill_rect(
+                frame,
+                width,
+                height,
+                sprite.x,
+                sprite.y,
+                16 * scale,
+                16 * scale,
+                background,
+            );
+        }
+        for (row, bits) in sprite.rows.iter().enumerate() {
+            for column in 0..16 {
+                if bits & (1 << (15 - column)) != 0 {
+                    fill_rect(
+                        frame,
+                        width,
+                        height,
+                        sprite.x + column * scale,
+                        sprite.y + row as i32 * scale,
+                        scale,
+                        scale,
+                        foreground,
+                    );
+                }
+            }
+        }
+    }
+
     for overlay in &scene.overlays {
         if let Some(bg) = style_bg_color(&overlay.style) {
             fill_rect(
@@ -12282,7 +13432,7 @@ mod tests {
     }
 
     #[test]
-    fn map_editor_scene_identifies_geometry_controls_and_legacy_read_only_maps() {
+    fn map_editor_scene_shows_the_map_list_only_before_opening_a_working_copy() {
         let mut app = AppState::new();
         app.start_map_editor();
         let scene = app.frame(0.0, true);
@@ -12290,7 +13440,7 @@ mod tests {
         assert!(scene
             .overlays
             .iter()
-            .any(|overlay| overlay.text.contains("MAP EDITOR")));
+            .any(|overlay| overlay.text.contains("SELECT A MAP")));
         assert!(scene
             .overlays
             .iter()
@@ -12298,7 +13448,67 @@ mod tests {
         assert!(scene
             .overlays
             .iter()
-            .any(|overlay| overlay.text.contains("1 inspect 2 paint")));
+            .any(|overlay| overlay.text == "EDITOR CONTROLS" && overlay.x == 2));
+        assert!(scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text == "SELECTED none" && overlay.x == 2));
+        assert!(scene.overlays.iter().any(|overlay| {
+            overlay.text == "+"
+                && overlay.x == (VIEWPORT.width / 2) as i32
+                && overlay.y == (VIEWPORT.height / 2) as i32
+        }));
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Enter), ElementState::Pressed);
+        let opened_scene = app.frame(0.0, true);
+        assert!(!opened_scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("SELECT A MAP")));
+        assert!(!opened_scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("READ-ONLY LEGACY")));
+        assert!(!opened_scene
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("MAP EDITOR")));
+    }
+
+    #[test]
+    fn map_editor_requires_y_or_n_before_discarding_a_dirty_working_copy() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+
+        assert_eq!(
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyM), ElementState::Pressed),
+            KeyboardAction::None
+        );
+        assert_eq!(
+            app.map_editor.as_ref().unwrap().pending_confirmation,
+            Some("leave")
+        );
+        assert!(app
+            .frame(0.0, true)
+            .overlays
+            .iter()
+            .any(|overlay| { overlay.text.contains("DISCARD unsaved working copy") }));
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyN), ElementState::Pressed);
+        assert!(app
+            .map_editor
+            .as_ref()
+            .unwrap()
+            .pending_confirmation
+            .is_none());
+        assert!(app.map_editor.as_ref().unwrap().dirty);
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyM), ElementState::Pressed);
+        assert_eq!(
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyY), ElementState::Pressed),
+            KeyboardAction::EnterDevToolsMenu
+        );
     }
 
     #[test]
@@ -12411,21 +13621,497 @@ mod tests {
     fn map_editor_can_create_a_dirty_twenty_by_twenty_ground_template() {
         let mut app = AppState::new();
         app.start_map_editor();
-        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyA), ElementState::Pressed);
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+
+        let before = {
+            let editor = app.map_editor.as_ref().unwrap();
+            let map = editor.working.as_ref().unwrap();
+            assert!(editor.is_new_map);
+            assert!(editor.dirty);
+            assert_eq!(map.metadata.id, "untitled-map");
+            assert_eq!(map.metadata.mode, "sandbox");
+            assert_eq!(map.metadata.bounds.min, VoxelCoord::new(-10, 0, -10));
+            assert_eq!(map.metadata.bounds.max, VoxelCoord::new(9, 16, 9));
+            assert_eq!(map.world.voxel_count(), 400);
+            assert_eq!(
+                map.world.get(VoxelCoord::new(0, 0, 0)),
+                Some(VoxelCell::new(VoxelMaterial::Grass))
+            );
+            assert!(matches!(map.player_start, MapMarker::PlayerSpawn { .. }));
+            map.world.voxels()
+        };
+
+        let scene = app.frame(0.0, true);
+        assert!(scene.overlays.iter().any(|overlay| {
+            overlay.text.starts_with("id untitled-map  bounds")
+                && !overlay.text.contains("mode")
+                && !overlay.text.contains("source")
+        }));
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+        let editor = app.map_editor.as_ref().unwrap();
+        assert_eq!(editor.working.as_ref().unwrap().world.voxels(), before);
+        assert!(editor.inspection.contains("only available"));
+    }
+
+    #[test]
+    fn map_editor_keeps_space_and_ctrl_for_free_flight() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Space), ElementState::Pressed);
+        assert!(app.input.up);
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Space), ElementState::Released);
+        assert!(!app.input.up);
+
+        app.handle_keyboard(
+            &PhysicalKey::Code(KeyCode::ControlLeft),
+            ElementState::Pressed,
+        );
+        assert!(app.input.down);
+        app.handle_keyboard(
+            &PhysicalKey::Code(KeyCode::ControlLeft),
+            ElementState::Released,
+        );
+        assert!(!app.input.down);
+    }
+
+    #[test]
+    fn map_editor_arrow_keys_move_selection_relative_to_camera_heading() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+        {
+            let editor = app.map_editor.as_mut().unwrap();
+            editor.selection = Some(VoxelCoord::new(0, 1, 0));
+            editor.camera = Camera::new(Vec3::new(0.5, 2.0, 0.5)).looking_at(0.0, 0.0);
+        }
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::ArrowUp), ElementState::Pressed);
+        assert_eq!(
+            app.map_editor.as_ref().unwrap().selection,
+            Some(VoxelCoord::new(0, 1, 1))
+        );
+        app.handle_keyboard(
+            &PhysicalKey::Code(KeyCode::ArrowRight),
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            app.map_editor.as_ref().unwrap().selection,
+            Some(VoxelCoord::new(1, 1, 1))
+        );
+
+        {
+            let editor = app.map_editor.as_mut().unwrap();
+            editor.selection = Some(VoxelCoord::new(0, 1, 0));
+            editor.camera =
+                Camera::new(Vec3::new(0.5, 2.0, 0.5)).looking_at(std::f32::consts::FRAC_PI_2, 0.0);
+        }
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::ArrowUp), ElementState::Pressed);
+        assert_eq!(
+            app.map_editor.as_ref().unwrap().selection,
+            Some(VoxelCoord::new(1, 1, 0))
+        );
+        app.handle_keyboard(
+            &PhysicalKey::Code(KeyCode::ArrowRight),
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            app.map_editor.as_ref().unwrap().selection,
+            Some(VoxelCoord::new(1, 1, -1))
+        );
+    }
+
+    #[test]
+    fn map_editor_cycles_distinct_80_pixel_tool_icons() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+        assert_eq!(app.map_editor.as_ref().unwrap().tool, MapEditorTool::Move);
+        let move_icon = app
+            .frame(0.0, true)
+            .pixel_sprites
+            .into_iter()
+            .find(|sprite| sprite.scale == 5)
+            .unwrap();
+        assert_eq!(move_icon.x, FRAME_WIDTH as i32 / 2 - 40);
+        assert_eq!(move_icon.y, FRAME_HEIGHT as i32 - 88);
+        assert_eq!(move_icon.scale, 5);
+        assert_eq!(move_icon.bg, None);
+        assert_eq!(move_icon.fg, "#8de6ff");
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Period), ElementState::Pressed);
+        assert_eq!(app.map_editor.as_ref().unwrap().tool, MapEditorTool::Add);
+        let add_icon = app
+            .frame(0.0, true)
+            .pixel_sprites
+            .into_iter()
+            .find(|sprite| sprite.scale == 5)
+            .unwrap();
+        assert_eq!(add_icon.bg, None);
+        assert_eq!(add_icon.fg, "#83ff9d");
+        assert_ne!(add_icon.rows, move_icon.rows);
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Period), ElementState::Pressed);
+        assert_eq!(app.map_editor.as_ref().unwrap().tool, MapEditorTool::Paint);
+        let paint_icon = app
+            .frame(0.0, true)
+            .pixel_sprites
+            .into_iter()
+            .find(|sprite| sprite.scale == 5)
+            .unwrap();
+        assert_eq!(paint_icon.bg, None);
+        assert_eq!(paint_icon.fg, "#ffcb70");
+        assert_ne!(paint_icon.rows, add_icon.rows);
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Comma), ElementState::Pressed);
+        assert_eq!(app.map_editor.as_ref().unwrap().tool, MapEditorTool::Add);
+    }
+
+    #[test]
+    fn map_editor_asset_tool_previews_and_places_the_real_asset_model() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+        {
+            let editor = app.map_editor.as_mut().unwrap();
+            editor.camera = Camera::new(Vec3::new(0.5, 5.0, 0.5)).looking_at(0.0, -0.8);
+            editor.select_tool(MapEditorTool::Asset);
+            assert!(editor.selected_asset().is_some());
+            let preview = editor.render_asset_voxels();
+            assert!(!preview.is_empty());
+            assert!(preview.iter().all(|voxel| voxel.ghost));
+        }
+        app.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+        let editor = app.map_editor.as_ref().unwrap();
+        let working = editor.working.as_ref().unwrap();
+        assert_eq!(working.placed_assets.len(), 1);
+        assert!(editor.dirty);
+        let rendered = editor.render_asset_voxels();
+        assert!(rendered.iter().any(|voxel| !voxel.ghost));
+        assert_eq!(
+            working.placed_assets[0].asset_id,
+            editor.selected_asset().unwrap().id
+        );
+    }
+
+    #[test]
+    fn map_editor_shows_a_small_top_right_preview_for_the_hovered_voxel() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+        let editor = app.map_editor.as_mut().unwrap();
+        let mut world = VoxelWorld::new();
+        world.set(
+            VoxelCoord::new(0, 0, 0),
+            VoxelCell::new(VoxelMaterial::Stone),
+        );
+        editor.working.as_mut().unwrap().world = world;
+        editor.camera = Camera::new(Vec3::new(0.5, 0.5, 3.0)).looking_at(std::f32::consts::PI, 0.0);
+
+        let preview = app
+            .frame(0.0, true)
+            .pixel_sprites
+            .into_iter()
+            .find(|sprite| sprite.scale == 1)
+            .expect("hovered voxel should have a preview sprite");
+        assert_eq!(preview.x, FRAME_WIDTH as i32 - 24);
+        assert_eq!(preview.y, 16);
+        assert_eq!(preview.bg.as_deref(), Some("#000000"));
+        assert_eq!(preview.fg, "#8e9396");
+    }
+
+    #[test]
+    fn map_editor_playtest_asks_for_a_mode_and_returns_to_the_same_copy() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+        let working = app.map_editor.as_ref().unwrap().working.clone().unwrap();
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::F9), ElementState::Pressed);
+        assert_eq!(
+            app.map_editor.as_ref().unwrap().pending_confirmation,
+            Some("playtest")
+        );
+        assert!(app
+            .frame(0.0, true)
+            .overlays
+            .iter()
+            .any(|overlay| { overlay.text.contains("PLAYTEST: choose a mode") }));
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit2), ElementState::Pressed);
+        assert_eq!(app.mode, AppMode::MapPlaytest);
+        assert_eq!(
+            app.map_playtest.as_ref().unwrap().mode,
+            MapPlaytestMode::Flight
+        );
+        assert_eq!(
+            app.map_playtest.as_ref().unwrap().world.voxels(),
+            working.world.voxels()
+        );
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyM), ElementState::Pressed);
+        assert_eq!(app.mode, AppMode::MapEditor);
+        assert_eq!(
+            app.map_editor
+                .as_ref()
+                .unwrap()
+                .working
+                .as_ref()
+                .unwrap()
+                .world
+                .voxels(),
+            working.world.voxels()
+        );
+    }
+
+    #[test]
+    fn map_editor_playtest_modes_apply_their_own_movement_controllers() {
+        let mut explorer = AppState::new();
+        explorer.start_map_editor();
+        explorer.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+        explorer.handle_keyboard(&PhysicalKey::Code(KeyCode::F9), ElementState::Pressed);
+        explorer.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit1), ElementState::Pressed);
+        let explorer_start = explorer.camera.position;
+        assert_eq!(explorer_start.y, WALK_EYE_HEIGHT);
+        explorer.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyW), ElementState::Pressed);
+        assert!(explorer.input.forward);
+        explorer.frame(0.1, true);
+        assert_ne!(explorer.camera.position, explorer_start);
+
+        let mut flight = AppState::new();
+        flight.start_map_editor();
+        flight.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+        flight.handle_keyboard(&PhysicalKey::Code(KeyCode::F9), ElementState::Pressed);
+        flight.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit2), ElementState::Pressed);
+        let flight_start = flight.camera.position;
+        flight.handle_keyboard(&PhysicalKey::Code(KeyCode::Space), ElementState::Pressed);
+        flight.frame(0.1, true);
+        assert!(flight.camera.position.y > flight_start.y);
+    }
+
+    #[test]
+    fn map_editor_shooter_playtest_draws_and_fires_a_weapon() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::F9), ElementState::Pressed);
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit3), ElementState::Pressed);
+
+        let scene = app.frame(0.0, true);
+        assert!(scene
+            .layers
+            .iter()
+            .any(|layer| layer.name == "weapon" && !layer.cells.is_empty()));
+
+        app.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+        assert_eq!(app.map_playtest.as_ref().unwrap().shooter.shots_fired, 1);
+        assert!(
+            app.map_playtest
+                .as_ref()
+                .unwrap()
+                .shooter
+                .bullet_traces
+                .len()
+                > 0
+        );
+    }
+
+    #[test]
+    fn map_editor_selection_is_bright_only_in_the_render_snapshot() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Enter), ElementState::Pressed);
+        let editor = app.map_editor.as_mut().unwrap();
+        let coord = editor.working.as_ref().unwrap().metadata.bounds.min;
+        let before = editor.working.as_ref().unwrap().world.get(coord);
+        editor.selection = Some(coord);
+
+        assert_eq!(
+            editor.highlighted_render_world().get(coord),
+            Some(VoxelCell::new(VoxelMaterial::Custom([255, 64, 220])))
+        );
+        assert_eq!(editor.working.as_ref().unwrap().world.get(coord), before);
+    }
+
+    #[test]
+    fn map_editor_box_tools_tint_only_the_rendered_selection_box() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+        let editor = app.map_editor.as_mut().unwrap();
+        let first = VoxelCoord::new(0, 1, 0);
+        let second = VoxelCoord::new(1, 1, 0);
+        editor.box_anchor = Some(first);
+        editor.selection = Some(second);
+        editor.select_tool(MapEditorTool::BoxFill);
+
+        let preview = editor.highlighted_render_world();
+        assert_eq!(
+            preview.get(first),
+            Some(VoxelCell::new(VoxelMaterial::Custom([64, 220, 255])))
+        );
+        assert_eq!(
+            preview.get(second),
+            Some(VoxelCell::new(VoxelMaterial::Custom([64, 220, 255])))
+        );
+        assert_eq!(editor.working.as_ref().unwrap().world.get(first), None);
+        assert_eq!(editor.working.as_ref().unwrap().world.get(second), None);
+
+        editor.select_tool(MapEditorTool::Paint);
+        assert!(editor.box_anchor.is_none());
+        assert_eq!(
+            editor.highlighted_render_world().get(second),
+            Some(VoxelCell::new(VoxelMaterial::Custom([255, 64, 220])))
+        );
+    }
+
+    #[test]
+    fn map_editor_left_click_ray_picks_the_center_voxel() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Enter), ElementState::Pressed);
+        {
+            let editor = app.map_editor.as_mut().unwrap();
+            let mut world = VoxelWorld::new();
+            world.set(
+                VoxelCoord::new(0, 0, 0),
+                VoxelCell::new(VoxelMaterial::Stone),
+            );
+            editor.working.as_mut().unwrap().world = world;
+            editor.camera =
+                Camera::new(Vec3::new(0.5, 0.5, 3.0)).looking_at(std::f32::consts::PI, 0.0);
+            editor.selection = None;
+        }
+
+        app.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+        assert_eq!(
+            app.map_editor.as_ref().unwrap().selection,
+            Some(VoxelCoord::new(0, 0, 0))
+        );
+    }
+
+    #[test]
+    fn map_editor_add_tool_places_a_voxel_on_the_clicked_face() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+        {
+            let editor = app.map_editor.as_mut().unwrap();
+            let source = VoxelCoord::new(0, 1, 0);
+            let mut world = VoxelWorld::new();
+            world.set(source, VoxelCell::new(VoxelMaterial::Grass));
+            editor.working.as_mut().unwrap().world = world;
+            editor.camera =
+                Camera::new(Vec3::new(0.5, 1.5, 3.0)).looking_at(std::f32::consts::PI, 0.0);
+            editor.select_tool(MapEditorTool::Add);
+            editor.material_index = MAP_EDITOR_MATERIALS
+                .iter()
+                .position(|material| *material == VoxelMaterial::Stone)
+                .unwrap();
+        }
+
+        app.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
 
         let editor = app.map_editor.as_ref().unwrap();
-        let map = editor.working.as_ref().unwrap();
-        assert!(editor.is_new_map);
-        assert!(editor.dirty);
-        assert_eq!(map.metadata.id, "untitled-map");
-        assert_eq!(map.metadata.bounds.min, VoxelCoord::new(-10, 0, -10));
-        assert_eq!(map.metadata.bounds.max, VoxelCoord::new(9, 16, 9));
-        assert_eq!(map.world.voxel_count(), 400);
+        let target = editor.selection.unwrap();
+        assert_ne!(target, VoxelCoord::new(0, 1, 0));
         assert_eq!(
-            map.world.get(VoxelCoord::new(0, 0, 0)),
-            Some(VoxelCell::new(VoxelMaterial::Grass))
+            editor.working.as_ref().unwrap().world.get(target),
+            Some(VoxelCell::new(VoxelMaterial::Stone))
         );
-        assert!(matches!(map.player_start, MapMarker::PlayerSpawn { .. }));
+    }
+
+    #[test]
+    fn map_editor_second_click_on_selected_voxel_applies_the_active_tool() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Enter), ElementState::Pressed);
+        {
+            let editor = app.map_editor.as_mut().unwrap();
+            let coord = VoxelCoord::new(0, 0, 0);
+            let mut world = VoxelWorld::new();
+            world.set(coord, VoxelCell::new(VoxelMaterial::Stone));
+            editor.working.as_mut().unwrap().world = world;
+            editor.camera =
+                Camera::new(Vec3::new(0.5, 0.5, 3.0)).looking_at(std::f32::consts::PI, 0.0);
+            editor.selection = Some(coord);
+            editor.select_tool(MapEditorTool::Erase);
+        }
+
+        app.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+        assert_eq!(
+            app.map_editor
+                .as_ref()
+                .unwrap()
+                .working
+                .as_ref()
+                .unwrap()
+                .world
+                .get(VoxelCoord::new(0, 0, 0)),
+            None
+        );
+        assert!(app.map_editor.as_ref().unwrap().dirty);
+    }
+
+    #[test]
+    fn map_editor_applies_tools_with_enter_and_confirms_save_with_y_or_n() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+        {
+            let editor = app.map_editor.as_mut().unwrap();
+            editor.selection = Some(VoxelCoord::new(1, 1, 1));
+            editor.select_tool(MapEditorTool::Paint);
+            editor.material_index = MAP_EDITOR_MATERIALS
+                .iter()
+                .position(|material| *material == VoxelMaterial::Stone)
+                .unwrap();
+        }
+        let target = VoxelCoord::new(1, 1, 1);
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Enter), ElementState::Pressed);
+        assert_eq!(
+            app.map_editor
+                .as_ref()
+                .unwrap()
+                .working
+                .as_ref()
+                .unwrap()
+                .world
+                .get(target),
+            Some(VoxelCell::new(VoxelMaterial::Stone))
+        );
+
+        app.handle_keyboard(
+            &PhysicalKey::Code(KeyCode::Backquote),
+            ElementState::Pressed,
+        );
+        assert_eq!(
+            app.map_editor.as_ref().unwrap().pending_confirmation,
+            Some("save")
+        );
+        assert!(app.frame(0.0, true).overlays.iter().any(|overlay| {
+            overlay.text.contains("Are you sure?") && overlay.x == 62 && overlay.y == 41
+        }));
+
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyN), ElementState::Pressed);
+        assert!(app
+            .map_editor
+            .as_ref()
+            .unwrap()
+            .pending_confirmation
+            .is_none());
+        assert_eq!(
+            app.map_editor
+                .as_ref()
+                .unwrap()
+                .working
+                .as_ref()
+                .unwrap()
+                .world
+                .get(target),
+            Some(VoxelCell::new(VoxelMaterial::Stone))
+        );
     }
 
     #[test]
