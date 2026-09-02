@@ -33,6 +33,15 @@ menu.
 The planet-flight environment is not listed because it is analytic virtual
 terrain rather than a finite voxel map.
 
+## Freeplay
+
+From `Games`, press `F` for **Freeplay**. Choose any map from the shared map
+catalog with Up/Down, choose Explorer, Flight, Shooter, or Echolocation with
+`,`/`N` and `.`/`P`, then press Enter. Freeplay starts a fresh copy of the
+chosen map, so its regular authored mode is never changed. Echolocation keeps
+its pulse, reveal, and invisible pursuer systems on the selected map; maps
+without its authored receiver-door puzzle simply leave that puzzle dormant.
+
 ## Map Editor (Phase 4A)
 
 `Dev Tools` now also has `4  MAP EDITOR`. It lists valid compiled `hbmap`

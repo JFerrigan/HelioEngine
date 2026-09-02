@@ -449,6 +449,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 enum AppMode {
     Menu,
     GamesMenu,
+    FreeplayMenu,
     DevToolsMenu,
     PlanetFlight,
     CityWalk,
@@ -459,6 +460,7 @@ enum AppMode {
     MapViewer,
     MapEditor,
     MapPlaytest,
+    Freeplay,
     VoxelSandbox,
     Zombies,
     Liminal,
@@ -497,6 +499,7 @@ struct AppState {
     map_viewer: Option<MapViewerState>,
     map_editor: Option<MapEditorState>,
     map_playtest: Option<MapPlaytestState>,
+    freeplay: Option<FreeplayState>,
     sandbox: VoxelSandboxState,
     /// Immutable Zombies geometry; doors and purchased-weapon visuals are
     /// layered onto a fresh clone each frame.
@@ -554,6 +557,7 @@ impl AppState {
             map_viewer: None,
             map_editor: None,
             map_playtest: None,
+            freeplay: None,
             sandbox: VoxelSandboxState::new(),
             zombies_map: zombies_blueprint.clone(),
             zombies_blueprint,
@@ -667,6 +671,47 @@ impl AppState {
                 }
                 (AppMode::GamesMenu, PhysicalKey::Code(KeyCode::Digit9)) => {
                     self.start_echolocation();
+                    return KeyboardAction::StartScene;
+                }
+                (AppMode::GamesMenu, PhysicalKey::Code(KeyCode::KeyF)) => {
+                    self.start_freeplay_menu();
+                    return KeyboardAction::None;
+                }
+                (AppMode::FreeplayMenu, PhysicalKey::Code(KeyCode::KeyM | KeyCode::Escape)) => {
+                    self.mode = AppMode::GamesMenu;
+                    self.menu_selection = 0;
+                    return KeyboardAction::None;
+                }
+                (AppMode::FreeplayMenu, PhysicalKey::Code(KeyCode::ArrowDown)) => {
+                    self.freeplay
+                        .as_mut()
+                        .expect("freeplay menu requires state")
+                        .select_next_map();
+                    return KeyboardAction::None;
+                }
+                (AppMode::FreeplayMenu, PhysicalKey::Code(KeyCode::ArrowUp)) => {
+                    self.freeplay
+                        .as_mut()
+                        .expect("freeplay menu requires state")
+                        .select_previous_map();
+                    return KeyboardAction::None;
+                }
+                (AppMode::FreeplayMenu, PhysicalKey::Code(KeyCode::KeyN | KeyCode::Period)) => {
+                    self.freeplay
+                        .as_mut()
+                        .expect("freeplay menu requires state")
+                        .select_next_mode();
+                    return KeyboardAction::None;
+                }
+                (AppMode::FreeplayMenu, PhysicalKey::Code(KeyCode::KeyP | KeyCode::Comma)) => {
+                    self.freeplay
+                        .as_mut()
+                        .expect("freeplay menu requires state")
+                        .select_previous_mode();
+                    return KeyboardAction::None;
+                }
+                (AppMode::FreeplayMenu, PhysicalKey::Code(KeyCode::Enter | KeyCode::Space)) => {
+                    self.start_freeplay();
                     return KeyboardAction::StartScene;
                 }
                 (AppMode::DevToolsMenu, PhysicalKey::Code(KeyCode::Digit1)) => {
@@ -1089,6 +1134,9 @@ impl AppState {
         if self.mode == AppMode::MapEditor {
             self.map_editor = None;
         }
+        if matches!(self.mode, AppMode::FreeplayMenu | AppMode::Freeplay) {
+            self.freeplay = None;
+        }
         self.mode = AppMode::Menu;
         self.menu_selection = 0;
         self.input = PlayerInput::default();
@@ -1104,7 +1152,7 @@ impl AppState {
     fn menu_entry_count(&self) -> usize {
         match self.mode {
             AppMode::Menu => 2,
-            AppMode::GamesMenu => 9,
+            AppMode::GamesMenu => 10,
             AppMode::DevToolsMenu => 4,
             _ => unreachable!("only menu modes have menu entries"),
         }
@@ -1158,6 +1206,10 @@ impl AppState {
                 self.start_echolocation();
                 KeyboardAction::StartScene
             }
+            (AppMode::GamesMenu, 9) => {
+                self.start_freeplay_menu();
+                KeyboardAction::None
+            }
             (AppMode::DevToolsMenu, 0) => {
                 self.start_asset_viewer();
                 KeyboardAction::StartScene
@@ -1182,6 +1234,26 @@ impl AppState {
         self.mode = AppMode::PlanetFlight;
         self.camera = planet_start_camera();
         self.input = PlayerInput::default();
+    }
+
+    fn start_freeplay_menu(&mut self) {
+        self.mode = AppMode::FreeplayMenu;
+        self.freeplay = Some(FreeplayState::new(build_map_catalog_from(
+            &self.map_catalog,
+        )));
+        self.input = PlayerInput::default();
+    }
+
+    fn start_freeplay(&mut self) {
+        let freeplay = self
+            .freeplay
+            .as_mut()
+            .expect("freeplay menu requires state");
+        freeplay.start();
+        self.mode = AppMode::Freeplay;
+        self.camera = freeplay.camera();
+        self.input = PlayerInput::default();
+        self.walk_motion = WalkMotion::default();
     }
 
     fn start_city(&mut self) {
@@ -1385,6 +1457,13 @@ impl AppState {
         match self.mode {
             AppMode::Menu => build_menu_scene(self.tick, self.menu_selection),
             AppMode::GamesMenu => build_games_menu_scene(self.tick, self.menu_selection),
+            AppMode::FreeplayMenu => {
+                let freeplay = self
+                    .freeplay
+                    .as_ref()
+                    .expect("freeplay menu requires state");
+                build_freeplay_menu_scene(self.tick, freeplay)
+            }
             AppMode::DevToolsMenu => build_dev_tools_menu_scene(self.tick, self.menu_selection),
             AppMode::PlanetFlight => {
                 update_flight_camera(&mut self.camera, &self.input, dt);
@@ -1564,6 +1643,96 @@ impl AppState {
                 }
                 scene
             }
+            AppMode::Freeplay => {
+                let freeplay = self
+                    .freeplay
+                    .as_mut()
+                    .expect("freeplay mode requires state");
+                match freeplay.mode() {
+                    FreeplayMode::Flight => update_flight_camera(&mut self.camera, &self.input, dt),
+                    FreeplayMode::Explorer => update_jumping_walking_camera(
+                        &mut self.camera,
+                        &mut self.input,
+                        &mut self.walk_motion,
+                        &freeplay.world,
+                        STANDARD_WALK_PROFILE,
+                        dt,
+                    ),
+                    FreeplayMode::Shooter => {
+                        let before_move = self.camera.position;
+                        update_jumping_walking_camera(
+                            &mut self.camera,
+                            &mut self.input,
+                            &mut self.walk_motion,
+                            &freeplay.world,
+                            STANDARD_WALK_PROFILE,
+                            dt,
+                        );
+                        freeplay.viewmodel_bob.update(
+                            horizontal_distance(before_move, self.camera.position),
+                            moving_on_ground(&self.input),
+                            dt,
+                        );
+                        freeplay.shooter.update_effects(dt);
+                    }
+                    FreeplayMode::Echolocation => {
+                        let echo = freeplay
+                            .echolocation
+                            .as_mut()
+                            .expect("echo freeplay requires echo state");
+                        if echo.run_status == EchoRunStatus::Active {
+                            let before_move = self.camera.position;
+                            update_jumping_walking_camera(
+                                &mut self.camera,
+                                &mut self.input,
+                                &mut self.walk_motion,
+                                &echo.world,
+                                ECHOLOCATION_WALK_PROFILE,
+                                dt,
+                            );
+                            self.audio_events.extend(echo.update_player_footsteps(
+                                horizontal_distance(before_move, self.camera.position),
+                                self.camera.position,
+                            ));
+                        }
+                        let update = echo.update_with_pursuer_from_listener(
+                            dt,
+                            self.camera.position,
+                            self.camera.right(),
+                        );
+                        self.audio_events.extend(update.sound_events);
+                        if let Some(position) = update.corrected_player_position {
+                            self.camera.position = position;
+                        }
+                    }
+                }
+                freeplay.camera = self.camera;
+                let mut scene = match freeplay.mode() {
+                    FreeplayMode::Echolocation => {
+                        let echo = freeplay
+                            .echolocation
+                            .as_ref()
+                            .expect("echo freeplay requires echo state");
+                        self.city_builder.build_with_visibility(
+                            &echo.world,
+                            &self.camera,
+                            self.tick,
+                            |hit| echo.face_is_revealed(hit.coord, hit.normal),
+                        )
+                    }
+                    _ => self
+                        .city_builder
+                        .build(&freeplay.world, &self.camera, self.tick),
+                };
+                render_freeplay_scene(
+                    &mut scene,
+                    freeplay,
+                    &self.camera,
+                    &self.weapon_asset,
+                    mouse_captured,
+                );
+                scene
+            }
             AppMode::VoxelSandbox => {
                 match self.sandbox.movement_mode {
                     SandboxMovementMode::Flight => update_sandbox_camera(
@@ -1698,7 +1867,7 @@ impl AppState {
 
     fn apply_mouse_motion(&mut self, delta_x: f32, delta_y: f32) {
         match self.mode {
-            AppMode::Menu | AppMode::GamesMenu | AppMode::DevToolsMenu => {}
+            AppMode::Menu | AppMode::GamesMenu | AppMode::FreeplayMenu | AppMode::DevToolsMenu => {}
             AppMode::PlanetFlight => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Unrestricted)
             }
@@ -1712,7 +1881,8 @@ impl AppState {
             | AppMode::VoxelSandbox
             | AppMode::Zombies
             | AppMode::Liminal
-            | AppMode::EchoLocation => {
+            | AppMode::EchoLocation
+            | AppMode::Freeplay => {
                 apply_mouse_look(&mut self.camera, delta_x, delta_y, PitchMode::Clamped)
             }
             AppMode::MapPlaytest => {
@@ -1749,6 +1919,51 @@ impl AppState {
                     .is_some_and(|playtest| playtest.mode == MapPlaytestMode::Shooter) =>
             {
                 self.fire_map_playtest_weapon()
+            }
+            (AppMode::Freeplay, MouseButton::Left, ElementState::Pressed)
+                if self
+                    .freeplay
+                    .as_ref()
+                    .is_some_and(|state| state.mode() == FreeplayMode::Shooter) =>
+            {
+                let freeplay = self
+                    .freeplay
+                    .as_mut()
+                    .expect("freeplay mode requires state");
+                self.audio_events
+                    .extend(freeplay.shooter.fire(&freeplay.world, &self.camera));
+            }
+            (AppMode::Freeplay, MouseButton::Left, ElementState::Pressed)
+                if self
+                    .freeplay
+                    .as_ref()
+                    .is_some_and(|state| state.mode() == FreeplayMode::Echolocation) =>
+            {
+                self.freeplay
+                    .as_mut()
+                    .expect("freeplay mode requires state")
+                    .echolocation
+                    .as_mut()
+                    .expect("echo freeplay requires echo state")
+                    .begin_pulse_charge();
+            }
+            (AppMode::Freeplay, MouseButton::Left, ElementState::Released)
+                if self
+                    .freeplay
+                    .as_ref()
+                    .is_some_and(|state| state.mode() == FreeplayMode::Echolocation) =>
+            {
+                if self
+                    .freeplay
+                    .as_mut()
+                    .expect("freeplay mode requires state")
+                    .echolocation
+                    .as_mut()
+                    .expect("echo freeplay requires echo state")
+                    .release_pulse_charge(self.camera.position)
+                {
+                    self.audio_events.push(SoundEffect::EchoPing);
+                }
             }
             (AppMode::EchoLocation, MouseButton::Left, ElementState::Pressed) => {
                 self.echolocation.begin_pulse_charge()
@@ -1830,11 +2045,14 @@ fn update_mode_audio(audio: &mut GameAudio, mode: AppMode) {
         AppMode::CornMaze => audio.enter_corn_maze_mode(),
         AppMode::BarScene | AppMode::VoxelSandbox => audio.enter_bar_mode(),
         AppMode::CityShooter | AppMode::Zombies => audio.enter_doom_mode(),
-        AppMode::PlanetFlight | AppMode::Liminal | AppMode::MapPlaytest => audio.enter_doom_mode(),
+        AppMode::PlanetFlight | AppMode::Liminal | AppMode::MapPlaytest | AppMode::Freeplay => {
+            audio.enter_doom_mode()
+        }
         AppMode::DroneGateRunner => audio.enter_drone_mode(),
         AppMode::EchoLocation => audio.enter_doom_mode(),
         AppMode::Menu
         | AppMode::GamesMenu
+        | AppMode::FreeplayMenu
         | AppMode::DevToolsMenu
         | AppMode::AssetViewer
         | AppMode::MapViewer
@@ -2791,6 +3009,18 @@ impl EchoLocationState {
             static_burst_counter: 0,
             puzzle,
         }
+    }
+
+    /// Freeplay keeps Echolocation's pulse, reveal, and pursuer systems while
+    /// substituting the player-selected map. The authored receiver-door puzzle
+    /// is simply dormant on maps that do not contain its markers.
+    fn new_for_world(seed: u64, world: VoxelWorld, start_position: Vec3) -> Self {
+        let mut state = Self::new_seeded(seed);
+        state.world = world;
+        state.start_position = start_position;
+        state.pursuer.position =
+            echo_pursuer_spawn_position(&state.world, start_position).unwrap_or(start_position);
+        state
     }
 
     fn emit_ping(&mut self, origin: Vec3) -> bool {
@@ -4422,6 +4652,103 @@ struct PreviewMap {
     declared_bounds: Option<VoxelBounds>,
     marker_labels: Vec<String>,
     asset_labels: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FreeplayMode {
+    Explorer,
+    Flight,
+    Shooter,
+    Echolocation,
+}
+
+impl FreeplayMode {
+    const ALL: [Self; 4] = [
+        Self::Explorer,
+        Self::Flight,
+        Self::Shooter,
+        Self::Echolocation,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Explorer => "EXPLORER",
+            Self::Flight => "FLIGHT",
+            Self::Shooter => "SHOOTER",
+            Self::Echolocation => "ECHOLOCATION",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FreeplayState {
+    maps: Vec<PreviewMap>,
+    selected_map: usize,
+    selected_mode: usize,
+    world: VoxelWorld,
+    camera: Camera,
+    shooter: ShooterState,
+    viewmodel_bob: ViewmodelBob,
+    echolocation: Option<EchoLocationState>,
+}
+
+impl FreeplayState {
+    fn new(maps: Vec<PreviewMap>) -> Self {
+        let map = maps.first().expect("freeplay requires at least one map");
+        Self {
+            world: map.world.clone(),
+            camera: map.start_camera,
+            maps,
+            selected_map: 0,
+            selected_mode: 0,
+            shooter: ShooterState::empty(),
+            viewmodel_bob: ViewmodelBob::default(),
+            echolocation: None,
+        }
+    }
+
+    fn mode(&self) -> FreeplayMode {
+        FreeplayMode::ALL[self.selected_mode]
+    }
+
+    fn selected_map(&self) -> &PreviewMap {
+        &self.maps[self.selected_map]
+    }
+
+    fn select_next_map(&mut self) {
+        self.selected_map = (self.selected_map + 1) % self.maps.len();
+    }
+
+    fn select_previous_map(&mut self) {
+        self.selected_map = (self.selected_map + self.maps.len() - 1) % self.maps.len();
+    }
+
+    fn select_next_mode(&mut self) {
+        self.selected_mode = (self.selected_mode + 1) % FreeplayMode::ALL.len();
+    }
+
+    fn select_previous_mode(&mut self) {
+        self.selected_mode =
+            (self.selected_mode + FreeplayMode::ALL.len() - 1) % FreeplayMode::ALL.len();
+    }
+
+    fn start(&mut self) {
+        self.world = self.selected_map().world.clone();
+        self.camera = self.selected_map().start_camera;
+        self.shooter = ShooterState::empty();
+        self.viewmodel_bob = ViewmodelBob::default();
+        self.echolocation = (self.mode() == FreeplayMode::Echolocation).then(|| {
+            EchoLocationState::new_for_world(
+                ECHOLOCATION_SEED,
+                self.world.clone(),
+                self.camera.position,
+            )
+        });
+    }
+
+    fn camera(&self) -> Camera {
+        self.camera
+    }
 }
 
 impl PreviewMap {
@@ -6773,6 +7100,20 @@ struct NavigationField {
     eye_height: f32,
 }
 
+/// Eight-way navigation keeps enemies from looking locked to the voxel grid,
+/// while the diagonal guard in `build` prevents them from cutting through a
+/// closed corner.
+const NAVIGATION_STEPS: [(i32, i32); 8] = [
+    (-1, 0),
+    (1, 0),
+    (0, -1),
+    (0, 1),
+    (-1, -1),
+    (-1, 1),
+    (1, -1),
+    (1, 1),
+];
+
 impl NavigationField {
     fn build(world: &VoxelWorld, target: Vec3, profile: WalkProfile) -> Option<Self> {
         let bounds = world.bounds()?;
@@ -6799,8 +7140,16 @@ impl NavigationField {
             let current_index = Self::index_raw(min_x, min_z, width, height, x, z)?;
             let current_distance = distances[current_index];
 
-            for (nx, nz) in [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)] {
+            for (dx, dz) in NAVIGATION_STEPS {
+                let (nx, nz) = (x + dx, z + dz);
                 if !navigation_cell_is_walkable(world, nx, nz, profile) {
+                    continue;
+                }
+                if dx != 0
+                    && dz != 0
+                    && (!navigation_cell_is_walkable(world, x + dx, z, profile)
+                        || !navigation_cell_is_walkable(world, x, z + dz, profile))
+                {
                     continue;
                 }
 
@@ -6829,12 +7178,16 @@ impl NavigationField {
         let x = position.x.floor() as i32;
         let z = position.z.floor() as i32;
         let current = self.distance(x, z)?;
+        if current == u16::MAX {
+            return None;
+        }
         if current == 0 {
             return Some(Vec3::new(x as f32 + 0.5, self.eye_height, z as f32 + 0.5));
         }
 
         let mut best: Option<(u16, i32, i32)> = None;
-        for (nx, nz) in [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)] {
+        for (dx, dz) in NAVIGATION_STEPS {
+            let (nx, nz) = (x + dx, z + dz);
             let Some(distance) = self.distance(nx, nz) else {
                 continue;
             };
@@ -10447,10 +10800,31 @@ fn build_games_menu_scene(tick: u64, selection: usize) -> Scene {
             "7  LIMINAL OFFICE",
             "8  DRONE GATE RUNNER",
             "9  ECHOLOCATION",
+            "F  FREEPLAY — ANY MAP / PLAYSTYLE",
             "",
             "M / ESC  BACK",
         ],
         selection,
+    )
+}
+
+fn build_freeplay_menu_scene(tick: u64, freeplay: &FreeplayState) -> Scene {
+    let map = freeplay.selected_map();
+    build_menu_screen(
+        tick,
+        "FREEPLAY",
+        &[
+            "Choose a map with Up/Down.",
+            "Choose a playstyle with ,/N and ./P.",
+            "",
+            &format!("> MAP: {}", map.name),
+            &format!("  SOURCE: {}", map.definition),
+            &format!("> MODE: {}", freeplay.mode().label()),
+            "",
+            "Enter / Space  START",
+            "M / Esc        BACK",
+        ],
+        0,
     )
 }
 
@@ -10987,6 +11361,64 @@ fn render_map_playtest_shooter_scene(
             playtest.viewmodel_bob.offset(),
         ),
     });
+}
+
+fn render_freeplay_scene(
+    scene: &mut Scene,
+    freeplay: &FreeplayState,
+    camera: &Camera,
+    weapon_asset: &PreviewAsset,
+    mouse_captured: bool,
+) {
+    let controls = match freeplay.mode() {
+        FreeplayMode::Explorer => "WASD walk  Space jump",
+        FreeplayMode::Flight => "WASD fly  Space/Ctrl up/down",
+        FreeplayMode::Shooter => "WASD walk  Space jump  click fire",
+        FreeplayMode::Echolocation => "WASD walk  Space/Click echo",
+    };
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 2,
+        z: 120,
+        text: format!(
+            "FREEPLAY  {}  {}  M menu  mouse {}",
+            freeplay.selected_map().name,
+            freeplay.mode().label(),
+            if mouse_captured { "locked" } else { "free" }
+        ),
+        style: hud_style(),
+    });
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: 4,
+        z: 120,
+        text: controls.to_string(),
+        style: TextStyle::default(),
+    });
+    scene.overlays.push(Overlay {
+        x: VIEWPORT.width as i32 / 2,
+        y: VIEWPORT.height as i32 / 2,
+        z: 120,
+        text: "+".to_string(),
+        style: TextStyle::default(),
+    });
+    if freeplay.mode() == FreeplayMode::Shooter {
+        scene.layers.push(Layer {
+            name: "bullets".to_string(),
+            z: 35,
+            cells: bullet_cells(scene.viewport, camera, &freeplay.shooter.bullet_traces),
+        });
+        scene.layers.push(Layer {
+            name: "weapon".to_string(),
+            z: 40,
+            cells: weapon_viewmodel_cells(
+                scene.viewport,
+                weapon_asset,
+                freeplay.shooter.shot_flash_timer > 0.0,
+                freeplay.viewmodel_bob.offset(),
+            ),
+        });
+    }
 }
 
 fn inspector_line(label: &str, entries: &[String]) -> String {
@@ -13077,6 +13509,36 @@ mod tests {
 
         assert_eq!(action, KeyboardAction::StartScene);
         assert_eq!(app.mode, AppMode::CityWalk);
+    }
+
+    #[test]
+    fn freeplay_starts_echolocation_on_a_player_selected_map() {
+        let mut app = AppState::new();
+        open_games_menu(&mut app);
+        assert_eq!(
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyF), ElementState::Pressed),
+            KeyboardAction::None
+        );
+        assert_eq!(app.mode, AppMode::FreeplayMenu);
+
+        for _ in 0..3 {
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyN), ElementState::Pressed);
+        }
+        assert_eq!(
+            app.freeplay.as_ref().unwrap().mode(),
+            FreeplayMode::Echolocation
+        );
+        assert_eq!(
+            app.handle_keyboard(&PhysicalKey::Code(KeyCode::Enter), ElementState::Pressed),
+            KeyboardAction::StartScene
+        );
+        assert_eq!(app.mode, AppMode::Freeplay);
+        assert!(app.freeplay.as_ref().unwrap().echolocation.is_some());
+        assert!(app
+            .frame(0.0, false)
+            .overlays
+            .iter()
+            .any(|overlay| overlay.text.contains("FREEPLAY")));
     }
 
     #[test]
@@ -15435,6 +15897,62 @@ mod tests {
 
         assert!(next.x < 0.0);
         assert!(can_walk_to_on_ground(&world, next, zombie_walk_profile()));
+    }
+
+    #[test]
+    fn enemy_navigation_takes_open_diagonal_steps() {
+        let mut world = VoxelWorld::new();
+        fill_cuboid(
+            &mut world,
+            VoxelCoord::new(0, 0, 0),
+            VoxelCoord::new(2, 0, 2),
+            VoxelMaterial::Regolith,
+        );
+        let navigation = NavigationField::build(
+            &world,
+            Vec3::new(2.5, ZOMBIE_EYE_HEIGHT, 2.5),
+            zombie_walk_profile(),
+        )
+        .expect("open ground should build a navigation field");
+
+        assert_eq!(
+            navigation.next_step(Vec3::new(0.5, ZOMBIE_EYE_HEIGHT, 0.5)),
+            Some(Vec3::new(1.5, ZOMBIE_EYE_HEIGHT, 1.5))
+        );
+    }
+
+    #[test]
+    fn enemy_navigation_does_not_cut_diagonally_through_closed_corners() {
+        let mut world = VoxelWorld::new();
+        fill_cuboid(
+            &mut world,
+            VoxelCoord::new(0, 0, 0),
+            VoxelCoord::new(2, 0, 2),
+            VoxelMaterial::Regolith,
+        );
+        fill_cuboid(
+            &mut world,
+            VoxelCoord::new(1, 1, 0),
+            VoxelCoord::new(1, 4, 0),
+            VoxelMaterial::Basalt,
+        );
+        fill_cuboid(
+            &mut world,
+            VoxelCoord::new(0, 1, 1),
+            VoxelCoord::new(0, 4, 1),
+            VoxelMaterial::Basalt,
+        );
+        let navigation = NavigationField::build(
+            &world,
+            Vec3::new(2.5, ZOMBIE_EYE_HEIGHT, 2.5),
+            zombie_walk_profile(),
+        )
+        .expect("target should remain walkable");
+
+        assert_eq!(
+            navigation.next_step(Vec3::new(0.5, ZOMBIE_EYE_HEIGHT, 0.5)),
+            None
+        );
     }
 
     #[test]

@@ -20,6 +20,8 @@ The current goal is not a playable game loop. The goal is a clean engine foundat
 
 Start with [docs/foundation.md](docs/foundation.md) for the current root structure.
 For the graphics layer, read [docs/graphics.md](docs/graphics.md).
+For known frame costs and the staged optimization plan, read
+[docs/performance.md](docs/performance.md).
 
 ## Run
 

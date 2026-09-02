@@ -39,6 +39,9 @@ The first interactive puzzle occupies the starting room. A closed bulkhead at `x
 - `V` toggles the full-map debug view.
 - `Tab` opens tuning controls: `[` / `]` change range, `-` / `=` change pulse speed, `,` / `.` change echo strength, and `R` restores the tuning defaults.
 - `M` returns to the menu and `Escape` releases mouse capture.
+- Freeplay can apply these pulse, reveal, and pursuer rules to any selectable
+  map. On maps without the authored receiver-door markers, that puzzle remains
+  dormant while the core Echolocation loop still runs.
 
 ## The invisible pursuer
 
