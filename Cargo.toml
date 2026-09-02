@@ -4,6 +4,7 @@ members = [
     "crates/heliobound-audio",
     "crates/heliobound-cli",
     "crates/heliobound-gfx",
+    "crates/heliobound-gpu",
 ]
 resolver = "2"
 

@@ -714,6 +714,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "heliobound-gpu"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "font8x8",
+ "heliobound-core",
+ "heliobound-gfx",
+ "naga",
+ "pollster",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

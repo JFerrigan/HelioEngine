@@ -15,4 +15,6 @@ pub use planet::{
     PlanetConfig, PlanetGenerator, PlanetHit, PlanetSurfaceSample, PlanetTerrainClass,
     ProceduralPlanet,
 };
-pub use voxel::{ChunkCoord, VoxelBounds, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld};
+pub use voxel::{
+    ChunkCoord, ChunkSnapshot, VoxelBounds, VoxelCell, VoxelCoord, VoxelMaterial, VoxelWorld,
+};

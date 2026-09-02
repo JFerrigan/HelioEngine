@@ -1,0 +1,16 @@
+[package]
+name = "heliobound-gpu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+heliobound-core = { path = "../heliobound-core" }
+heliobound-gfx = { path = "../heliobound-gfx" }
+font8x8 = "0.3.1"
+pollster = "0.4"
+wgpu = "29.0.4"
+winit = "0.30.13"
+
+[dev-dependencies]
+naga = { version = "29.0.4", features = ["wgsl-in"] }
