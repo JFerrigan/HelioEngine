@@ -1,6 +1,4 @@
-use crate::scene::{
-    Layer, Overlay, RenderAsset, RenderVoxel, Scene, SceneCell, TextStyle, Viewport,
-};
+use crate::scene::{Layer, Overlay, RenderAsset, Scene, SceneCell, TextStyle, Viewport};
 use heliobound_core::{
     Camera, PlanetHit, PlanetTerrainClass, ProceduralPlanet, Ray, Vec3, VoxelBounds, VoxelCell,
     VoxelCoord, VoxelMaterial, VoxelWorld,
@@ -240,10 +238,14 @@ impl SceneBuilder {
                     ray,
                     self.config.max_distance.min(camera.max_distance),
                 );
+                // Terrain is authoritative for occlusion. Do not spend time
+                // walking an asset whose first possible detail lies behind it.
                 let asset_hit = raycast_render_assets(
                     render_assets,
                     ray,
-                    self.config.max_distance.min(camera.max_distance),
+                    world_hit.map_or(self.config.max_distance.min(camera.max_distance), |hit| {
+                        hit.distance
+                    }),
                 );
                 if let Some(hit) = world_hit
                     .filter(|hit| asset_hit.is_none_or(|asset| hit.distance <= asset.distance))
@@ -376,25 +378,193 @@ fn raycast_render_assets(
     assets
         .iter()
         .filter_map(|asset| {
-            // The broad-phase slab test is constant work per placed asset.
-            // It prevents a dense model (such as the 1025-voxel airlock) from
-            // being scanned by every one of the 14,400 screen rays.
+            // The broad-phase slab test rejects whole instances. Detail then
+            // uses local DDA, rather than scanning every occupied voxel.
             intersect_render_asset_bounds(ray, asset.min, asset.max, max_distance)?;
-            asset
-                .voxels
-                .iter()
-                .filter_map(|voxel| {
-                    let (distance, normal) = intersect_render_voxel(*voxel, ray, max_distance)?;
-                    Some(RenderVoxelHit {
-                        material: voxel.material,
-                        distance,
-                        normal,
-                        ghost: voxel.ghost,
-                    })
-                })
-                .min_by(|a, b| a.distance.total_cmp(&b.distance))
+            raycast_render_asset_local(asset, ray, max_distance)
         })
         .min_by(|a, b| a.distance.total_cmp(&b.distance))
+}
+
+fn raycast_render_asset_local(
+    asset: &RenderAsset,
+    ray: Ray,
+    max_distance: f32,
+) -> Option<RenderVoxelHit> {
+    let origin = rotate_asset_vector(ray.origin - asset.anchor, inverse_yaw(asset.yaw_degrees));
+    let direction = rotate_asset_vector(ray.direction, inverse_yaw(asset.yaw_degrees));
+    let local_ray = Ray::new(origin, direction);
+    let size = asset.voxel_size;
+    let min = Vec3::new(
+        -asset.pivot[0] * size,
+        -asset.pivot[1] * size,
+        -asset.pivot[2] * size,
+    );
+    let max = min
+        + Vec3::new(
+            asset.dimensions[0] as f32 * size,
+            asset.dimensions[1] as f32 * size,
+            asset.dimensions[2] as f32 * size,
+        );
+    let (mut distance, exit, mut normal) =
+        intersect_asset_bounds(local_ray, min, max, max_distance)?;
+    distance = distance.max(0.0);
+    let point = local_ray.origin + local_ray.direction * (distance + 0.0001);
+    let mut cell = VoxelCoord::new(
+        ((point.x / size) + asset.pivot[0]).floor() as i32,
+        ((point.y / size) + asset.pivot[1]).floor() as i32,
+        ((point.z / size) + asset.pivot[2]).floor() as i32,
+    );
+    let step = |direction: f32| if direction >= 0.0 { 1 } else { -1 };
+    let sx = step(local_ray.direction.x);
+    let sy = step(local_ray.direction.y);
+    let sz = step(local_ray.direction.z);
+    let next = |coord: i32, pivot: f32, direction: f32, step: i32| {
+        if direction.abs() <= f32::EPSILON {
+            f32::INFINITY
+        } else {
+            (((if step > 0 { coord + 1 } else { coord }) as f32 - pivot) * size
+                - local_ray.origin.x)
+                / direction
+        }
+    };
+    let mut tx = next(cell.x, asset.pivot[0], local_ray.direction.x, sx);
+    let mut ty = if local_ray.direction.y.abs() <= f32::EPSILON {
+        f32::INFINITY
+    } else {
+        (((if sy > 0 { cell.y + 1 } else { cell.y }) as f32 - asset.pivot[1]) * size
+            - local_ray.origin.y)
+            / local_ray.direction.y
+    };
+    let mut tz = if local_ray.direction.z.abs() <= f32::EPSILON {
+        f32::INFINITY
+    } else {
+        (((if sz > 0 { cell.z + 1 } else { cell.z }) as f32 - asset.pivot[2]) * size
+            - local_ray.origin.z)
+            / local_ray.direction.z
+    };
+    // `next` is x-specific because it closes over the origin; keep the other
+    // axes explicit and advance by a fixed physical-cell interval.
+    let dx = if local_ray.direction.x.abs() <= f32::EPSILON {
+        f32::INFINITY
+    } else {
+        size / local_ray.direction.x.abs()
+    };
+    let dy = if local_ray.direction.y.abs() <= f32::EPSILON {
+        f32::INFINITY
+    } else {
+        size / local_ray.direction.y.abs()
+    };
+    let dz = if local_ray.direction.z.abs() <= f32::EPSILON {
+        f32::INFINITY
+    } else {
+        size / local_ray.direction.z.abs()
+    };
+    while distance <= exit && distance <= max_distance {
+        if cell.x >= 0
+            && cell.y >= 0
+            && cell.z >= 0
+            && cell.x < asset.dimensions[0]
+            && cell.y < asset.dimensions[1]
+            && cell.z < asset.dimensions[2]
+        {
+            if let Some(&material) = asset.voxels.get(&cell) {
+                return Some(RenderVoxelHit {
+                    material,
+                    distance,
+                    normal: rotate_asset_vector(normal, asset.yaw_degrees),
+                    ghost: asset.ghost,
+                });
+            }
+        }
+        if tx <= ty && tx <= tz {
+            distance = tx;
+            tx += dx;
+            cell.x += sx;
+            normal = Vec3::new(-(sx as f32), 0.0, 0.0);
+        } else if ty <= tz {
+            distance = ty;
+            ty += dy;
+            cell.y += sy;
+            normal = Vec3::new(0.0, -(sy as f32), 0.0);
+        } else {
+            distance = tz;
+            tz += dz;
+            cell.z += sz;
+            normal = Vec3::new(0.0, 0.0, -(sz as f32));
+        }
+    }
+    None
+}
+
+fn inverse_yaw(yaw: u16) -> u16 {
+    (360 - yaw) % 360
+}
+fn rotate_asset_vector(v: Vec3, yaw: u16) -> Vec3 {
+    match yaw {
+        0 => v,
+        90 => Vec3::new(v.z, v.y, -v.x),
+        180 => Vec3::new(-v.x, v.y, -v.z),
+        270 => Vec3::new(-v.z, v.y, v.x),
+        _ => unreachable!("asset yaw is validated"),
+    }
+}
+
+fn intersect_asset_bounds(
+    ray: Ray,
+    min: Vec3,
+    max: Vec3,
+    max_distance: f32,
+) -> Option<(f32, f32, Vec3)> {
+    let mut enter = f32::NEG_INFINITY;
+    let mut exit = f32::INFINITY;
+    let mut normal = Vec3::ZERO;
+    for (origin, direction, lo, hi, axis) in [
+        (
+            ray.origin.x,
+            ray.direction.x,
+            min.x,
+            max.x,
+            Vec3::new(-1.0, 0.0, 0.0),
+        ),
+        (
+            ray.origin.y,
+            ray.direction.y,
+            min.y,
+            max.y,
+            Vec3::new(0.0, -1.0, 0.0),
+        ),
+        (
+            ray.origin.z,
+            ray.direction.z,
+            min.z,
+            max.z,
+            Vec3::new(0.0, 0.0, -1.0),
+        ),
+    ] {
+        if direction.abs() <= f32::EPSILON {
+            if origin < lo || origin > hi {
+                return None;
+            }
+            continue;
+        }
+        let mut near = (lo - origin) / direction;
+        let mut far = (hi - origin) / direction;
+        let mut n = axis;
+        if near > far {
+            std::mem::swap(&mut near, &mut far);
+            n = n * -1.0;
+        }
+        if near > enter {
+            enter = near;
+            normal = n;
+        }
+        exit = exit.min(far);
+        if enter > exit {
+            return None;
+        }
+    }
+    (exit >= 0.0 && enter <= max_distance).then_some((enter, exit, normal))
 }
 
 fn intersect_render_asset_bounds(ray: Ray, min: Vec3, max: Vec3, max_distance: f32) -> Option<()> {
@@ -423,59 +593,6 @@ fn intersect_render_asset_bounds(ray: Ray, min: Vec3, max: Vec3, max_distance: f
         }
     }
     (exit >= 0.0 && enter <= max_distance).then_some(())
-}
-
-fn intersect_render_voxel(voxel: RenderVoxel, ray: Ray, max_distance: f32) -> Option<(f32, Vec3)> {
-    let mut enter = f32::NEG_INFINITY;
-    let mut exit = f32::INFINITY;
-    let mut normal = Vec3::ZERO;
-    for (origin, direction, min, max, enter_normal) in [
-        (
-            ray.origin.x,
-            ray.direction.x,
-            voxel.min.x,
-            voxel.max.x,
-            Vec3::new(-1.0, 0.0, 0.0),
-        ),
-        (
-            ray.origin.y,
-            ray.direction.y,
-            voxel.min.y,
-            voxel.max.y,
-            Vec3::new(0.0, -1.0, 0.0),
-        ),
-        (
-            ray.origin.z,
-            ray.direction.z,
-            voxel.min.z,
-            voxel.max.z,
-            Vec3::new(0.0, 0.0, -1.0),
-        ),
-    ] {
-        if direction.abs() <= f32::EPSILON {
-            if origin < min || origin > max {
-                return None;
-            }
-            continue;
-        }
-        let mut near = (min - origin) / direction;
-        let mut far = (max - origin) / direction;
-        let mut axis_normal = enter_normal;
-        if near > far {
-            std::mem::swap(&mut near, &mut far);
-            axis_normal = axis_normal * -1.0;
-        }
-        if near > enter {
-            enter = near;
-            normal = axis_normal;
-        }
-        exit = exit.min(far);
-        if enter > exit {
-            return None;
-        }
-    }
-    let distance = if enter >= 0.0 { enter } else { exit };
-    (distance >= 0.0 && distance <= max_distance).then_some((distance, normal))
 }
 
 fn dim_hex_color(color: &str) -> String {
@@ -789,35 +906,56 @@ fn hash_sky_cell(x: i32, y: i32, z: i32) -> u64 {
 mod tests {
     use super::*;
     use heliobound_core::{Camera, Vec3, VoxelCell, VoxelMaterial};
+    use std::collections::HashMap;
+
+    fn test_asset(
+        anchor: Vec3,
+        voxel_size: f32,
+        voxels: &[(VoxelCoord, VoxelMaterial)],
+    ) -> RenderAsset {
+        let dimensions = voxels.iter().fold([0; 3], |mut dims, (v, _)| {
+            dims[0] = dims[0].max(v.x + 1);
+            dims[1] = dims[1].max(v.y + 1);
+            dims[2] = dims[2].max(v.z + 1);
+            dims
+        });
+        let max = anchor
+            + Vec3::new(
+                dimensions[0] as f32 * voxel_size,
+                dimensions[1] as f32 * voxel_size,
+                dimensions[2] as f32 * voxel_size,
+            );
+        RenderAsset {
+            min: anchor,
+            max,
+            voxels: voxels.iter().copied().collect::<HashMap<_, _>>(),
+            dimensions,
+            voxel_size,
+            pivot: [0.0; 3],
+            anchor,
+            yaw_degrees: 0,
+            ghost: false,
+        }
+    }
 
     #[test]
     fn render_asset_broad_bounds_reject_a_miss_before_detail_raycast() {
-        let asset = RenderAsset {
-            min: Vec3::new(10.0, 0.0, 10.0),
-            max: Vec3::new(11.0, 1.0, 11.0),
-            voxels: vec![RenderVoxel {
-                min: Vec3::new(10.0, 0.0, 10.0),
-                max: Vec3::new(11.0, 1.0, 11.0),
-                material: VoxelMaterial::Beacon,
-                ghost: false,
-            }],
-        };
+        let asset = test_asset(
+            Vec3::new(10.0, 0.0, 10.0),
+            1.0,
+            &[(VoxelCoord::new(0, 0, 0), VoxelMaterial::Beacon)],
+        );
         let ray = Ray::new(Vec3::new(0.5, 0.5, 0.5), Vec3::new(0.0, 0.0, 1.0));
         assert!(raycast_render_assets(&[asset], ray, 100.0).is_none());
     }
 
     #[test]
     fn render_asset_raycast_hits_detail_after_broad_bounds_hit() {
-        let asset = RenderAsset {
-            min: Vec3::new(0.0, 0.0, 4.0),
-            max: Vec3::new(1.0, 1.0, 5.0),
-            voxels: vec![RenderVoxel {
-                min: Vec3::new(0.25, 0.25, 4.25),
-                max: Vec3::new(0.75, 0.75, 4.75),
-                material: VoxelMaterial::Beacon,
-                ghost: false,
-            }],
-        };
+        let asset = test_asset(
+            Vec3::new(0.25, 0.25, 4.25),
+            0.5,
+            &[(VoxelCoord::new(0, 0, 0), VoxelMaterial::Beacon)],
+        );
         let ray = Ray::new(Vec3::new(0.5, 0.5, 0.5), Vec3::new(0.0, 0.0, 1.0));
         let hit = raycast_render_assets(&[asset], ray, 100.0).expect("asset detail should hit");
         assert_eq!(hit.material, VoxelMaterial::Beacon);

@@ -16,8 +16,8 @@ use heliobound_core::{
 #[cfg(test)]
 use heliobound_core::{DoomMapConfig, DoomMapGenerator};
 use heliobound_gfx::{
-    raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay, PixelSprite, RenderAsset,
-    RenderVoxel, Scene, SceneBuilder, SceneCell, TextStyle, Viewport,
+    raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay, PixelSprite, RenderAsset, Scene,
+    SceneBuilder, SceneCell, TextStyle, Viewport,
 };
 use pixels::{PixelsBuilder, SurfaceTexture};
 use serde::Deserialize;
@@ -1504,7 +1504,7 @@ impl AppState {
                     .expect("map editor mode requires editor state");
                 editor.update(&self.input, dt);
                 self.camera = editor.camera();
-                let render_world = editor.highlighted_render_world();
+                let render_world = editor.render_world();
                 let render_assets = editor.render_assets();
                 let mut scene = self.map_builder.build_with_render_assets(
                     &render_world,
@@ -4892,6 +4892,9 @@ struct MapEditorState {
     inspection: String,
     is_new_map: bool,
     source_path: Option<PathBuf>,
+    /// Rebuilt only when the editable placement set changes. The live ghost
+    /// remains the sole transient asset during ordinary editor frames.
+    cached_render_assets: Vec<RenderAsset>,
 }
 
 impl MapEditorState {
@@ -4918,6 +4921,7 @@ impl MapEditorState {
             inspection: "No voxel selected.".to_string(),
             is_new_map: false,
             source_path: None,
+            cached_render_assets: Vec::new(),
         }
     }
 
@@ -4953,6 +4957,7 @@ impl MapEditorState {
         self.inspection =
             "Working copy opened; use I to ray-pick or arrow keys to move the selection.".into();
         self.camera = camera;
+        self.rebuild_render_assets();
         self.rebuild_ceilingless_world();
     }
 
@@ -5009,6 +5014,7 @@ impl MapEditorState {
         self.camera = map_viewer_camera(
             Camera::new(Vec3::new(0.5, 8.0, 16.0)).looking_at(std::f32::consts::PI, -0.25),
         );
+        self.rebuild_render_assets();
         self.rebuild_ceilingless_world();
         self.inspection =
             "New unsaved 20x20 grass-ground map created. Save As arrives in Phase 4D.".into();
@@ -5056,42 +5062,8 @@ impl MapEditorState {
         })
     }
 
-    /// The selection is a rendering overlay, never a working-map mutation.
-    /// A saturated custom material makes both occupied and empty target cells
-    /// easy to find in the ASCII view.
-    fn highlighted_render_world(&self) -> VoxelWorld {
-        let mut world = self.render_world().clone();
-        if let Some((min, max)) = self.box_bounds() {
-            let cells = (max.x as i64 - min.x as i64 + 1)
-                * (max.y as i64 - min.y as i64 + 1)
-                * (max.z as i64 - min.z as i64 + 1);
-            if cells <= 1_000_000 {
-                let color = match self.tool {
-                    MapEditorTool::BoxFill => [64, 220, 255],
-                    MapEditorTool::BoxErase => [255, 96, 96],
-                    _ => unreachable!("box bounds require a box tool"),
-                };
-                for z in min.z..=max.z {
-                    for y in min.y..=max.y {
-                        for x in min.x..=max.x {
-                            world.set(
-                                VoxelCoord::new(x, y, z),
-                                VoxelCell::new(VoxelMaterial::Custom(color)),
-                            );
-                        }
-                    }
-                }
-                return world;
-            }
-        }
-        if let Some(coord) = self.selection {
-            world.set(coord, VoxelCell::new(VoxelMaterial::Custom([255, 64, 220])));
-        }
-        world
-    }
-
-    fn render_assets(&self) -> Vec<RenderAsset> {
-        let mut assets = self
+    fn rebuild_render_assets(&mut self) {
+        self.cached_render_assets = self
             .working
             .as_ref()
             .into_iter()
@@ -5105,7 +5077,11 @@ impl MapEditorState {
             // Unit-scale assets already live in the collision voxel world.
             .filter(|(_, asset)| asset.voxel_size != 1.0)
             .map(|(placed, asset)| placed_asset_render_asset(placed, asset, false))
-            .collect::<Vec<_>>();
+            .collect();
+    }
+
+    fn render_assets(&self) -> Vec<RenderAsset> {
+        let mut assets = self.cached_render_assets.clone();
         if self.tool == MapEditorTool::Asset {
             if let (Some(anchor), Some(asset)) =
                 (self.asset_placement_anchor(), self.selected_asset())
@@ -5547,14 +5523,12 @@ impl MapEditorState {
         };
         let bounds = working.metadata.bounds;
         let rendered = placed_asset_render_asset_at(position, 0, &asset, false);
-        let inside = rendered.voxels.iter().all(|voxel| {
-            voxel.min.x >= bounds.min.x as f32
-                && voxel.min.y >= bounds.min.y as f32
-                && voxel.min.z >= bounds.min.z as f32
-                && voxel.max.x <= bounds.max.x as f32 + 1.0
-                && voxel.max.y <= bounds.max.y as f32 + 1.0
-                && voxel.max.z <= bounds.max.z as f32 + 1.0
-        });
+        let inside = rendered.min.x >= bounds.min.x as f32
+            && rendered.min.y >= bounds.min.y as f32
+            && rendered.min.z >= bounds.min.z as f32
+            && rendered.max.x <= bounds.max.x as f32 + 1.0
+            && rendered.max.y <= bounds.max.y as f32 + 1.0
+            && rendered.max.z <= bounds.max.z as f32 + 1.0;
         if !inside {
             self.inspection = "Asset preview extends outside the map bounds.".into();
             return;
@@ -5596,6 +5570,7 @@ impl MapEditorState {
         let name = asset.name.clone();
         working.placed_assets.push(placed);
         self.dirty = true;
+        self.rebuild_render_assets();
         self.rebuild_ceilingless_world();
         self.inspection = format!(
             "Placed {name} at {},{},{}.",
@@ -5698,48 +5673,40 @@ fn placed_asset_render_asset_at(
     asset: &heliobound_core::AssetDefinition,
     ghost: bool,
 ) -> RenderAsset {
-    let voxels = asset
-        .voxels
-        .iter()
-        .map(|(voxel, material)| {
-            let size = asset.voxel_size;
-            let local_min = Vec3::new(
-                (voxel.x as f32 - asset.pivot[0]) * size,
-                (voxel.y as f32 - asset.pivot[1]) * size,
-                (voxel.z as f32 - asset.pivot[2]) * size,
-            );
-            let local_max = local_min + Vec3::new(size, size, size);
-            let (min, max) = rotate_asset_bounds(local_min, local_max, yaw_degrees);
-            let anchor = Vec3::new(position.x as f32, position.y as f32, position.z as f32);
-            RenderVoxel {
-                min: anchor + min,
-                max: anchor + max,
-                material: *material,
-                ghost,
-            }
-        })
-        .collect::<Vec<_>>();
-    let min = voxels.iter().fold(
-        Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
-        |min, voxel| {
-            Vec3::new(
-                min.x.min(voxel.min.x),
-                min.y.min(voxel.min.y),
-                min.z.min(voxel.min.z),
-            )
-        },
+    let voxels = asset.voxels.iter().copied().collect::<HashMap<_, _>>();
+    let dimensions = asset.voxels.iter().fold([0; 3], |mut dims, (voxel, _)| {
+        dims[0] = dims[0].max(voxel.x + 1);
+        dims[1] = dims[1].max(voxel.y + 1);
+        dims[2] = dims[2].max(voxel.z + 1);
+        dims
+    });
+    let size = asset.voxel_size;
+    let local_min = Vec3::new(
+        -asset.pivot[0] * size,
+        -asset.pivot[1] * size,
+        -asset.pivot[2] * size,
     );
-    let max = voxels.iter().fold(
-        Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
-        |max, voxel| {
-            Vec3::new(
-                max.x.max(voxel.max.x),
-                max.y.max(voxel.max.y),
-                max.z.max(voxel.max.z),
-            )
-        },
-    );
-    RenderAsset { min, max, voxels }
+    let local_max = local_min
+        + Vec3::new(
+            dimensions[0] as f32 * size,
+            dimensions[1] as f32 * size,
+            dimensions[2] as f32 * size,
+        );
+    let (rotated_min, rotated_max) = rotate_asset_bounds(local_min, local_max, yaw_degrees);
+    let anchor = Vec3::new(position.x as f32, position.y as f32, position.z as f32);
+    let min = anchor + rotated_min;
+    let max = anchor + rotated_max;
+    RenderAsset {
+        min,
+        max,
+        voxels,
+        dimensions,
+        voxel_size: size,
+        pivot: asset.pivot,
+        anchor,
+        yaw_degrees,
+        ghost,
+    }
 }
 
 fn rotate_asset_bounds(min: Vec3, max: Vec3, yaw_degrees: u16) -> (Vec3, Vec3) {
@@ -13800,10 +13767,7 @@ mod tests {
             assert!(editor.selected_asset().is_some());
             let preview = editor.render_assets();
             assert!(!preview.is_empty());
-            assert!(preview
-                .iter()
-                .flat_map(|asset| &asset.voxels)
-                .all(|voxel| voxel.ghost));
+            assert!(preview.iter().all(|asset| asset.ghost));
         }
         app.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
         let editor = app.map_editor.as_ref().unwrap();
@@ -13811,10 +13775,7 @@ mod tests {
         assert_eq!(working.placed_assets.len(), 1);
         assert!(editor.dirty);
         let rendered = editor.render_assets();
-        assert!(rendered
-            .iter()
-            .flat_map(|asset| &asset.voxels)
-            .any(|voxel| !voxel.ghost));
+        assert!(rendered.iter().any(|asset| !asset.ghost));
         assert_eq!(
             working.placed_assets[0].asset_id,
             editor.selected_asset().unwrap().id
@@ -13944,7 +13905,7 @@ mod tests {
     }
 
     #[test]
-    fn map_editor_selection_is_bright_only_in_the_render_snapshot() {
+    fn map_editor_selection_does_not_clone_or_mutate_the_render_world() {
         let mut app = AppState::new();
         app.start_map_editor();
         app.handle_keyboard(&PhysicalKey::Code(KeyCode::Enter), ElementState::Pressed);
@@ -13953,15 +13914,12 @@ mod tests {
         let before = editor.working.as_ref().unwrap().world.get(coord);
         editor.selection = Some(coord);
 
-        assert_eq!(
-            editor.highlighted_render_world().get(coord),
-            Some(VoxelCell::new(VoxelMaterial::Custom([255, 64, 220])))
-        );
+        assert_eq!(editor.render_world().get(coord), before);
         assert_eq!(editor.working.as_ref().unwrap().world.get(coord), before);
     }
 
     #[test]
-    fn map_editor_box_tools_tint_only_the_rendered_selection_box() {
+    fn map_editor_box_selection_leaves_the_working_world_unchanged() {
         let mut app = AppState::new();
         app.start_map_editor();
         app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
@@ -13972,24 +13930,13 @@ mod tests {
         editor.selection = Some(second);
         editor.select_tool(MapEditorTool::BoxFill);
 
-        let preview = editor.highlighted_render_world();
-        assert_eq!(
-            preview.get(first),
-            Some(VoxelCell::new(VoxelMaterial::Custom([64, 220, 255])))
-        );
-        assert_eq!(
-            preview.get(second),
-            Some(VoxelCell::new(VoxelMaterial::Custom([64, 220, 255])))
-        );
+        assert_eq!(editor.render_world().get(first), None);
+        assert_eq!(editor.render_world().get(second), None);
         assert_eq!(editor.working.as_ref().unwrap().world.get(first), None);
         assert_eq!(editor.working.as_ref().unwrap().world.get(second), None);
 
         editor.select_tool(MapEditorTool::Paint);
         assert!(editor.box_anchor.is_none());
-        assert_eq!(
-            editor.highlighted_render_world().get(second),
-            Some(VoxelCell::new(VoxelMaterial::Custom([255, 64, 220])))
-        );
     }
 
     #[test]

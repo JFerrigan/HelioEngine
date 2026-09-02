@@ -1,5 +1,6 @@
-use heliobound_core::{Vec3, VoxelMaterial};
+use heliobound_core::{Vec3, VoxelCoord, VoxelMaterial};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TextStyle {
@@ -49,25 +50,20 @@ pub struct PixelSprite {
     pub bg: Option<String>,
 }
 
-/// A world-space voxel used for mixed-resolution imported assets.  Unlike a
-/// `VoxelWorld` cell, its bounds may be smaller than one map voxel.
-#[derive(Clone, Copy, Debug)]
-pub struct RenderVoxel {
-    pub min: Vec3,
-    pub max: Vec3,
-    pub material: VoxelMaterial,
-    /// Placement previews are deliberately dimmed, while still showing the
-    /// asset's true silhouette and palette.
-    pub ghost: bool,
-}
-
-/// One placed imported asset. Its broad bounds let the renderer reject almost
-/// every screen ray before considering the asset's detailed voxel model.
+/// One placed imported asset. The authored sparse grid remains local; rays
+/// transform into that space and traverse only the cells they cross.
 #[derive(Clone, Debug)]
 pub struct RenderAsset {
     pub min: Vec3,
     pub max: Vec3,
-    pub voxels: Vec<RenderVoxel>,
+    pub voxels: HashMap<VoxelCoord, VoxelMaterial>,
+    pub dimensions: [i32; 3],
+    pub voxel_size: f32,
+    pub pivot: [f32; 3],
+    pub anchor: Vec3,
+    pub yaw_degrees: u16,
+    /// Placement previews are deliberately dimmed while retaining palette.
+    pub ghost: bool,
 }
 
 #[derive(Clone, Debug)]
