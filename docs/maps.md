@@ -63,7 +63,7 @@ Erase, and Asset; `,`/`.` cycle those tools. Add places a voxel on the face unde
 cursor, Minecraft-style. The active tool appears as a distinct 80×80-pixel,
 bottom-center icon. A compact top-right voxel preview shows
 the material currently under the center reticle. In a box tool, press `B` to set an inclusive box
-corner; the active box is color-highlighted. Enter applies the selected tool. Press backtick (`` ` ``) to save the whole working map; the
+corner; the active box is shown as a dim cyan wireframe. Enter applies the selected tool. Press backtick (`` ` ``) to save the whole working map; the
 centered prompt requires `Y` to save or `N` to cancel. Geometry edits remain
 in memory until saved, are constrained to map bounds,
 and protect player and unit-scale asset cells; validation remains unavailable.
@@ -83,7 +83,9 @@ and fires with a left click. The preview is explicitly labelled **UNSAVED
 EDITOR PREVIEW**.
 
 Press `X` from the unopened Map Editor list to begin an unsaved `Untitled
-Map`: a 20×20 grass ground with a centered player start and editable bounds.
+Map`: a 20×20 grass ground with a centered player start. This is an initial
+patch only; building beyond it automatically expands the editable map in all
+directions.
 After confirmation, saving adds it to the Map Editor and Map Viewer catalogs
 immediately; `X` is blocked while a working copy is already open.
 

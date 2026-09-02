@@ -188,8 +188,8 @@ Choose `1` Move, `2` Add, `3` Paint, `4` Erase, `5` Replace, `6` Box Fill,
 the ray-hit face immediately, Minecraft-style. The active tool has a distinct
 80×80-pixel icon at the bottom center, and a compact
 top-right preview shows the material under the center reticle. While a box tool is active,
-use `B` to set/clear the first box corner; the inclusive box is
-color-highlighted until applied. Enter applies the tool.
+use `B` to set/clear the first box corner; the inclusive box is shown as a
+dim cyan wireframe until applied. Enter applies the tool.
 Backtick (`` ` ``) requests a save of the complete working map; a
 centered confirmation prompt requires `Y` to save or `N` to cancel.
 Paint fills only empty direct cells, erase clears direct cells, and replace
@@ -208,8 +208,10 @@ firing. Editor maps do not yet author encounters, so Shooter supplies the
 weapon and firing presentation without importing another map's enemies.
 
 Press `X` from the unopened Map Editor list to create an unsaved `Untitled
-Map` with a 20×20 grass ground plane, 17-voxel-high authoring bounds, and a
-valid centered player start. It is immediately editable and visibly dirty;
+Map` with a 20×20 grass ground plane and a valid centered player start. The
+patch is a starting area, not a build boundary: move the selection and add
+geometry freely in every direction, and the editable map expands its declared
+bounds to contain the new work. It is immediately editable and visibly dirty;
 while a working copy is open, `X` is refused rather than replacing it. Phase
 4D Save As will provide the durable filename/ID workflow. Once confirmed,
 saving adds the compiled map to the Map Editor and Map Viewer catalogs without

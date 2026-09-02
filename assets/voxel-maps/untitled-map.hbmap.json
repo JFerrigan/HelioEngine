@@ -6,7 +6,7 @@
   "category": "authored",
   "bounds": {
     "min": [
-      -10,
+      -17,
       0,
       -10
     ],
@@ -27,6 +27,20 @@
     "yaw_degrees": 180
   },
   "operations": [
+    {
+      "kind": "fill_box",
+      "material": "Regolith",
+      "max": [
+        -11,
+        6,
+        9
+      ],
+      "min": [
+        -17,
+        0,
+        -10
+      ]
+    },
     {
       "kind": "fill_box",
       "material": "Grass",
@@ -53,6 +67,20 @@
         -10,
         0,
         0
+      ]
+    },
+    {
+      "kind": "fill_box",
+      "material": "Regolith",
+      "max": [
+        -10,
+        6,
+        9
+      ],
+      "min": [
+        -10,
+        1,
+        -10
       ]
     },
     {

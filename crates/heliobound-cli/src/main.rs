@@ -5082,6 +5082,9 @@ impl MapEditorState {
 
     fn render_assets(&self) -> Vec<RenderAsset> {
         let mut assets = self.cached_render_assets.clone();
+        if let Some((min, max)) = self.box_bounds() {
+            assets.push(box_outline_render_asset(min, max));
+        }
         if self.tool == MapEditorTool::Asset {
             if let (Some(anchor), Some(asset)) =
                 (self.asset_placement_anchor(), self.selected_asset())
@@ -5193,15 +5196,21 @@ impl MapEditorState {
         let Some(selection) = self.selection else {
             return;
         };
-        let candidate = VoxelCoord::new(
-            selection.x + delta.x,
-            selection.y + delta.y,
-            selection.z + delta.z,
-        );
-        if self.inside_bounds(candidate) {
-            self.selection = Some(candidate);
-            self.inspection = format!("Selected {},{},{}.", candidate.x, candidate.y, candidate.z);
-        }
+        let Some(candidate) = selection
+            .x
+            .checked_add(delta.x)
+            .zip(selection.y.checked_add(delta.y))
+            .zip(selection.z.checked_add(delta.z))
+            .map(|((x, y), z)| VoxelCoord::new(x, y, z))
+        else {
+            self.inspection = "Selection cannot move beyond the coordinate limit.".into();
+            return;
+        };
+        // The initial ground patch is only a starting point.  Editable maps
+        // grow their declared bounds when geometry is added, so selection must
+        // be allowed to move freely beyond that patch.
+        self.selection = Some(candidate);
+        self.inspection = format!("Selected {},{},{}.", candidate.x, candidate.y, candidate.z);
     }
 
     /// Arrow-key movement follows the horizontal camera heading. At diagonal
@@ -5430,7 +5439,6 @@ impl MapEditorState {
             self.inspection = "Open a compiled map before editing.".into();
             return;
         };
-        let bounds = working.metadata.bounds;
         let (min, max) = match tool {
             MapEditorTool::BoxFill | MapEditorTool::BoxErase => {
                 let Some(anchor) = self.box_anchor else {
@@ -5472,10 +5480,7 @@ impl MapEditorState {
             for y in min.y..=max.y {
                 for x in min.x..=max.x {
                     let coord = VoxelCoord::new(x, y, z);
-                    if !inside_editor_bounds(bounds, coord)
-                        || protected_cells.contains(&coord)
-                        || player_cells.contains(&coord)
-                    {
+                    if protected_cells.contains(&coord) || player_cells.contains(&coord) {
                         continue;
                     }
                     let before = working.world.get(coord);
@@ -5506,6 +5511,8 @@ impl MapEditorState {
             }
         }
         if changed > 0 {
+            working.metadata.bounds.include(min);
+            working.metadata.bounds.include(max);
             self.dirty = true;
             self.rebuild_ceilingless_world();
         }
@@ -5521,18 +5528,7 @@ impl MapEditorState {
             self.inspection = "Open a map before placing an asset.".into();
             return;
         };
-        let bounds = working.metadata.bounds;
         let rendered = placed_asset_render_asset_at(position, 0, &asset, false);
-        let inside = rendered.min.x >= bounds.min.x as f32
-            && rendered.min.y >= bounds.min.y as f32
-            && rendered.min.z >= bounds.min.z as f32
-            && rendered.max.x <= bounds.max.x as f32 + 1.0
-            && rendered.max.y <= bounds.max.y as f32 + 1.0
-            && rendered.max.z <= bounds.max.z as f32 + 1.0;
-        if !inside {
-            self.inspection = "Asset preview extends outside the map bounds.".into();
-            return;
-        }
         let mut suffix = 1;
         let id = loop {
             let candidate = format!("{}-{}", asset.id, suffix);
@@ -5568,6 +5564,16 @@ impl MapEditorState {
             }
         }
         let name = asset.name.clone();
+        working.metadata.bounds.include(VoxelCoord::new(
+            rendered.min.x.floor() as i32,
+            rendered.min.y.floor() as i32,
+            rendered.min.z.floor() as i32,
+        ));
+        working.metadata.bounds.include(VoxelCoord::new(
+            (rendered.max.x.ceil() as i32).saturating_sub(1),
+            (rendered.max.y.ceil() as i32).saturating_sub(1),
+            (rendered.max.z.ceil() as i32).saturating_sub(1),
+        ));
         working.placed_assets.push(placed);
         self.dirty = true;
         self.rebuild_render_assets();
@@ -5576,10 +5582,6 @@ impl MapEditorState {
             "Placed {name} at {},{},{}.",
             position.x, position.y, position.z
         );
-    }
-
-    fn inside_bounds(&self, coord: VoxelCoord) -> bool {
-        inside_editor_bounds(self.selected_map().metadata.bounds, coord)
     }
 
     fn asset_owned_cells(&self) -> HashSet<VoxelCoord> {
@@ -5709,6 +5711,56 @@ fn placed_asset_render_asset_at(
     }
 }
 
+/// A temporary wireframe for the editor's pending box operation. It contains
+/// only the twelve voxel edges, keeping the proposed volume readable without
+/// covering its contents or mutating the working map.
+fn box_outline_render_asset(min: VoxelCoord, max: VoxelCoord) -> RenderAsset {
+    let mut voxels = HashMap::new();
+    let material = VoxelMaterial::Custom([0x45, 0xd5, 0xff]);
+    let mut add = |coord: VoxelCoord| {
+        voxels.insert(
+            VoxelCoord::new(coord.x - min.x, coord.y - min.y, coord.z - min.z),
+            material,
+        );
+    };
+    for x in min.x..=max.x {
+        add(VoxelCoord::new(x, min.y, min.z));
+        add(VoxelCoord::new(x, min.y, max.z));
+        add(VoxelCoord::new(x, max.y, min.z));
+        add(VoxelCoord::new(x, max.y, max.z));
+    }
+    for y in min.y..=max.y {
+        add(VoxelCoord::new(min.x, y, min.z));
+        add(VoxelCoord::new(min.x, y, max.z));
+        add(VoxelCoord::new(max.x, y, min.z));
+        add(VoxelCoord::new(max.x, y, max.z));
+    }
+    for z in min.z..=max.z {
+        add(VoxelCoord::new(min.x, min.y, z));
+        add(VoxelCoord::new(min.x, max.y, z));
+        add(VoxelCoord::new(max.x, min.y, z));
+        add(VoxelCoord::new(max.x, max.y, z));
+    }
+    let dimensions = [max.x - min.x + 1, max.y - min.y + 1, max.z - min.z + 1];
+    let anchor = Vec3::new(min.x as f32, min.y as f32, min.z as f32);
+    RenderAsset {
+        min: anchor,
+        max: anchor
+            + Vec3::new(
+                dimensions[0] as f32,
+                dimensions[1] as f32,
+                dimensions[2] as f32,
+            ),
+        voxels,
+        dimensions,
+        voxel_size: 1.0,
+        pivot: [0.0; 3],
+        anchor,
+        yaw_degrees: 0,
+        ghost: true,
+    }
+}
+
 fn rotate_asset_bounds(min: Vec3, max: Vec3, yaw_degrees: u16) -> (Vec3, Vec3) {
     match yaw_degrees {
         0 => (min, max),
@@ -5726,15 +5778,6 @@ fn rotate_asset_bounds(min: Vec3, max: Vec3, yaw_degrees: u16) -> (Vec3, Vec3) {
         ),
         _ => unreachable!("asset yaw is validated"),
     }
-}
-
-fn inside_editor_bounds(bounds: VoxelBounds, coord: VoxelCoord) -> bool {
-    coord.x >= bounds.min.x
-        && coord.x <= bounds.max.x
-        && coord.y >= bounds.min.y
-        && coord.y <= bounds.max.y
-        && coord.z >= bounds.min.z
-        && coord.z <= bounds.max.z
 }
 
 fn rotate_editor_voxel(voxel: VoxelCoord, yaw_degrees: u16) -> VoxelCoord {
@@ -13643,6 +13686,37 @@ mod tests {
     }
 
     #[test]
+    fn new_map_expands_in_every_direction_when_geometry_is_added() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
+        let editor = app.map_editor.as_mut().unwrap();
+        editor.select_tool(MapEditorTool::Add);
+
+        // The initial template ends at x/z = -10..=9 and y = 0..=16. These
+        // edits all lie beyond one of those starter limits.
+        for coord in [
+            VoxelCoord::new(10, 1, 1),
+            VoxelCoord::new(-11, 1, 1),
+            VoxelCoord::new(1, 17, 1),
+            VoxelCoord::new(1, -1, 1),
+            VoxelCoord::new(1, 1, 10),
+            VoxelCoord::new(1, 1, -11),
+        ] {
+            editor.selection = Some(coord);
+            editor.apply_tool();
+            assert_eq!(
+                editor.working.as_ref().unwrap().world.get(coord),
+                Some(VoxelCell::new(MAP_EDITOR_MATERIALS[0]))
+            );
+        }
+
+        let bounds = editor.working.as_ref().unwrap().metadata.bounds;
+        assert_eq!(bounds.min, VoxelCoord::new(-11, -1, -11));
+        assert_eq!(bounds.max, VoxelCoord::new(10, 17, 10));
+    }
+
+    #[test]
     fn map_editor_keeps_space_and_ctrl_for_free_flight() {
         let mut app = AppState::new();
         app.start_map_editor();
@@ -13925,7 +13999,7 @@ mod tests {
         app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
         let editor = app.map_editor.as_mut().unwrap();
         let first = VoxelCoord::new(0, 1, 0);
-        let second = VoxelCoord::new(1, 1, 0);
+        let second = VoxelCoord::new(2, 3, 4);
         editor.box_anchor = Some(first);
         editor.selection = Some(second);
         editor.select_tool(MapEditorTool::BoxFill);
@@ -13934,6 +14008,15 @@ mod tests {
         assert_eq!(editor.render_world().get(second), None);
         assert_eq!(editor.working.as_ref().unwrap().world.get(first), None);
         assert_eq!(editor.working.as_ref().unwrap().world.get(second), None);
+
+        let assets = editor.render_assets();
+        assert_eq!(assets.len(), 1);
+        let outline = &assets[0];
+        assert!(outline.ghost);
+        assert_eq!(outline.dimensions, [3, 3, 5]);
+        assert!(outline.voxels.contains_key(&VoxelCoord::new(0, 0, 0)));
+        assert!(outline.voxels.contains_key(&VoxelCoord::new(2, 2, 4)));
+        assert!(!outline.voxels.contains_key(&VoxelCoord::new(1, 1, 1)));
 
         editor.select_tool(MapEditorTool::Paint);
         assert!(editor.box_anchor.is_none());
