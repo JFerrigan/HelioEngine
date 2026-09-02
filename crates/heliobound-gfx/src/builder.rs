@@ -1,4 +1,6 @@
-use crate::scene::{Layer, Overlay, RenderVoxel, Scene, SceneCell, TextStyle, Viewport};
+use crate::scene::{
+    Layer, Overlay, RenderAsset, RenderVoxel, Scene, SceneCell, TextStyle, Viewport,
+};
 use heliobound_core::{
     Camera, PlanetHit, PlanetTerrainClass, ProceduralPlanet, Ray, Vec3, VoxelBounds, VoxelCell,
     VoxelCoord, VoxelMaterial, VoxelWorld,
@@ -178,14 +180,14 @@ impl SceneBuilder {
     /// Renders ordinary map voxels together with mixed-resolution asset
     /// voxels. The latter are tested directly as AABBs, preserving their
     /// authored size instead of rounding them into map-sized cubes.
-    pub fn build_with_render_voxels(
+    pub fn build_with_render_assets(
         &self,
         world: &VoxelWorld,
-        render_voxels: &[RenderVoxel],
+        render_assets: &[RenderAsset],
         camera: &Camera,
         tick: u64,
     ) -> Scene {
-        self.build_with_visibility_and_render_voxels(world, render_voxels, camera, tick, |_| true)
+        self.build_with_visibility_and_render_assets(world, render_assets, camera, tick, |_| true)
     }
 
     /// Builds against the complete voxel world while allowing a caller to hide
@@ -198,13 +200,13 @@ impl SceneBuilder {
         _tick: u64,
         is_visible: impl Fn(VoxelHit) -> bool,
     ) -> Scene {
-        self.build_with_visibility_and_render_voxels(world, &[], camera, _tick, is_visible)
+        self.build_with_visibility_and_render_assets(world, &[], camera, _tick, is_visible)
     }
 
-    fn build_with_visibility_and_render_voxels(
+    fn build_with_visibility_and_render_assets(
         &self,
         world: &VoxelWorld,
-        render_voxels: &[RenderVoxel],
+        render_assets: &[RenderAsset],
         camera: &Camera,
         _tick: u64,
         is_visible: impl Fn(VoxelHit) -> bool,
@@ -238,8 +240,8 @@ impl SceneBuilder {
                     ray,
                     self.config.max_distance.min(camera.max_distance),
                 );
-                let asset_hit = raycast_render_voxels(
-                    render_voxels,
+                let asset_hit = raycast_render_assets(
+                    render_assets,
                     ray,
                     self.config.max_distance.min(camera.max_distance),
                 );
@@ -366,23 +368,61 @@ struct RenderVoxelHit {
     ghost: bool,
 }
 
-fn raycast_render_voxels(
-    voxels: &[RenderVoxel],
+fn raycast_render_assets(
+    assets: &[RenderAsset],
     ray: Ray,
     max_distance: f32,
 ) -> Option<RenderVoxelHit> {
-    voxels
+    assets
         .iter()
-        .filter_map(|voxel| {
-            let (distance, normal) = intersect_render_voxel(*voxel, ray, max_distance)?;
-            Some(RenderVoxelHit {
-                material: voxel.material,
-                distance,
-                normal,
-                ghost: voxel.ghost,
-            })
+        .filter_map(|asset| {
+            // The broad-phase slab test is constant work per placed asset.
+            // It prevents a dense model (such as the 1025-voxel airlock) from
+            // being scanned by every one of the 14,400 screen rays.
+            intersect_render_asset_bounds(ray, asset.min, asset.max, max_distance)?;
+            asset
+                .voxels
+                .iter()
+                .filter_map(|voxel| {
+                    let (distance, normal) = intersect_render_voxel(*voxel, ray, max_distance)?;
+                    Some(RenderVoxelHit {
+                        material: voxel.material,
+                        distance,
+                        normal,
+                        ghost: voxel.ghost,
+                    })
+                })
+                .min_by(|a, b| a.distance.total_cmp(&b.distance))
         })
         .min_by(|a, b| a.distance.total_cmp(&b.distance))
+}
+
+fn intersect_render_asset_bounds(ray: Ray, min: Vec3, max: Vec3, max_distance: f32) -> Option<()> {
+    let mut enter = f32::NEG_INFINITY;
+    let mut exit = f32::INFINITY;
+    for (origin, direction, min, max) in [
+        (ray.origin.x, ray.direction.x, min.x, max.x),
+        (ray.origin.y, ray.direction.y, min.y, max.y),
+        (ray.origin.z, ray.direction.z, min.z, max.z),
+    ] {
+        if direction.abs() <= f32::EPSILON {
+            if origin < min || origin > max {
+                return None;
+            }
+            continue;
+        }
+        let mut near = (min - origin) / direction;
+        let mut far = (max - origin) / direction;
+        if near > far {
+            std::mem::swap(&mut near, &mut far);
+        }
+        enter = enter.max(near);
+        exit = exit.min(far);
+        if enter > exit {
+            return None;
+        }
+    }
+    (exit >= 0.0 && enter <= max_distance).then_some(())
 }
 
 fn intersect_render_voxel(voxel: RenderVoxel, ray: Ray, max_distance: f32) -> Option<(f32, Vec3)> {
@@ -749,6 +789,40 @@ fn hash_sky_cell(x: i32, y: i32, z: i32) -> u64 {
 mod tests {
     use super::*;
     use heliobound_core::{Camera, Vec3, VoxelCell, VoxelMaterial};
+
+    #[test]
+    fn render_asset_broad_bounds_reject_a_miss_before_detail_raycast() {
+        let asset = RenderAsset {
+            min: Vec3::new(10.0, 0.0, 10.0),
+            max: Vec3::new(11.0, 1.0, 11.0),
+            voxels: vec![RenderVoxel {
+                min: Vec3::new(10.0, 0.0, 10.0),
+                max: Vec3::new(11.0, 1.0, 11.0),
+                material: VoxelMaterial::Beacon,
+                ghost: false,
+            }],
+        };
+        let ray = Ray::new(Vec3::new(0.5, 0.5, 0.5), Vec3::new(0.0, 0.0, 1.0));
+        assert!(raycast_render_assets(&[asset], ray, 100.0).is_none());
+    }
+
+    #[test]
+    fn render_asset_raycast_hits_detail_after_broad_bounds_hit() {
+        let asset = RenderAsset {
+            min: Vec3::new(0.0, 0.0, 4.0),
+            max: Vec3::new(1.0, 1.0, 5.0),
+            voxels: vec![RenderVoxel {
+                min: Vec3::new(0.25, 0.25, 4.25),
+                max: Vec3::new(0.75, 0.75, 4.75),
+                material: VoxelMaterial::Beacon,
+                ghost: false,
+            }],
+        };
+        let ray = Ray::new(Vec3::new(0.5, 0.5, 0.5), Vec3::new(0.0, 0.0, 1.0));
+        let hit = raycast_render_assets(&[asset], ray, 100.0).expect("asset detail should hit");
+        assert_eq!(hit.material, VoxelMaterial::Beacon);
+        assert!((hit.distance - 3.75).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn raycast_hits_first_solid_voxel() {

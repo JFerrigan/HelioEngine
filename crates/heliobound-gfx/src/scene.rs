@@ -61,6 +61,15 @@ pub struct RenderVoxel {
     pub ghost: bool,
 }
 
+/// One placed imported asset. Its broad bounds let the renderer reject almost
+/// every screen ray before considering the asset's detailed voxel model.
+#[derive(Clone, Debug)]
+pub struct RenderAsset {
+    pub min: Vec3,
+    pub max: Vec3,
+    pub voxels: Vec<RenderVoxel>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Layer {
     pub name: String,

@@ -16,8 +16,8 @@ use heliobound_core::{
 #[cfg(test)]
 use heliobound_core::{DoomMapConfig, DoomMapGenerator};
 use heliobound_gfx::{
-    raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay, PixelSprite, RenderVoxel, Scene,
-    SceneBuilder, SceneCell, TextStyle, Viewport,
+    raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay, PixelSprite, RenderAsset,
+    RenderVoxel, Scene, SceneBuilder, SceneCell, TextStyle, Viewport,
 };
 use pixels::{PixelsBuilder, SurfaceTexture};
 use serde::Deserialize;
@@ -1505,8 +1505,8 @@ impl AppState {
                 editor.update(&self.input, dt);
                 self.camera = editor.camera();
                 let render_world = editor.highlighted_render_world();
-                let render_assets = editor.render_asset_voxels();
-                let mut scene = self.map_builder.build_with_render_voxels(
+                let render_assets = editor.render_assets();
+                let mut scene = self.map_builder.build_with_render_assets(
                     &render_world,
                     &render_assets,
                     &self.camera,
@@ -5090,8 +5090,8 @@ impl MapEditorState {
         world
     }
 
-    fn render_asset_voxels(&self) -> Vec<RenderVoxel> {
-        let mut voxels = self
+    fn render_assets(&self) -> Vec<RenderAsset> {
+        let mut assets = self
             .working
             .as_ref()
             .into_iter()
@@ -5104,16 +5104,16 @@ impl MapEditorState {
             })
             // Unit-scale assets already live in the collision voxel world.
             .filter(|(_, asset)| asset.voxel_size != 1.0)
-            .flat_map(|(placed, asset)| placed_asset_render_voxels(placed, asset, false))
+            .map(|(placed, asset)| placed_asset_render_asset(placed, asset, false))
             .collect::<Vec<_>>();
         if self.tool == MapEditorTool::Asset {
             if let (Some(anchor), Some(asset)) =
                 (self.asset_placement_anchor(), self.selected_asset())
             {
-                voxels.extend(placed_asset_render_voxels_at(anchor, 0, asset, true));
+                assets.push(placed_asset_render_asset_at(anchor, 0, asset, true));
             }
         }
-        voxels
+        assets
     }
 
     /// Asset placement deliberately follows the live center cursor ray rather
@@ -5546,8 +5546,8 @@ impl MapEditorState {
             return;
         };
         let bounds = working.metadata.bounds;
-        let rendered = placed_asset_render_voxels_at(position, 0, &asset, false);
-        let inside = rendered.iter().all(|voxel| {
+        let rendered = placed_asset_render_asset_at(position, 0, &asset, false);
+        let inside = rendered.voxels.iter().all(|voxel| {
             voxel.min.x >= bounds.min.x as f32
                 && voxel.min.y >= bounds.min.y as f32
                 && voxel.min.z >= bounds.min.z as f32
@@ -5684,21 +5684,21 @@ impl MapEditorState {
     }
 }
 
-fn placed_asset_render_voxels(
+fn placed_asset_render_asset(
     placed: &heliobound_core::PlacedAsset,
     asset: &heliobound_core::AssetDefinition,
     ghost: bool,
-) -> Vec<RenderVoxel> {
-    placed_asset_render_voxels_at(placed.position, placed.yaw_degrees, asset, ghost)
+) -> RenderAsset {
+    placed_asset_render_asset_at(placed.position, placed.yaw_degrees, asset, ghost)
 }
 
-fn placed_asset_render_voxels_at(
+fn placed_asset_render_asset_at(
     position: VoxelCoord,
     yaw_degrees: u16,
     asset: &heliobound_core::AssetDefinition,
     ghost: bool,
-) -> Vec<RenderVoxel> {
-    asset
+) -> RenderAsset {
+    let voxels = asset
         .voxels
         .iter()
         .map(|(voxel, material)| {
@@ -5718,7 +5718,28 @@ fn placed_asset_render_voxels_at(
                 ghost,
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let min = voxels.iter().fold(
+        Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
+        |min, voxel| {
+            Vec3::new(
+                min.x.min(voxel.min.x),
+                min.y.min(voxel.min.y),
+                min.z.min(voxel.min.z),
+            )
+        },
+    );
+    let max = voxels.iter().fold(
+        Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
+        |max, voxel| {
+            Vec3::new(
+                max.x.max(voxel.max.x),
+                max.y.max(voxel.max.y),
+                max.z.max(voxel.max.z),
+            )
+        },
+    );
+    RenderAsset { min, max, voxels }
 }
 
 fn rotate_asset_bounds(min: Vec3, max: Vec3, yaw_degrees: u16) -> (Vec3, Vec3) {
@@ -13777,17 +13798,23 @@ mod tests {
             editor.camera = Camera::new(Vec3::new(0.5, 5.0, 0.5)).looking_at(0.0, -0.8);
             editor.select_tool(MapEditorTool::Asset);
             assert!(editor.selected_asset().is_some());
-            let preview = editor.render_asset_voxels();
+            let preview = editor.render_assets();
             assert!(!preview.is_empty());
-            assert!(preview.iter().all(|voxel| voxel.ghost));
+            assert!(preview
+                .iter()
+                .flat_map(|asset| &asset.voxels)
+                .all(|voxel| voxel.ghost));
         }
         app.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
         let editor = app.map_editor.as_ref().unwrap();
         let working = editor.working.as_ref().unwrap();
         assert_eq!(working.placed_assets.len(), 1);
         assert!(editor.dirty);
-        let rendered = editor.render_asset_voxels();
-        assert!(rendered.iter().any(|voxel| !voxel.ghost));
+        let rendered = editor.render_assets();
+        assert!(rendered
+            .iter()
+            .flat_map(|asset| &asset.voxels)
+            .any(|voxel| !voxel.ghost));
         assert_eq!(
             working.placed_assets[0].asset_id,
             editor.selected_asset().unwrap().id
