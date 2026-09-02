@@ -59,7 +59,9 @@ active tool;
 arrow keys move the selected voxel one cell forward, backward, left, or right
 relative to the camera view; and `U`/`O` nudge it vertically. `[`/`]` choose a named material, and
 `1` through `8` select Move, Add, Paint, Erase, Replace, Box Fill, Box
-Erase, and Asset; `,`/`.` cycle those tools. Add places a voxel on the face under the
+Erase, and Asset; `,`/`.` cycle those tools. In a box tool, the first world
+click sets the root corner and the next click applies the box through its
+opposite corner. Add places a voxel on the face under the
 cursor, Minecraft-style. The active tool appears as a distinct 80×80-pixel,
 bottom-center icon. A compact top-right voxel preview shows
 the material currently under the center reticle. In a box tool, press `B` to set an inclusive box
@@ -74,9 +76,9 @@ its true authored voxel size; it is not a placeholder map cube. Unit-scale asset
 collision cells, while smaller assets remain visual as defined by the map
 format.
 
-Press `F9` to test the current working world without saving it. The centered
+Press `P` to test the current working world without saving it. The centered
 picker asks for `1` Explorer, `2` Flight, or `3` Shooter before opening the
-preview; `M` returns to the same editor copy. Explorer uses grounded `WASD`
+preview; `Enter` returns to the same editor copy. Explorer uses grounded `WASD`
 movement and `Space` to jump; Flight uses free `WASD` flight with `Space`/`Ctrl`
 for vertical movement; Shooter uses grounded movement plus a visible weapon
 and fires with a left click. The preview is explicitly labelled **UNSAVED

@@ -185,7 +185,9 @@ keys move the selected voxel one cell forward, backward, left, or right
 relative to the horizontal camera view, and `U`/`O` nudge y. `[`/`]` cycle the allowed named materials, or browse assets when the Asset tool is active.
 Choose `1` Move, `2` Add, `3` Paint, `4` Erase, `5` Replace, `6` Box Fill,
 `7` Box Erase, or `8` Asset; `,`/`.` cycle the same tools. The Asset ghost follows the live center cursor ray and a click drops it on the targeted face. Add places the active material on
-the ray-hit face immediately, Minecraft-style. The active tool has a distinct
+the ray-hit face immediately, Minecraft-style. In a box tool, the first world
+click sets the root corner and the next click applies the box through its
+opposite corner. The active tool has a distinct
 80×80-pixel icon at the bottom center, and a compact
 top-right preview shows the material under the center reticle. While a box tool is active,
 use `B` to set/clear the first box corner; the inclusive box is shown as a
@@ -198,9 +200,9 @@ the player standing volume and unit-scale asset-owned cells, respect the
 per-box/final-world limits, render immediately, and set the working copy
 dirty. Undo/redo and validation remain later phases.
 
-`F9` opens a centered playtest-mode picker for the current in-memory working
+`P` opens a centered playtest-mode picker for the current in-memory working
 world: `1` Explorer, `2` Flight, or `3` Shooter. It does not save or update
-the catalog; its HUD is labelled **UNSAVED EDITOR PREVIEW**, and `M` returns to
+the catalog; its HUD is labelled **UNSAVED EDITOR PREVIEW**, and `Enter` returns to
 the same editor copy. Explorer has grounded `WASD` movement and `Space` to
 jump; Flight uses `WASD` plus `Space`/`Ctrl` for free vertical movement; and
 Shooter has the grounded controls, a visible viewmodel weapon, and left-click

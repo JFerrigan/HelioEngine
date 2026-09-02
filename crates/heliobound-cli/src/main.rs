@@ -869,7 +869,7 @@ impl AppState {
                             editor.request_save();
                             return KeyboardAction::None;
                         }
-                        PhysicalKey::Code(KeyCode::F9) => {
+                        PhysicalKey::Code(KeyCode::KeyP) => {
                             editor.request_playtest();
                             return KeyboardAction::None;
                         }
@@ -988,7 +988,7 @@ impl AppState {
                 (AppMode::VoxelSandbox, PhysicalKey::Code(KeyCode::KeyM)) => {
                     return KeyboardAction::EnterMenu;
                 }
-                (AppMode::MapPlaytest, PhysicalKey::Code(KeyCode::KeyM)) => {
+                (AppMode::MapPlaytest, PhysicalKey::Code(KeyCode::KeyM | KeyCode::Enter)) => {
                     self.leave_map_playtest();
                     return KeyboardAction::None;
                 }
@@ -5294,6 +5294,20 @@ impl MapEditorState {
                 placement_normal(hit.normal, self.camera.forward()),
             ));
             self.apply_tool();
+            return;
+        }
+        if self.tool.is_box() {
+            if self.box_anchor.is_none() {
+                self.selection = Some(hit.coord);
+                self.box_anchor = Some(hit.coord);
+                self.inspection = format!(
+                    "Box root set at {},{},{}; click the opposite corner to apply.",
+                    hit.coord.x, hit.coord.y, hit.coord.z,
+                );
+            } else {
+                self.selection = Some(hit.coord);
+                self.apply_tool();
+            }
             return;
         }
         if self.selection == Some(hit.coord) {
@@ -10851,7 +10865,7 @@ fn render_map_editor_scene(scene: &mut Scene, editor: &MapEditorState, _mouse_ca
         "EDITOR CONTROLS",
         "X      new 20x20 map",
         "I      ray-pick voxel",
-        "Click  Add: place on face",
+        "Click  box: root then opposite",
         "Arrows move by view",
         "U/O    move up/down",
         "[ / ]  material / asset",
@@ -10861,7 +10875,7 @@ fn render_map_editor_scene(scene: &mut Scene, editor: &MapEditorState, _mouse_ca
         "8      asset place",
         "Enter  apply tool",
         "`      save map",
-        "F9     test world",
+        "P      test world",
         "Space  rise",
         "Ctrl   drop",
         "R      reset source",
@@ -10936,7 +10950,7 @@ fn render_map_playtest_scene(scene: &mut Scene, playtest: &MapPlaytestState, mou
         y: 2,
         z: 120,
         text: format!(
-            "UNSAVED EDITOR PREVIEW  {}  {}  M return  mouse {}",
+            "UNSAVED EDITOR PREVIEW  {}  {}  Enter return  mouse {}",
             playtest.mode.label(),
             controls,
             if mouse_captured { "locked" } else { "free" }
@@ -13649,6 +13663,35 @@ mod tests {
     }
 
     #[test]
+    fn map_editor_box_tool_uses_the_first_click_as_its_root_corner() {
+        let mut app = AppState::new();
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Enter), ElementState::Pressed);
+        let editor = app.map_editor.as_mut().unwrap();
+        let first = VoxelCoord::new(0, 10, 0);
+        let second = VoxelCoord::new(1, 10, 0);
+        let mut world = VoxelWorld::new();
+        world.set(first, VoxelCell::new(VoxelMaterial::Stone));
+        world.set(second, VoxelCell::new(VoxelMaterial::Stone));
+        editor.working.as_mut().unwrap().world = world;
+        editor.select_tool(MapEditorTool::BoxErase);
+        editor.selection = None;
+        editor.camera =
+            Camera::new(Vec3::new(0.5, 10.5, 3.0)).looking_at(std::f32::consts::PI, 0.0);
+
+        editor.click_pick_or_apply_tool();
+        assert_eq!(editor.box_anchor, Some(first));
+        assert_eq!(editor.selection, Some(first));
+        assert!(editor.working.as_ref().unwrap().world.get(first).is_some());
+
+        editor.camera =
+            Camera::new(Vec3::new(1.5, 10.5, 3.0)).looking_at(std::f32::consts::PI, 0.0);
+        editor.click_pick_or_apply_tool();
+        assert_eq!(editor.working.as_ref().unwrap().world.get(first), None);
+        assert_eq!(editor.working.as_ref().unwrap().world.get(second), None);
+    }
+
+    #[test]
     fn map_editor_can_create_a_dirty_twenty_by_twenty_ground_template() {
         let mut app = AppState::new();
         app.start_map_editor();
@@ -13889,7 +13932,7 @@ mod tests {
         app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
         let working = app.map_editor.as_ref().unwrap().working.clone().unwrap();
 
-        app.handle_keyboard(&PhysicalKey::Code(KeyCode::F9), ElementState::Pressed);
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyP), ElementState::Pressed);
         assert_eq!(
             app.map_editor.as_ref().unwrap().pending_confirmation,
             Some("playtest")
@@ -13911,7 +13954,7 @@ mod tests {
             working.world.voxels()
         );
 
-        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyM), ElementState::Pressed);
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Enter), ElementState::Pressed);
         assert_eq!(app.mode, AppMode::MapEditor);
         assert_eq!(
             app.map_editor
@@ -13931,7 +13974,7 @@ mod tests {
         let mut explorer = AppState::new();
         explorer.start_map_editor();
         explorer.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
-        explorer.handle_keyboard(&PhysicalKey::Code(KeyCode::F9), ElementState::Pressed);
+        explorer.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyP), ElementState::Pressed);
         explorer.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit1), ElementState::Pressed);
         let explorer_start = explorer.camera.position;
         assert_eq!(explorer_start.y, WALK_EYE_HEIGHT);
@@ -13943,7 +13986,7 @@ mod tests {
         let mut flight = AppState::new();
         flight.start_map_editor();
         flight.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
-        flight.handle_keyboard(&PhysicalKey::Code(KeyCode::F9), ElementState::Pressed);
+        flight.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyP), ElementState::Pressed);
         flight.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit2), ElementState::Pressed);
         let flight_start = flight.camera.position;
         flight.handle_keyboard(&PhysicalKey::Code(KeyCode::Space), ElementState::Pressed);
@@ -13956,7 +13999,7 @@ mod tests {
         let mut app = AppState::new();
         app.start_map_editor();
         app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyX), ElementState::Pressed);
-        app.handle_keyboard(&PhysicalKey::Code(KeyCode::F9), ElementState::Pressed);
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::KeyP), ElementState::Pressed);
         app.handle_keyboard(&PhysicalKey::Code(KeyCode::Digit3), ElementState::Pressed);
 
         let scene = app.frame(0.0, true);
