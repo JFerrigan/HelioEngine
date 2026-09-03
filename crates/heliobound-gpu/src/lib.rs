@@ -1175,7 +1175,12 @@ fn create_terrain_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLay
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(4),
+                    // `BackgroundCell` contains a glyph and a packed RGBA
+                    // foreground, so each storage-array element occupies two
+                    // u32 values in WGSL. Keeping this layout contract exact
+                    // matters on backends that validate the shader-required
+                    // binding size while the terrain pipeline is created.
+                    min_binding_size: wgpu::BufferSize::new(8),
                 },
                 count: None,
             },

@@ -39,6 +39,13 @@
 - The application was launched in GPU mode on 2026-09-03. A UI bind-layout
   validation error was found and fixed; the repeat launch produced no `wgpu`
   validation or shader errors. This is a smoke check, not visual-parity proof.
+- A subsequent native-window smoke launch exposed the terrain background-cell
+  binding as four bytes although its WGSL element is two `u32` values. The
+  binding minimum is now eight bytes; the corrected GPU launch ran for 30
+  seconds with no `wgpu` validation or surface errors. This observed result
+  covers initialization/menu presentation only: Corn Maze, Bar, Voxel Sandbox,
+  Liminal, resize/minimize, and live static-geometry editing still require an
+  interactive manual pass before eligibility expands.
 - `heliobound-gpu` now has an adapter-backed, test-only offscreen readback
   harness for the logical terrain targets. It compares every 160×90 glyph and
   shaded RGBA terrain cell against `heliobound_gfx::raycast` plus
