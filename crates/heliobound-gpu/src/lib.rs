@@ -1,6 +1,7 @@
 //! GPU renderer building blocks. Window and event-loop ownership remains in
 //! `heliobound-cli`; this crate never makes CPU world state non-authoritative.
 
+use font8x8::{UnicodeFonts, BASIC_FONTS};
 use heliobound_core::{Camera, ChunkCoord, ChunkSnapshot, VoxelBounds, VoxelMaterial};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -11,6 +12,10 @@ pub const LOGICAL_HEIGHT: u32 = 90;
 pub const EMPTY_VOXEL: u32 = 0;
 pub const CHUNK_EDGE: u32 = 16;
 pub const CHUNK_VOXELS: u32 = CHUNK_EDGE * CHUNK_EDGE * CHUNK_EDGE;
+pub const GLYPH_ATLAS_COLUMNS: u32 = 16;
+pub const GLYPH_ATLAS_ROWS: u32 = 16;
+pub const GLYPH_WIDTH: u32 = 8;
+pub const GLYPH_HEIGHT: u32 = 8;
 const CUSTOM_TAG: u32 = 0x80_00_00_00;
 
 /// Stable renderer IDs for built-in materials. The value zero remains empty;
@@ -328,6 +333,41 @@ impl ResidentChunks {
 }
 
 pub const DDA_SHADER: &str = include_str!("dda.wgsl");
+pub const GLYPH_SHADER: &str = include_str!("glyph.wgsl");
+
+/// A compact logical-cell overlay for the GPU presentation path. Colours are
+/// packed as `0xRRGGBBAA`; set `flags & 1` to draw an opaque background.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct UiCell {
+    pub x: i32,
+    pub y: i32,
+    pub glyph: u32,
+    pub flags: u32,
+    pub foreground_rgba: u32,
+    pub background_rgba: u32,
+}
+
+impl UiCell {
+    pub const OPAQUE_BACKGROUND: u32 = 1;
+
+    pub const fn new(x: i32, y: i32, glyph: char, foreground_rgba: u32) -> Self {
+        Self {
+            x,
+            y,
+            glyph: glyph as u32,
+            flags: 0,
+            foreground_rgba,
+            background_rgba: 0,
+        }
+    }
+
+    pub const fn with_background(mut self, background_rgba: u32) -> Self {
+        self.flags |= Self::OPAQUE_BACKGROUND;
+        self.background_rgba = background_rgba;
+        self
+    }
+}
 
 /// A direct `wgpu` presentation surface owned by the future CLI GPU backend.
 ///
@@ -349,6 +389,15 @@ pub struct SurfaceRenderer<'window> {
     terrain_pipeline: wgpu::RenderPipeline,
     terrain_bind_group_layout: wgpu::BindGroupLayout,
     terrain: TerrainGpuBuffers,
+    logical_targets: LogicalTargets,
+    glyph_pipeline: wgpu::RenderPipeline,
+    glyph_bind_group: wgpu::BindGroup,
+    ui_pipeline: wgpu::RenderPipeline,
+    ui_bind_group_layout: wgpu::BindGroupLayout,
+    ui: UiGpuBuffer,
+    ui_count: u32,
+    glyph_atlas: wgpu::TextureView,
+    presentation: wgpu::Buffer,
 }
 
 struct TerrainGpuBuffers {
@@ -358,6 +407,27 @@ struct TerrainGpuBuffers {
     bind_group: wgpu::BindGroup,
     lookup_capacity: u64,
     voxel_capacity: u64,
+}
+
+struct LogicalTargets {
+    glyphs: wgpu::TextureView,
+    colours: wgpu::TextureView,
+}
+
+struct UiGpuBuffer {
+    cells: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    capacity: u64,
+}
+
+/// Shared by the compositor shaders. `scale_and_origin` defines an integer
+/// letterboxed cell grid so glyphs are never filtered or stretched.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct PresentationUniform {
+    physical_size: [f32; 2],
+    logical_size: [f32; 2],
+    scale_and_origin: [f32; 4],
 }
 
 /// Per-frame terrain-cache synchronization input. `lookup` is the complete
@@ -494,8 +564,28 @@ impl<'window> SurfaceRenderer<'window> {
         surface.configure(&device, &config);
         let diagnostic_pipeline = create_diagnostic_pipeline(&device, format);
         let terrain_bind_group_layout = create_terrain_bind_group_layout(&device);
-        let terrain_pipeline = create_terrain_pipeline(&device, format, &terrain_bind_group_layout);
+        let terrain_pipeline = create_terrain_pipeline(&device, &terrain_bind_group_layout);
         let terrain = TerrainGpuBuffers::new(&device, &terrain_bind_group_layout);
+        let logical_targets = LogicalTargets::new(&device);
+        let glyph_atlas = create_glyph_atlas(&device, &queue);
+        let presentation = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("heliobound glyph presentation uniform"),
+            size: std::mem::size_of::<PresentationUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let glyph_layout = create_glyph_bind_group_layout(&device);
+        let glyph_bind_group = create_glyph_bind_group(
+            &device,
+            &glyph_layout,
+            &logical_targets,
+            &glyph_atlas,
+            &presentation,
+        );
+        let glyph_pipeline = create_glyph_pipeline(&device, format, &glyph_layout);
+        let ui_bind_group_layout = create_ui_bind_group_layout(&device);
+        let ui = UiGpuBuffer::new(&device, &ui_bind_group_layout, &glyph_atlas, &presentation);
+        let ui_pipeline = create_ui_pipeline(&device, format, &ui_bind_group_layout);
 
         Ok(Self {
             instance,
@@ -509,6 +599,15 @@ impl<'window> SurfaceRenderer<'window> {
             terrain_pipeline,
             terrain_bind_group_layout,
             terrain,
+            logical_targets,
+            glyph_pipeline,
+            glyph_bind_group,
+            ui_pipeline,
+            ui_bind_group_layout,
+            ui,
+            ui_count: 0,
+            glyph_atlas,
+            presentation,
         })
     }
 
@@ -518,6 +617,24 @@ impl<'window> SurfaceRenderer<'window> {
 
     pub fn format(&self) -> wgpu::TextureFormat {
         self.config.format
+    }
+
+    /// Replace the logical HUD/overlay cells for the next GPU frame. This is
+    /// independent of terrain uploads and supports menus, reticles, markers,
+    /// and diagnostic text without a CPU framebuffer.
+    pub fn set_ui_cells(&mut self, cells: &[UiCell]) {
+        self.ui.ensure_capacity(
+            &self.device,
+            &self.ui_bind_group_layout,
+            &self.glyph_atlas,
+            &self.presentation,
+            cells.len() as u64,
+        );
+        if !cells.is_empty() {
+            self.queue
+                .write_buffer(&self.ui.cells, 0, bytemuck::cast_slice(cells));
+        }
+        self.ui_count = cells.len() as u32;
     }
 
     /// Synchronize the direct-GPU terrain cache. The CPU remains authoritative:
@@ -651,9 +768,9 @@ impl<'window> SurfaceRenderer<'window> {
         Ok(())
     }
 
-    /// Render the WGSL DDA diagnostic straight to the presentation surface.
-    /// It is intentionally a terrain-only bridge while the logical ASCII
-    /// texture and glyph passes are integrated above it.
+    /// Render one DDA invocation per logical ASCII cell, then compose its
+    /// glyphs (and any UI cells) directly to the presentation surface. The
+    /// interactive path performs no terrain or framebuffer readback.
     pub fn render_terrain(&mut self) -> Result<(), SurfaceRendererError> {
         if self.size.width == 0 || self.size.height == 0 {
             return Ok(());
@@ -688,9 +805,48 @@ impl<'window> SurfaceRenderer<'window> {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("heliobound terrain surface encoder"),
             });
+        // The terrain target is deliberately fixed at 160 by 90: physical
+        // window size changes only alter the crisp glyph compositor.
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("heliobound terrain DDA pass"),
+                label: Some("heliobound logical terrain DDA pass"),
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &self.logical_targets.glyphs,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &self.logical_targets.colours,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                ],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.terrain_pipeline);
+            pass.set_bind_group(0, &self.terrain.bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.write_buffer(
+            &self.presentation,
+            0,
+            bytemuck::bytes_of(&presentation_uniform(self.size)),
+        );
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("heliobound glyph upscale pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -705,9 +861,30 @@ impl<'window> SurfaceRenderer<'window> {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.terrain_pipeline);
-            pass.set_bind_group(0, &self.terrain.bind_group, &[]);
+            pass.set_pipeline(&self.glyph_pipeline);
+            pass.set_bind_group(0, &self.glyph_bind_group, &[]);
             pass.draw(0..3, 0..1);
+        }
+        if self.ui_count != 0 {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("heliobound logical UI glyph pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.ui_pipeline);
+            pass.set_bind_group(0, &self.ui.bind_group, &[]);
+            pass.draw(0..6, 0..self.ui_count);
         }
         self.queue.submit([encoder.finish()]);
         frame.present();
@@ -907,7 +1084,6 @@ fn create_diagnostic_pipeline(
 
 fn create_terrain_pipeline(
     device: &wgpu::Device,
-    format: wgpu::TextureFormat,
     bind_group_layout: &wgpu::BindGroupLayout,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -935,9 +1111,372 @@ fn create_terrain_pipeline(
             module: &shader,
             entry_point: Some("fs_terrain"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::R32Uint,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+impl LogicalTargets {
+    fn new(device: &wgpu::Device) -> Self {
+        let create = |label, format| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: LOGICAL_WIDTH,
+                        height: LOGICAL_HEIGHT,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        Self {
+            glyphs: create("heliobound logical glyph IDs", wgpu::TextureFormat::R32Uint),
+            colours: create(
+                "heliobound logical glyph colours",
+                wgpu::TextureFormat::Rgba8Unorm,
+            ),
+        }
+    }
+}
+
+fn create_glyph_atlas(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let width = GLYPH_ATLAS_COLUMNS * GLYPH_WIDTH;
+    let height = GLYPH_ATLAS_ROWS * GLYPH_HEIGHT;
+    let mut pixels = vec![0u8; (width * height) as usize];
+    for code in 0u32..256 {
+        let glyph = char::from_u32(code)
+            .and_then(|ch| BASIC_FONTS.get(ch))
+            .or_else(|| BASIC_FONTS.get('?'));
+        let Some(rows) = glyph else { continue };
+        let ox = (code % GLYPH_ATLAS_COLUMNS) * GLYPH_WIDTH;
+        let oy = (code / GLYPH_ATLAS_COLUMNS) * GLYPH_HEIGHT;
+        for (y, bits) in rows.iter().enumerate() {
+            for x in 0..8u32 {
+                if bits & (1 << x) != 0 {
+                    pixels[((oy + y as u32) * width + ox + x) as usize] = 255;
+                }
+            }
+        }
+    }
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("heliobound immutable font8x8 glyph atlas"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn presentation_uniform(size: PhysicalSize<u32>) -> PresentationUniform {
+    let scale = ((size.width / LOGICAL_WIDTH).min(size.height / LOGICAL_HEIGHT)).max(1) as f32;
+    let used_width = LOGICAL_WIDTH as f32 * scale;
+    let used_height = LOGICAL_HEIGHT as f32 * scale;
+    PresentationUniform {
+        physical_size: [size.width as f32, size.height as f32],
+        logical_size: [LOGICAL_WIDTH as f32, LOGICAL_HEIGHT as f32],
+        scale_and_origin: [
+            scale,
+            (size.width as f32 - used_width) * 0.5,
+            (size.height as f32 - used_height) * 0.5,
+            0.0,
+        ],
+    }
+}
+
+fn create_glyph_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("heliobound glyph compose bind layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    })
+}
+fn create_glyph_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    targets: &LogicalTargets,
+    atlas: &wgpu::TextureView,
+    presentation: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("heliobound glyph compose bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&targets.glyphs),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&targets.colours),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(atlas),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: presentation.as_entire_binding(),
+            },
+        ],
+    })
+}
+fn create_glyph_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    create_graphics_pipeline(
+        device,
+        format,
+        layout,
+        "fs_glyph",
+        "heliobound glyph compositor",
+        None,
+    )
+}
+
+fn create_ui_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("heliobound UI cells bind layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    })
+}
+impl UiGpuBuffer {
+    fn new(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        atlas: &wgpu::TextureView,
+        presentation: &wgpu::Buffer,
+    ) -> Self {
+        let cells = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("heliobound UI cells"),
+            size: std::mem::size_of::<UiCell>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = create_ui_bind_group(device, layout, &cells, atlas, presentation);
+        Self {
+            cells,
+            bind_group,
+            capacity: 1,
+        }
+    }
+    fn ensure_capacity(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        atlas: &wgpu::TextureView,
+        presentation: &wgpu::Buffer,
+        count: u64,
+    ) {
+        if count <= self.capacity {
+            return;
+        }
+        self.capacity = count.next_power_of_two();
+        self.cells = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("heliobound UI cells"),
+            size: self.capacity * std::mem::size_of::<UiCell>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.bind_group = create_ui_bind_group(device, layout, &self.cells, atlas, presentation);
+    }
+}
+fn create_ui_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    cells: &wgpu::Buffer,
+    atlas: &wgpu::TextureView,
+    presentation: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("heliobound UI cells bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: cells.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(atlas),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: presentation.as_entire_binding(),
+            },
+        ],
+    })
+}
+fn create_ui_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    create_graphics_pipeline(
+        device,
+        format,
+        layout,
+        "fs_ui",
+        "heliobound UI glyph pipeline",
+        Some("vs_ui"),
+    )
+}
+fn create_graphics_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    layout: &wgpu::BindGroupLayout,
+    fragment: &str,
+    label: &'static str,
+    vertex_entry: Option<&str>,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(GLYPH_SHADER.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts: &[Some(layout)],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: vertex_entry.or(Some("vs_fullscreen")),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some(fragment),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
-                blend: Some(wgpu::BlendState::REPLACE),
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
@@ -1033,5 +1572,17 @@ mod tests {
         )
         .validate(&module)
         .expect("DDA WGSL must validate");
+    }
+
+    #[test]
+    fn glyph_wgsl_parses_and_validates() {
+        let module =
+            naga::front::wgsl::parse_str(GLYPH_SHADER).expect("glyph compositor WGSL must parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("glyph compositor WGSL must validate");
     }
 }

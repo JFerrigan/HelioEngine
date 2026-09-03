@@ -692,6 +692,7 @@ dependencies = [
  "heliobound-audio",
  "heliobound-core",
  "heliobound-gfx",
+ "heliobound-gpu",
  "pixels",
  "serde",
  "serde_json",

@@ -7,6 +7,7 @@ edition = "2021"
 heliobound-audio = { path = "../heliobound-audio" }
 heliobound-core = { path = "../heliobound-core" }
 heliobound-gfx = { path = "../heliobound-gfx" }
+heliobound-gpu = { path = "../heliobound-gpu" }
 font8x8 = "0.3.1"
 pixels = "0.17.2"
 winit = "0.30.13"

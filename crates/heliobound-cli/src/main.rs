@@ -19,6 +19,9 @@ use heliobound_gfx::{
     raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay, PixelSprite, RenderAsset, Scene,
     SceneBuilder, SceneCell, TextStyle, Viewport,
 };
+use heliobound_gpu::{
+    CameraUniform, ChunkTableLayout, ResidentChunkTable, SurfaceRenderer, TerrainFrame, UiCell,
+};
 use pixels::{PixelsBuilder, SurfaceTexture};
 use serde::Deserialize;
 use winit::{
@@ -341,6 +344,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             .build()
             .expect("failed to create pixels surface")
     };
+    // GPU terrain is intentionally opt-in until every gameplay presentation
+    // path has a GPU equivalent.  This gives the direct renderer a real-app
+    // exercise path without risking a black/partial default UI on unsupported
+    // modes; CPU `pixels` remains the authoritative reference presentation.
+    let mut gpu = if std::env::var("HELIOBOUND_RENDERER")
+        .is_ok_and(|value| value.eq_ignore_ascii_case("gpu"))
+    {
+        match GpuPresentation::new(window.as_ref()) {
+            Ok(renderer) => Some(renderer),
+            Err(error) => {
+                eprintln!("GPU renderer unavailable; using CPU fallback: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     #[allow(deprecated)]
     event_loop.run(|event, elwt| match event {
@@ -408,22 +428,45 @@ fn main() -> Result<(), Box<dyn Error>> {
                     pixels
                         .resize_surface(size.width, size.height)
                         .expect("failed to resize pixels surface");
+                    if let Some(renderer) = &mut gpu {
+                        renderer.resize(size);
+                    }
                 }
                 WindowEvent::RedrawRequested => {
                     let now = Instant::now();
                     let dt = (now - last_frame).as_secs_f32().min(0.1);
                     last_frame = now;
 
-                    let scene = app.frame(dt, mouse_captured);
+                    let presentation = app.frame_presentation(dt, mouse_captured);
                     audio.set_echolocation_interference(app.echolocation_audio_state());
                     play_audio_events(&mut audio, app.drain_audio_events());
-                    render_scene(
-                        &scene,
-                        pixels.frame_mut(),
-                        FRAME_WIDTH as usize,
-                        FRAME_HEIGHT as usize,
-                    );
-                    pixels.render().expect("failed to render pixels");
+                    let rendered_gpu =
+                        if let (Some(renderer), Some(request)) = (&mut gpu, presentation.terrain) {
+                            let cells = gpu_ui_cells(&presentation.cpu_scene);
+                            match renderer.render(
+                                app.terrain_world(request.source),
+                                request.camera,
+                                request.max_distance,
+                                &cells,
+                            ) {
+                                Ok(()) => true,
+                                Err(error) => {
+                                    eprintln!("GPU renderer failed; using CPU fallback: {error}");
+                                    false
+                                }
+                            }
+                        } else {
+                            false
+                        };
+                    if !rendered_gpu {
+                        render_scene(
+                            &presentation.cpu_scene,
+                            pixels.frame_mut(),
+                            FRAME_WIDTH as usize,
+                            FRAME_HEIGHT as usize,
+                        );
+                        pixels.render().expect("failed to render pixels");
+                    }
                 }
                 _ => {}
             }
@@ -466,6 +509,173 @@ enum AppMode {
     Liminal,
     DroneGateRunner,
     EchoLocation,
+}
+
+/// Identifies a CPU-owned voxel world that the GPU renderer may cache and
+/// raycast directly.  This deliberately carries neither a world clone nor
+/// dynamic presentation data: the CPU world remains authoritative and the
+/// GPU cache is resolved from `AppState` immediately before submission.
+///
+/// Only modes whose terrain is not assembled from per-frame actor voxels are
+/// listed here.  Modes with figures, enemies, visibility masking, or
+/// mixed-resolution assets continue through the CPU reference renderer until
+/// their corresponding GPU overlay paths preserve the existing occlusion and
+/// presentation semantics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerrainWorldSource {
+    CornMaze,
+    Bar,
+    VoxelSandbox,
+    Liminal,
+}
+
+/// The terrain portion of one post-simulation frame.  A future GPU backend
+/// consumes this request together with `AppState::terrain_world`; keeping the
+/// world borrowed from application state prevents accidental full-world
+/// copies or a second authoritative representation.
+#[derive(Clone, Copy, Debug)]
+struct TerrainRenderRequest {
+    source: TerrainWorldSource,
+    camera: Camera,
+    max_distance: f32,
+}
+
+/// Presentation products after simulation advances.  `cpu_scene` is the
+/// complete existing reference output.  `terrain` is independent metadata for
+/// a GPU terrain pass and is intentionally available even while CPU remains
+/// the active backend.
+struct FramePresentation {
+    cpu_scene: Scene,
+    terrain: Option<TerrainRenderRequest>,
+}
+
+/// CLI-owned bridge from the authoritative sparse world to the direct GPU
+/// renderer.  It has no gameplay state: `ResidentChunkTable` is only a cache
+/// of upload slots and is rebuilt/recentered from CPU snapshots as needed.
+struct GpuPresentation<'window> {
+    surface: SurfaceRenderer<'window>,
+    residents: Option<ResidentChunkTable>,
+}
+
+impl<'window> GpuPresentation<'window> {
+    fn new(window: &'window Window) -> Result<Self, heliobound_gpu::SurfaceRendererError> {
+        Ok(Self {
+            surface: SurfaceRenderer::new(window)?,
+            residents: None,
+        })
+    }
+
+    fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+        self.surface.resize(size);
+    }
+
+    fn render(
+        &mut self,
+        world: &VoxelWorld,
+        camera: Camera,
+        max_distance: f32,
+        ui_cells: &[UiCell],
+    ) -> Result<(), Box<dyn Error>> {
+        let Some(bounds) = world.bounds() else {
+            self.surface.set_ui_cells(ui_cells);
+            return Ok(self.surface.render_terrain()?);
+        };
+        let chunk_radius = ((max_distance / 16.0).ceil() as i32 + 1).max(1);
+        let camera_chunk = VoxelCoord::new(
+            camera.position.x.floor() as i32,
+            camera.position.y.floor() as i32,
+            camera.position.z.floor() as i32,
+        );
+        let center = heliobound_core::ChunkCoord::new(
+            camera_chunk.x.div_euclid(16),
+            camera_chunk.y.div_euclid(16),
+            camera_chunk.z.div_euclid(16),
+        );
+        let layout = ChunkTableLayout::new(
+            heliobound_core::ChunkCoord::new(
+                center.x - chunk_radius,
+                center.y - chunk_radius,
+                center.z - chunk_radius,
+            ),
+            [(chunk_radius * 2 + 1) as u32; 3],
+        );
+        let residents = self
+            .residents
+            .get_or_insert_with(|| ResidentChunkTable::new(layout));
+        if residents.layout() != layout {
+            residents.recenter(layout);
+        }
+        let max = heliobound_core::ChunkCoord::new(
+            layout.origin.x + layout.dimensions[0] as i32 - 1,
+            layout.origin.y + layout.dimensions[1] as i32 - 1,
+            layout.origin.z + layout.dimensions[2] as i32 - 1,
+        );
+        let snapshots = world.chunk_snapshots_in(layout.origin, max);
+        let updates = residents.sync_visible_snapshots(&snapshots);
+        let camera = camera.with_max_distance(max_distance);
+        let max_steps = (max_distance.ceil() as u32)
+            .saturating_mul(3)
+            .saturating_add(3);
+        self.surface.update_terrain(TerrainFrame {
+            camera: CameraUniform::from_camera(camera, bounds, layout, max_steps),
+            lookup: &residents.lookup_entries(),
+            slot_count: residents.slot_count(),
+            updates: &updates,
+        })?;
+        self.surface.set_ui_cells(ui_cells);
+        self.surface.render_terrain()?;
+        Ok(())
+    }
+}
+
+fn gpu_ui_cells(scene: &Scene) -> Vec<UiCell> {
+    let mut scene = scene.clone();
+    scene.sort_layers();
+    let mut cells = Vec::new();
+    for layer in &scene.layers {
+        if matches!(layer.name.as_str(), "background" | "voxels" | "planet") {
+            continue;
+        }
+        let fallback = layer_color(layer.name.as_str());
+        for cell in &layer.cells {
+            let colour = style_color(&cell.style).unwrap_or(fallback);
+            let mut ui = UiCell::new(cell.x, cell.y, cell.glyph, pack_rgba(colour));
+            if layer_cells_are_opaque(layer.name.as_str()) {
+                ui = ui.with_background(0x080b10ff);
+            }
+            cells.push(ui);
+        }
+    }
+    for overlay in &scene.overlays {
+        let foreground = pack_rgba(style_color(&overlay.style).unwrap_or([0xf0, 0xc6, 0x5b, 0xff]));
+        let background = style_bg_color(&overlay.style).map(pack_rgba);
+        for (offset, glyph) in overlay.text.chars().enumerate() {
+            let mut cell = UiCell::new(overlay.x + offset as i32, overlay.y, glyph, foreground);
+            if let Some(background) = background {
+                cell = cell.with_background(background);
+            }
+            cells.push(cell);
+        }
+    }
+    cells
+}
+
+fn pack_rgba([r, g, b, a]: [u8; 4]) -> u32 {
+    ((r as u32) << 24) | ((g as u32) << 16) | ((b as u32) << 8) | a as u32
+}
+
+fn layer_color(layer_name: &str) -> [u8; 4] {
+    match layer_name {
+        "background" => [0x50, 0x58, 0x66, 0xff],
+        "menu" => [0x78, 0xc6, 0xa3, 0xff],
+        "voxels" | "planet" => [0xdf, 0xe8, 0xdb, 0xff],
+        "enemies" => [0xff, 0x65, 0x5a, 0xff],
+        "bullets" => [0xff, 0xea, 0x8a, 0xff],
+        "weapon" => [0xf0, 0xc6, 0x5b, 0xff],
+        "reticle" | "minimap" => [0x9f, 0xf5, 0xff, 0xff],
+        "damage" => [0xb1, 0x18, 0x2b, 0xff],
+        _ => [0xe6, 0xee, 0xf3, 0xff],
+    }
 }
 
 impl AppMode {
@@ -1451,7 +1661,54 @@ impl AppState {
         self.walk_motion = WalkMotion::default();
     }
 
+    /// Advances one simulation frame and produces the renderer boundary.
+    ///
+    /// The CPU scene remains populated for the active reference presentation.
+    /// GPU integration can instead consume `terrain` and resolve the borrowed
+    /// world with `terrain_world`, avoiding CPU terrain-cell generation once
+    /// the matching UI and dynamic-overlay path is available.
+    fn frame_presentation(&mut self, dt: f32, mouse_captured: bool) -> FramePresentation {
+        let cpu_scene = self.cpu_reference_frame(dt, mouse_captured);
+        let terrain = self.terrain_render_request();
+        FramePresentation { cpu_scene, terrain }
+    }
+
+    /// Compatibility helper for deterministic CPU renderer tests.  Runtime
+    /// callers should use `frame_presentation` so backend selection happens
+    /// at a single explicit boundary.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn frame(&mut self, dt: f32, mouse_captured: bool) -> Scene {
+        self.frame_presentation(dt, mouse_captured).cpu_scene
+    }
+
+    fn terrain_render_request(&self) -> Option<TerrainRenderRequest> {
+        let source = match self.mode {
+            AppMode::CornMaze => TerrainWorldSource::CornMaze,
+            AppMode::BarScene => TerrainWorldSource::Bar,
+            AppMode::VoxelSandbox => TerrainWorldSource::VoxelSandbox,
+            AppMode::Liminal => TerrainWorldSource::Liminal,
+            _ => return None,
+        };
+        Some(TerrainRenderRequest {
+            source,
+            camera: self.camera,
+            max_distance: self.city_builder.config.max_distance,
+        })
+    }
+
+    /// Resolves the authoritative CPU world for a terrain request.  The
+    /// request source is private to this module, so a caller cannot mix it
+    /// with an unrelated world.
+    fn terrain_world(&self, source: TerrainWorldSource) -> &VoxelWorld {
+        match source {
+            TerrainWorldSource::CornMaze => &self.corn_maze.world,
+            TerrainWorldSource::Bar => &self.bar_scene,
+            TerrainWorldSource::VoxelSandbox => &self.sandbox.world,
+            TerrainWorldSource::Liminal => &self.liminal.world,
+        }
+    }
+
+    fn cpu_reference_frame(&mut self, dt: f32, mouse_captured: bool) -> Scene {
         self.tick = self.tick.wrapping_add(1);
 
         match self.mode {
@@ -17500,5 +17757,62 @@ mod tests {
         assert!([left_pan, right_pan, near_gain, far_gain]
             .iter()
             .all(|value| value.is_finite() && (-1.0..=1.0).contains(value)));
+    }
+
+    #[test]
+    fn terrain_request_identifies_only_static_cpu_worlds() {
+        let mut app = AppState::new();
+        app.mode = AppMode::BarScene;
+        let presentation = app.frame_presentation(0.0, false);
+        let request = presentation
+            .terrain
+            .expect("bar terrain should be eligible for a GPU terrain cache");
+        assert_eq!(request.source, TerrainWorldSource::Bar);
+        assert_eq!(request.camera.position, app.camera.position);
+        assert!(std::ptr::eq(
+            app.terrain_world(request.source),
+            &app.bar_scene
+        ));
+
+        app.mode = AppMode::CityWalk;
+        let presentation = app.frame_presentation(0.0, false);
+        assert!(presentation.terrain.is_none());
+    }
+
+    #[test]
+    fn gpu_ui_conversion_excludes_cpu_terrain_layers() {
+        let mut scene = Scene::new(VIEWPORT);
+        scene.layers.push(Layer {
+            name: "voxels".to_string(),
+            z: 0,
+            cells: vec![SceneCell {
+                x: 1,
+                y: 1,
+                glyph: '#',
+                style: TextStyle::default(),
+            }],
+        });
+        scene.layers.push(Layer {
+            name: "reticle".to_string(),
+            z: 1,
+            cells: vec![SceneCell {
+                x: 2,
+                y: 2,
+                glyph: '+',
+                style: TextStyle::default(),
+            }],
+        });
+        scene.overlays.push(Overlay {
+            x: 3,
+            y: 3,
+            z: 2,
+            text: "HUD".to_string(),
+            style: TextStyle::default(),
+        });
+
+        let cells = gpu_ui_cells(&scene);
+        assert_eq!(cells.len(), 4);
+        assert!(cells.iter().all(|cell| !(cell.x == 1 && cell.y == 1)));
+        assert_eq!(cells[0].glyph, '+' as u32);
     }
 }

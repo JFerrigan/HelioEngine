@@ -23,6 +23,21 @@
   glyph/UI passes, and the `AppState` render-request split would remove the
   current visual/game-mode presentation.
 
+## Latest integration check
+
+- The CLI now has an explicit post-simulation `FramePresentation` boundary.
+  Corn Maze, Bar, Voxel Sandbox, and Liminal can supply an authoritative
+  static-world terrain request without cloning their world; modes with dynamic
+  voxel actors, mixed-resolution assets, or Echolocation face filtering remain
+  on the CPU reference path.
+- `HELIOBOUND_RENDERER=gpu` initializes the direct surface and exercises the
+  GPU terrain cache, logical 160×90 glyph target, font8x8 atlas compositor,
+  and UI-cell pass for those static-world requests. An initialization or frame
+  error prints its reason and presents the CPU fallback instead.
+- The application was launched in GPU mode on 2026-09-03. A UI bind-layout
+  validation error was found and fixed; the repeat launch produced no `wgpu`
+  validation or shader errors. This is a smoke check, not visual-parity proof.
+
 Next: refactor the CLI's fused `AppState::frame` into simulation plus a terrain
 render request and separate UI scene. Then make the terrain pass render to the
 160×90 logical target, add material/glyph output and GPU UI cells, and use the

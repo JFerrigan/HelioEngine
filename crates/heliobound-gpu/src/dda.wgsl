@@ -96,12 +96,47 @@ fn ray_for_cell(cell: vec2f) -> vec3f {
   let sensor_y = (1.0 - (cell.y / dimensions.y) * 2.0) * camera.right_and_tan_half_fov.w;
   return normalize(camera.forward_and_aspect.xyz + camera.right_and_tan_half_fov.xyz * sensor_x + camera.up_and_padding.xyz * sensor_y);
 }
-// Temporary terrain diagnostic: normal and distance output. Glyph/material
-// passes consume this DDA result later without CPU readback.
-@fragment fn fs_terrain(@builtin(position) position: vec4f) -> @location(0) vec4f {
+struct TerrainOut { @location(0) glyph: u32, @location(1) colour: vec4f };
+fn material_colour(material: u32) -> vec3f {
+  switch material {
+    case 1u: { return vec3f(0.659, 0.525, 0.384); } case 2u: { return vec3f(0.333, 0.353, 0.376); }
+    case 3u: { return vec3f(0.176, 0.49, 0.788); } case 4u: { return vec3f(0.722, 0.922, 1.0); }
+    case 5u: { return vec3f(0.404, 0.722, 0.278); } case 6u: { return vec3f(0.541, 0.357, 0.212); }
+    case 7u: { return vec3f(0.557, 0.576, 0.588); } case 8u: { return vec3f(0.847, 0.761, 0.478); }
+    case 9u: { return vec3f(0.627, 0.388, 0.196); } case 10u: { return vec3f(0.204, 0.561, 0.271); }
+    case 11u: { return vec3f(0.541, 0.82, 0.404); } case 12u: { return vec3f(0.722, 0.788, 0.267); }
+    case 13u: { return vec3f(0.875, 0.459, 0.62); } case 14u: { return vec3f(0.659, 0.616, 1.0); }
+    case 15u: { return vec3f(0.612, 0.655, 0.698); } case 16u: { return vec3f(0.761, 0.784, 0.824); }
+    case 17u: { return vec3f(0.624, 0.961, 1.0); } case 18u: { return vec3f(1.0, 0.855, 0.388); }
+    case 19u: { return vec3f(1.0, 0.455, 0.224); } case 20u: { return vec3f(0.329, 0.408, 0.447); }
+    case 21u: { return vec3f(0.239, 0.329, 0.38); } case 22u: { return vec3f(0.396, 0.439, 0.471); }
+    case 23u: { return vec3f(0.843, 0.604, 0.227); }
+    default: { if ((material & 0x80000000u) != 0u) { return vec3f(f32((material >> 16u) & 255u), f32((material >> 8u) & 255u), f32(material & 255u)) / 255.0; } return vec3f(1.0); }
+  }
+}
+fn glyph_for(material: u32, intensity: f32) -> u32 {
+  let level = min(u32(intensity * 4.999), 4u);
+  // Same material ramp ordering as MaterialGlyphMap; one five-character row.
+  var ramp = array<u32, 5>(46u, 44u, 58u, 59u, 59u);
+  switch material {
+    case 2u, 7u: { ramp = array<u32, 5>(45u,61u,43u,35u,35u); } case 3u: { ramp = array<u32, 5>(126u,61u,45u,43u,43u); }
+    case 4u: { ramp = array<u32, 5>(96u,39u,42u,73u,73u); } case 5u: { ramp = array<u32, 5>(46u,44u,59u,34u,34u); }
+    case 9u: { ramp = array<u32, 5>(58u,45u,124u,72u,72u); } case 10u: { ramp = array<u32, 5>(46u,44u,42u,37u,37u); }
+    case 11u: { ramp = array<u32, 5>(122u,90u,38u,64u,64u); } case 15u: { ramp = array<u32, 5>(91u,93u,72u,77u,77u); }
+    case 16u: { ramp = array<u32, 5>(60u,62u,88u,90u,90u); } case 17u: { ramp = array<u32, 5>(39u,46u,111u,79u,79u); }
+    case 18u: { ramp = array<u32, 5>(105u,33u,42u,64u,64u); } case 19u: { ramp = array<u32, 5>(40u,41u,48u,64u,64u); }
+    case 22u: { ramp = array<u32, 5>(124u,35u,72u,77u,77u); } case 23u: { ramp = array<u32, 5>(46u,95u,61u,43u,43u); }
+    default: {}
+  }
+  return ramp[level];
+}
+@fragment fn fs_terrain(@builtin(position) position: vec4f) -> TerrainOut {
   let hit = cast_world(camera.position_and_max_distance.xyz, ray_for_cell(position.xy));
-  if (!hit.hit) { return vec4f(0.0, 0.0, 0.0, 1.0); }
-  let fade = 1.0 - clamp(hit.distance / camera.position_and_max_distance.w, 0.0, 0.65);
-  return vec4f((hit.normal * 0.5 + vec3f(0.5)) * fade, 1.0);
+  if (!hit.hit) { return TerrainOut(32u, vec4f(0.0, 0.0, 0.0, 1.0)); }
+  let light = max(dot(hit.normal, normalize(vec3f(-0.35, 0.75, -0.55))), 0.0);
+  let distance_fade = clamp(1.0 - hit.distance / 180000.0, 0.2, 1.0);
+  let intensity = light * 0.7 + distance_fade * 0.3;
+  let brightness = clamp(0.48 + light * 0.52, 0.35, 1.0);
+  return TerrainOut(glyph_for(hit.material, intensity), vec4f(material_colour(hit.material) * brightness, 1.0));
 }
 @fragment fn fs_diagnostic() -> @location(0) vec4f { return vec4f(0.0, 0.0, 0.0, 1.0); }
