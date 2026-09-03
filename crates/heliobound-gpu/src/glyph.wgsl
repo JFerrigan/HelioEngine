@@ -70,3 +70,40 @@ fn unpack_rgba(value: u32) -> vec4f {
   if ((in.flags & 1u) != 0u) { return unpack_rgba(in.background); }
   return vec4f(0.0);
 }
+
+// Pixel sprites retain their CPU framebuffer coordinates (1280 by 720) and
+// scale with the logical 8-by-8 glyph grid. They are painter-ordered between
+// scene cells and text overlays.
+struct PixelSprite {
+  x: i32, y: i32, scale: u32, flags: u32,
+  foreground_rgba: u32, background_rgba: u32,
+  rows: array<u32, 16>,
+};
+struct SpriteOut {
+  @builtin(position) position: vec4f,
+  @location(0) @interpolate(flat) sprite_index: u32,
+};
+@group(0) @binding(0) var<storage, read> pixel_sprites: array<PixelSprite>;
+@group(0) @binding(1) var<uniform> sprite_presentation: Presentation;
+@vertex fn vs_sprite(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> SpriteOut {
+  let source = pixel_sprites[instance];
+  var corners = array<vec2f, 6>(vec2f(0.0,0.0),vec2f(1.0,0.0),vec2f(0.0,1.0),vec2f(0.0,1.0),vec2f(1.0,0.0),vec2f(1.0,1.0));
+  let factor = sprite_presentation.scale_and_origin.x / 8.0;
+  let origin = sprite_presentation.scale_and_origin.yz + vec2f(f32(source.x), f32(source.y)) * factor;
+  let extent = vec2f(16.0 * f32(source.scale)) * factor;
+  let pixel = origin + corners[vertex] * extent;
+  var out: SpriteOut;
+  out.position = vec4f(pixel.x / sprite_presentation.physical_size.x * 2.0 - 1.0, 1.0 - pixel.y / sprite_presentation.physical_size.y * 2.0, 0.0, 1.0);
+  out.sprite_index = instance;
+  return out;
+}
+@fragment fn fs_sprite(in: SpriteOut) -> @location(0) vec4f {
+  let source = pixel_sprites[in.sprite_index];
+  let factor = sprite_presentation.scale_and_origin.x / 8.0;
+  let origin = sprite_presentation.scale_and_origin.yz + vec2f(f32(source.x), f32(source.y)) * factor;
+  let source_pixel = vec2u(floor((in.position.xy - origin) / (factor * f32(source.scale))));
+  let bit = (source.rows[source_pixel.y] & (1u << (15u - source_pixel.x))) != 0u;
+  if (bit) { return unpack_rgba(source.foreground_rgba); }
+  if ((source.flags & 1u) != 0u) { return unpack_rgba(source.background_rgba); }
+  return vec4f(0.0);
+}

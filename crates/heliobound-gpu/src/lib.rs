@@ -369,6 +369,34 @@ impl UiCell {
     }
 }
 
+/// One CPU-composed sky cell, passed to the GPU terrain pass in row-major
+/// logical-cell order. Terrain hits replace this value; misses retain it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BackgroundCell {
+    pub glyph: u32,
+    pub foreground_rgba: u32,
+}
+
+/// A 16 by 16 indexed pixel sprite in the CPU framebuffer's 1280 by 720
+/// coordinate space. It is scaled with the logical presentation grid, rather
+/// than treated as a terminal cell overlay.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct PixelSprite {
+    pub x: i32,
+    pub y: i32,
+    pub scale: u32,
+    pub flags: u32,
+    pub foreground_rgba: u32,
+    pub background_rgba: u32,
+    pub rows: [u32; 16],
+}
+
+impl PixelSprite {
+    pub const OPAQUE_BACKGROUND: u32 = 1;
+}
+
 /// A direct `wgpu` presentation surface owned by the future CLI GPU backend.
 ///
 /// This deliberately owns no window or world state.  The caller keeps the
@@ -396,6 +424,12 @@ pub struct SurfaceRenderer<'window> {
     ui_bind_group_layout: wgpu::BindGroupLayout,
     ui: UiGpuBuffer,
     ui_count: u32,
+    overlay_ui: UiGpuBuffer,
+    overlay_ui_count: u32,
+    sprite_pipeline: wgpu::RenderPipeline,
+    sprite_bind_group_layout: wgpu::BindGroupLayout,
+    sprites: SpriteGpuBuffer,
+    sprite_count: u32,
     glyph_atlas: wgpu::TextureView,
     presentation: wgpu::Buffer,
 }
@@ -403,6 +437,7 @@ pub struct SurfaceRenderer<'window> {
 struct TerrainGpuBuffers {
     camera: wgpu::Buffer,
     lookup: wgpu::Buffer,
+    background: wgpu::Buffer,
     voxels: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     lookup_capacity: u64,
@@ -410,12 +445,22 @@ struct TerrainGpuBuffers {
 }
 
 struct LogicalTargets {
+    #[cfg_attr(not(test), allow(dead_code))]
+    glyph_texture: wgpu::Texture,
     glyphs: wgpu::TextureView,
+    #[cfg_attr(not(test), allow(dead_code))]
+    colour_texture: wgpu::Texture,
     colours: wgpu::TextureView,
 }
 
 struct UiGpuBuffer {
     cells: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    capacity: u64,
+}
+
+struct SpriteGpuBuffer {
+    sprites: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     capacity: u64,
 }
@@ -437,6 +482,7 @@ struct PresentationUniform {
 pub struct TerrainFrame<'a> {
     pub camera: CameraUniform,
     pub lookup: &'a [u32],
+    pub background: &'a [BackgroundCell],
     pub slot_count: u32,
     pub updates: &'a [ChunkSlotUpload],
 }
@@ -451,6 +497,7 @@ pub struct TerrainUploadStats {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerrainDataError {
     EmptyLookup,
+    InvalidBackgroundLength { actual: usize },
     InvalidChunkLength { slot: u32, actual: usize },
     SlotOutsideCapacity { slot: u32, slot_count: u32 },
 }
@@ -459,6 +506,11 @@ impl fmt::Display for TerrainDataError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyLookup => write!(f, "terrain chunk lookup must contain at least one entry"),
+            Self::InvalidBackgroundLength { actual } => write!(
+                f,
+                "terrain background contains {actual} cells; expected {}",
+                LOGICAL_WIDTH * LOGICAL_HEIGHT
+            ),
             Self::InvalidChunkLength { slot, actual } => write!(
                 f,
                 "terrain chunk slot {slot} contains {actual} voxels; expected {CHUNK_VOXELS}"
@@ -585,7 +637,12 @@ impl<'window> SurfaceRenderer<'window> {
         let glyph_pipeline = create_glyph_pipeline(&device, format, &glyph_layout);
         let ui_bind_group_layout = create_ui_bind_group_layout(&device);
         let ui = UiGpuBuffer::new(&device, &ui_bind_group_layout, &glyph_atlas, &presentation);
+        let overlay_ui =
+            UiGpuBuffer::new(&device, &ui_bind_group_layout, &glyph_atlas, &presentation);
         let ui_pipeline = create_ui_pipeline(&device, format, &ui_bind_group_layout);
+        let sprite_bind_group_layout = create_sprite_bind_group_layout(&device);
+        let sprites = SpriteGpuBuffer::new(&device, &sprite_bind_group_layout, &presentation);
+        let sprite_pipeline = create_sprite_pipeline(&device, format, &sprite_bind_group_layout);
 
         Ok(Self {
             instance,
@@ -606,6 +663,12 @@ impl<'window> SurfaceRenderer<'window> {
             ui_bind_group_layout,
             ui,
             ui_count: 0,
+            overlay_ui,
+            overlay_ui_count: 0,
+            sprite_pipeline,
+            sprite_bind_group_layout,
+            sprites,
+            sprite_count: 0,
             glyph_atlas,
             presentation,
         })
@@ -637,6 +700,40 @@ impl<'window> SurfaceRenderer<'window> {
         self.ui_count = cells.len() as u32;
     }
 
+    /// Replace text overlay cells. These deliberately render after pixel
+    /// sprites, matching the CPU painter's final overlay pass.
+    pub fn set_overlay_cells(&mut self, cells: &[UiCell]) {
+        self.overlay_ui.ensure_capacity(
+            &self.device,
+            &self.ui_bind_group_layout,
+            &self.glyph_atlas,
+            &self.presentation,
+            cells.len() as u64,
+        );
+        if !cells.is_empty() {
+            self.queue
+                .write_buffer(&self.overlay_ui.cells, 0, bytemuck::cast_slice(cells));
+        }
+        self.overlay_ui_count = cells.len() as u32;
+    }
+
+    /// Replace static pixel sprites for the next frame. The caller preserves
+    /// painter order; this pass is rendered after logical scene cells and
+    /// before text overlays.
+    pub fn set_pixel_sprites(&mut self, sprites: &[PixelSprite]) {
+        self.sprites.ensure_capacity(
+            &self.device,
+            &self.sprite_bind_group_layout,
+            &self.presentation,
+            sprites.len() as u64,
+        );
+        if !sprites.is_empty() {
+            self.queue
+                .write_buffer(&self.sprites.sprites, 0, bytemuck::cast_slice(sprites));
+        }
+        self.sprite_count = sprites.len() as u32;
+    }
+
     /// Synchronize the direct-GPU terrain cache. The CPU remains authoritative:
     /// this method only writes the current camera/table and the caller-selected
     /// dirty chunk slots. It performs no GPU-to-CPU readback.
@@ -646,6 +743,11 @@ impl<'window> SurfaceRenderer<'window> {
     ) -> Result<TerrainUploadStats, TerrainDataError> {
         if frame.lookup.is_empty() {
             return Err(TerrainDataError::EmptyLookup);
+        }
+        if frame.background.len() != (LOGICAL_WIDTH * LOGICAL_HEIGHT) as usize {
+            return Err(TerrainDataError::InvalidBackgroundLength {
+                actual: frame.background.len(),
+            });
         }
         for update in frame.updates {
             if update.upload.voxels.len() != CHUNK_VOXELS as usize {
@@ -672,8 +774,14 @@ impl<'window> SurfaceRenderer<'window> {
             .write_buffer(&self.terrain.camera, 0, bytemuck::bytes_of(&frame.camera));
         self.queue
             .write_buffer(&self.terrain.lookup, 0, bytemuck::cast_slice(frame.lookup));
-        let mut bytes_uploaded =
-            CameraUniform::BYTE_SIZE + (frame.lookup.len() * std::mem::size_of::<u32>()) as u64;
+        self.queue.write_buffer(
+            &self.terrain.background,
+            0,
+            bytemuck::cast_slice(frame.background),
+        );
+        let mut bytes_uploaded = CameraUniform::BYTE_SIZE
+            + (frame.lookup.len() * std::mem::size_of::<u32>()) as u64
+            + std::mem::size_of_val(frame.background) as u64;
         for update in frame.updates {
             let offset =
                 update.slot as u64 * CHUNK_VOXELS as u64 * std::mem::size_of::<u32>() as u64;
@@ -886,6 +994,48 @@ impl<'window> SurfaceRenderer<'window> {
             pass.set_bind_group(0, &self.ui.bind_group, &[]);
             pass.draw(0..6, 0..self.ui_count);
         }
+        if self.sprite_count != 0 {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("heliobound pixel sprite pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.sprite_pipeline);
+            pass.set_bind_group(0, &self.sprites.bind_group, &[]);
+            pass.draw(0..6, 0..self.sprite_count);
+        }
+        if self.overlay_ui_count != 0 {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("heliobound text overlay pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.ui_pipeline);
+            pass.set_bind_group(0, &self.overlay_ui.bind_group, &[]);
+            pass.draw(0..6, 0..self.overlay_ui_count);
+        }
         self.queue.submit([encoder.finish()]);
         frame.present();
         if reconfigure_after_present {
@@ -913,15 +1063,22 @@ impl TerrainGpuBuffers {
             mapped_at_creation: false,
         });
         let lookup = create_storage_buffer(device, "heliobound terrain chunk lookup", 1);
+        let background = create_storage_buffer(
+            device,
+            "heliobound logical sky cells",
+            (LOGICAL_WIDTH * LOGICAL_HEIGHT * 2) as u64,
+        );
         let voxels = create_storage_buffer(
             device,
             "heliobound terrain chunk slots",
             CHUNK_VOXELS as u64,
         );
-        let bind_group = create_terrain_bind_group(device, layout, &camera, &lookup, &voxels);
+        let bind_group =
+            create_terrain_bind_group(device, layout, &camera, &lookup, &background, &voxels);
         Self {
             camera,
             lookup,
+            background,
             voxels,
             bind_group,
             lookup_capacity: 1,
@@ -965,8 +1122,14 @@ impl TerrainGpuBuffers {
             changed = true;
         }
         if changed {
-            self.bind_group =
-                create_terrain_bind_group(device, layout, &self.camera, &self.lookup, &self.voxels);
+            self.bind_group = create_terrain_bind_group(
+                device,
+                layout,
+                &self.camera,
+                &self.lookup,
+                &self.background,
+                &self.voxels,
+            );
         }
     }
 }
@@ -1016,6 +1179,16 @@ fn create_terrain_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLay
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(4),
+                },
+                count: None,
+            },
         ],
     })
 }
@@ -1025,6 +1198,7 @@ fn create_terrain_bind_group(
     layout: &wgpu::BindGroupLayout,
     camera: &wgpu::Buffer,
     lookup: &wgpu::Buffer,
+    background: &wgpu::Buffer,
     voxels: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1041,6 +1215,10 @@ fn create_terrain_bind_group(
             },
             wgpu::BindGroupEntry {
                 binding: 2,
+                resource: background.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
                 resource: voxels.as_entire_binding(),
             },
         ],
@@ -1132,30 +1310,33 @@ fn create_terrain_pipeline(
 impl LogicalTargets {
     fn new(device: &wgpu::Device) -> Self {
         let create = |label, format| {
-            device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: wgpu::Extent3d {
-                        width: LOGICAL_WIDTH,
-                        height: LOGICAL_HEIGHT,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                })
-                .create_view(&wgpu::TextureViewDescriptor::default())
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: LOGICAL_WIDTH,
+                    height: LOGICAL_HEIGHT,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
         };
+        let glyph_texture = create("heliobound logical glyph IDs", wgpu::TextureFormat::R32Uint);
+        let colour_texture = create(
+            "heliobound logical glyph colours",
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
         Self {
-            glyphs: create("heliobound logical glyph IDs", wgpu::TextureFormat::R32Uint),
-            colours: create(
-                "heliobound logical glyph colours",
-                wgpu::TextureFormat::Rgba8Unorm,
-            ),
+            glyphs: glyph_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            glyph_texture,
+            colours: colour_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            colour_texture,
         }
     }
 }
@@ -1441,6 +1622,111 @@ fn create_ui_pipeline(
         Some("vs_ui"),
     )
 }
+fn create_sprite_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("heliobound pixel sprites bind layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    })
+}
+
+fn create_sprite_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sprites: &wgpu::Buffer,
+    presentation: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("heliobound pixel sprites bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: sprites.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: presentation.as_entire_binding(),
+            },
+        ],
+    })
+}
+
+impl SpriteGpuBuffer {
+    fn new(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        presentation: &wgpu::Buffer,
+    ) -> Self {
+        let sprites = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("heliobound pixel sprites"),
+            size: std::mem::size_of::<PixelSprite>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = create_sprite_bind_group(device, layout, &sprites, presentation);
+        Self {
+            sprites,
+            bind_group,
+            capacity: 1,
+        }
+    }
+
+    fn ensure_capacity(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        presentation: &wgpu::Buffer,
+        count: u64,
+    ) {
+        if count <= self.capacity {
+            return;
+        }
+        self.capacity = count.next_power_of_two();
+        self.sprites = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("heliobound pixel sprites"),
+            size: self.capacity * std::mem::size_of::<PixelSprite>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.bind_group = create_sprite_bind_group(device, layout, &self.sprites, presentation);
+    }
+}
+
+fn create_sprite_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    create_graphics_pipeline(
+        device,
+        format,
+        layout,
+        "fs_sprite",
+        "heliobound pixel sprite pipeline",
+        Some("vs_sprite"),
+    )
+}
 fn create_graphics_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -1488,7 +1774,252 @@ fn create_graphics_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use heliobound_core::{Vec3, VoxelCell, VoxelCoord};
+    use heliobound_core::{Vec3, VoxelCell, VoxelCoord, VoxelWorld};
+    use heliobound_gfx::{background_glyph_for_direction, raycast, MaterialGlyphMap};
+    use std::sync::mpsc;
+
+    /// Adapter-backed test helper. It renders the same logical 160 by 90
+    /// terrain targets as the interactive path, then reads those test-only
+    /// targets back as glyph IDs and RGBA cells.
+    struct OffscreenTerrainReadback {
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        terrain_layout: wgpu::BindGroupLayout,
+        terrain_pipeline: wgpu::RenderPipeline,
+    }
+
+    impl OffscreenTerrainReadback {
+        fn new() -> Option<Self> {
+            pollster::block_on(async {
+                let instance = wgpu::Instance::new(
+                    wgpu::InstanceDescriptor::new_without_display_handle().with_env(),
+                );
+                let adapter = instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::LowPower,
+                        compatible_surface: None,
+                        force_fallback_adapter: false,
+                    })
+                    .await
+                    .ok()?;
+                let (device, queue) = adapter
+                    .request_device(&wgpu::DeviceDescriptor {
+                        label: Some("heliobound offscreen terrain parity device"),
+                        required_features: wgpu::Features::empty(),
+                        required_limits: wgpu::Limits::default(),
+                        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                        memory_hints: wgpu::MemoryHints::MemoryUsage,
+                        trace: wgpu::Trace::Off,
+                    })
+                    .await
+                    .ok()?;
+                let terrain_layout = create_terrain_bind_group_layout(&device);
+                let terrain_pipeline = create_terrain_pipeline(&device, &terrain_layout);
+                Some(Self {
+                    device,
+                    queue,
+                    terrain_layout,
+                    terrain_pipeline,
+                })
+            })
+        }
+
+        fn render(&self, world: &VoxelWorld, camera: Camera) -> Vec<(u32, [u8; 4])> {
+            let bounds = world.bounds().expect("parity fixture must not be empty");
+            let min = ChunkCoord::new(
+                bounds.min.x.div_euclid(CHUNK_EDGE as i32),
+                bounds.min.y.div_euclid(CHUNK_EDGE as i32),
+                bounds.min.z.div_euclid(CHUNK_EDGE as i32),
+            );
+            let max = ChunkCoord::new(
+                bounds.max.x.div_euclid(CHUNK_EDGE as i32),
+                bounds.max.y.div_euclid(CHUNK_EDGE as i32),
+                bounds.max.z.div_euclid(CHUNK_EDGE as i32),
+            );
+            let layout = ChunkTableLayout::new(
+                min,
+                [
+                    (max.x - min.x + 1) as u32,
+                    (max.y - min.y + 1) as u32,
+                    (max.z - min.z + 1) as u32,
+                ],
+            );
+            let snapshots = world.chunk_snapshots_in(min, max);
+            let mut resident = ResidentChunkTable::new(layout);
+            let updates = resident.sync_visible_snapshots(&snapshots);
+            let lookup = resident.lookup_entries();
+            let camera_uniform = CameraUniform::from_camera(camera, bounds, layout, 16_384);
+            let camera_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("heliobound offscreen terrain camera"),
+                size: CameraUniform::BYTE_SIZE,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let lookup_buffer = create_storage_buffer(
+                &self.device,
+                "heliobound offscreen terrain lookup",
+                lookup.len() as u64,
+            );
+            let voxel_buffer = create_storage_buffer(
+                &self.device,
+                "heliobound offscreen terrain voxels",
+                resident.slot_count().max(1) as u64 * CHUNK_VOXELS as u64,
+            );
+            self.queue
+                .write_buffer(&camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
+            self.queue
+                .write_buffer(&lookup_buffer, 0, bytemuck::cast_slice(&lookup));
+            let background = (0..LOGICAL_HEIGHT as usize)
+                .flat_map(|y| {
+                    (0..LOGICAL_WIDTH as usize).map(move |x| BackgroundCell {
+                        glyph: background_glyph_for_direction(
+                            camera
+                                .ray_for_cell(x, y, LOGICAL_WIDTH as usize, LOGICAL_HEIGHT as usize)
+                                .direction,
+                        ) as u32,
+                        foreground_rgba: 0x505866ff,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let background_buffer = create_storage_buffer(
+                &self.device,
+                "heliobound offscreen terrain sky",
+                (LOGICAL_WIDTH * LOGICAL_HEIGHT * 2) as u64,
+            );
+            self.queue
+                .write_buffer(&background_buffer, 0, bytemuck::cast_slice(&background));
+            for update in &updates {
+                self.queue.write_buffer(
+                    &voxel_buffer,
+                    update.slot as u64 * CHUNK_VOXELS as u64 * 4,
+                    bytemuck::cast_slice(&update.upload.voxels),
+                );
+            }
+            let bind_group = create_terrain_bind_group(
+                &self.device,
+                &self.terrain_layout,
+                &camera_buffer,
+                &lookup_buffer,
+                &background_buffer,
+                &voxel_buffer,
+            );
+            let targets = LogicalTargets::new(&self.device);
+            let byte_len = (LOGICAL_WIDTH * LOGICAL_HEIGHT * 4) as u64;
+            let glyph_readback = readback_buffer(
+                &self.device,
+                "heliobound offscreen glyph readback",
+                byte_len,
+            );
+            let colour_readback = readback_buffer(
+                &self.device,
+                "heliobound offscreen colour readback",
+                byte_len,
+            );
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("heliobound offscreen terrain parity encoder"),
+                });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("heliobound offscreen terrain parity pass"),
+                    color_attachments: &[
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: &targets.glyphs,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        }),
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: &targets.colours,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        }),
+                    ],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.terrain_pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            for (texture, buffer) in [
+                (&targets.glyph_texture, &glyph_readback),
+                (&targets.colour_texture, &colour_readback),
+            ] {
+                encoder.copy_texture_to_buffer(
+                    wgpu::TexelCopyTextureInfo {
+                        texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyBufferInfo {
+                        buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(LOGICAL_WIDTH * 4),
+                            rows_per_image: Some(LOGICAL_HEIGHT),
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width: LOGICAL_WIDTH,
+                        height: LOGICAL_HEIGHT,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+            self.queue.submit([encoder.finish()]);
+            let glyph_bytes = map_readback(&self.device, &glyph_readback);
+            let colour_bytes = map_readback(&self.device, &colour_readback);
+            glyph_bytes
+                .chunks_exact(4)
+                .zip(colour_bytes.chunks_exact(4))
+                .map(|(glyph, colour)| {
+                    (
+                        u32::from_le_bytes(glyph.try_into().expect("u32 glyph")),
+                        colour.try_into().expect("RGBA colour"),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    fn readback_buffer(device: &wgpu::Device, label: &'static str, size: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn map_readback(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Vec<u8> {
+        let slice = buffer.slice(..);
+        let (sender, receiver) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            sender.send(result).expect("map receiver alive")
+        });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("GPU device poll");
+        receiver
+            .recv()
+            .expect("GPU map callback")
+            .expect("GPU readback mapping");
+        let bytes = slice.get_mapped_range().to_vec();
+        buffer.unmap();
+        bytes
+    }
 
     #[test]
     fn custom_colours_are_tagged_and_chunk_uploads_are_revision_driven() {
@@ -1584,5 +2115,306 @@ mod tests {
         )
         .validate(&module)
         .expect("glyph compositor WGSL must validate");
+    }
+
+    #[test]
+    fn adapter_backed_logical_terrain_matches_cpu_reference_fixtures() {
+        let Some(gpu) = OffscreenTerrainReadback::new() else {
+            eprintln!("skipping GPU parity fixtures: no adapter is available");
+            return;
+        };
+        for (name, world, camera) in parity_fixtures() {
+            let actual = gpu.render(&world, camera);
+            let materials = MaterialGlyphMap;
+            for y in 0..LOGICAL_HEIGHT as usize {
+                for x in 0..LOGICAL_WIDTH as usize {
+                    let index = y * LOGICAL_WIDTH as usize + x;
+                    let expected = raycast(
+                        &world,
+                        camera.ray_for_cell(x, y, LOGICAL_WIDTH as usize, LOGICAL_HEIGHT as usize),
+                        camera.max_distance,
+                    );
+                    let (expected_glyph, expected_colour) = if let Some(hit) = expected {
+                        (
+                            materials.glyph_for(hit) as u32,
+                            hex_colour(
+                                materials
+                                    .style_for(hit)
+                                    .fg
+                                    .as_deref()
+                                    .expect("voxel colour"),
+                            ),
+                        )
+                    } else {
+                        (
+                            background_glyph_for_direction(
+                                camera
+                                    .ray_for_cell(
+                                        x,
+                                        y,
+                                        LOGICAL_WIDTH as usize,
+                                        LOGICAL_HEIGHT as usize,
+                                    )
+                                    .direction,
+                            ) as u32,
+                            [0x50, 0x58, 0x66, 255],
+                        )
+                    };
+                    assert_eq!(
+                        actual[index].0, expected_glyph,
+                        "{name}: glyph mismatch at logical cell {x},{y}; CPU hit: {expected:?}"
+                    );
+                    for channel in 0..4 {
+                        assert!(
+                            (actual[index].1[channel] as i16 - expected_colour[channel] as i16).abs() <= 1,
+                            "{name}: colour mismatch at logical cell {x},{y}, channel {channel}: GPU {:?}, CPU {:?}",
+                            actual[index].1,
+                            expected_colour,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn hex_colour(value: &str) -> [u8; 4] {
+        let channel =
+            |offset| u8::from_str_radix(&value[offset..offset + 2], 16).expect("hex style");
+        [channel(1), channel(3), channel(5), 255]
+    }
+
+    fn parity_camera(position: Vec3) -> Camera {
+        Camera::new(position).with_max_distance(128.0)
+    }
+
+    fn fill(world: &mut VoxelWorld, min: VoxelCoord, max: VoxelCoord, material: VoxelMaterial) {
+        for z in min.z..=max.z {
+            for y in min.y..=max.y {
+                for x in min.x..=max.x {
+                    world.set(VoxelCoord::new(x, y, z), VoxelCell::new(material));
+                }
+            }
+        }
+    }
+
+    fn parity_fixtures() -> Vec<(&'static str, VoxelWorld, Camera)> {
+        let mut enclosed_room = VoxelWorld::new();
+        fill(
+            &mut enclosed_room,
+            VoxelCoord::new(-8, 0, 0),
+            VoxelCoord::new(8, 0, 16),
+            VoxelMaterial::Stone,
+        );
+        fill(
+            &mut enclosed_room,
+            VoxelCoord::new(-8, 1, 16),
+            VoxelCoord::new(8, 6, 16),
+            VoxelMaterial::Habitat,
+        );
+        fill(
+            &mut enclosed_room,
+            VoxelCoord::new(-8, 1, 0),
+            VoxelCoord::new(-8, 6, 16),
+            VoxelMaterial::Habitat,
+        );
+        fill(
+            &mut enclosed_room,
+            VoxelCoord::new(8, 1, 0),
+            VoxelCoord::new(8, 6, 16),
+            VoxelMaterial::Habitat,
+        );
+
+        let mut pillars_and_corners = VoxelWorld::new();
+        fill(
+            &mut pillars_and_corners,
+            VoxelCoord::new(-12, 0, 0),
+            VoxelCoord::new(12, 0, 24),
+            VoxelMaterial::Dirt,
+        );
+        for &(x, z, material) in &[
+            (-5, 6, VoxelMaterial::Wood),
+            (4, 9, VoxelMaterial::Stone),
+            (7, 16, VoxelMaterial::Basalt),
+        ] {
+            fill(
+                &mut pillars_and_corners,
+                VoxelCoord::new(x, 1, z),
+                VoxelCoord::new(x + 1, 7, z + 1),
+                material,
+            );
+        }
+
+        let mut stairs = VoxelWorld::new();
+        fill(
+            &mut stairs,
+            VoxelCoord::new(-10, 0, 0),
+            VoxelCoord::new(10, 0, 24),
+            VoxelMaterial::Grass,
+        );
+        for step in 0..8 {
+            fill(
+                &mut stairs,
+                VoxelCoord::new(-3, 1, 5 + step),
+                VoxelCoord::new(3, 1 + step, 5 + step),
+                VoxelMaterial::ShipHull,
+            );
+        }
+
+        let mut corridor = VoxelWorld::new();
+        fill(
+            &mut corridor,
+            VoxelCoord::new(-3, 0, 0),
+            VoxelCoord::new(3, 0, 40),
+            VoxelMaterial::Stone,
+        );
+        fill(
+            &mut corridor,
+            VoxelCoord::new(-3, 1, 0),
+            VoxelCoord::new(-3, 5, 40),
+            VoxelMaterial::Habitat,
+        );
+        fill(
+            &mut corridor,
+            VoxelCoord::new(3, 1, 0),
+            VoxelCoord::new(3, 5, 40),
+            VoxelMaterial::Habitat,
+        );
+        fill(
+            &mut corridor,
+            VoxelCoord::new(-3, 1, 40),
+            VoxelCoord::new(3, 5, 40),
+            VoxelMaterial::PuzzleDoor,
+        );
+
+        let mut open_view = VoxelWorld::new();
+        fill(
+            &mut open_view,
+            VoxelCoord::new(-40, -1, -8),
+            VoxelCoord::new(40, -1, 48),
+            VoxelMaterial::Sand,
+        );
+        fill(
+            &mut open_view,
+            VoxelCoord::new(-2, 0, 22),
+            VoxelCoord::new(2, 4, 24),
+            VoxelMaterial::Beacon,
+        );
+
+        let mut chunk_boundaries = VoxelWorld::new();
+        fill(
+            &mut chunk_boundaries,
+            VoxelCoord::new(14, 0, 14),
+            VoxelCoord::new(18, 5, 18),
+            VoxelMaterial::Glass,
+        );
+        fill(
+            &mut chunk_boundaries,
+            VoxelCoord::new(-18, 0, 22),
+            VoxelCoord::new(-14, 5, 26),
+            VoxelMaterial::Gate,
+        );
+
+        let mut negative_coordinates = VoxelWorld::new();
+        fill(
+            &mut negative_coordinates,
+            VoxelCoord::new(-40, 0, -12),
+            VoxelCoord::new(-1, 0, 24),
+            VoxelMaterial::Basalt,
+        );
+        fill(
+            &mut negative_coordinates,
+            VoxelCoord::new(-8, 1, 8),
+            VoxelCoord::new(-4, 6, 12),
+            VoxelMaterial::CarbonLife,
+        );
+
+        let mut dense_world = VoxelWorld::new();
+        fill(
+            &mut dense_world,
+            VoxelCoord::new(-16, 0, 0),
+            VoxelCoord::new(16, 12, 32),
+            VoxelMaterial::Stone,
+        );
+        fill(
+            &mut dense_world,
+            VoxelCoord::new(-6, 1, 1),
+            VoxelCoord::new(6, 10, 20),
+            VoxelMaterial::Glass,
+        );
+        fill(
+            &mut dense_world,
+            VoxelCoord::new(-5, 2, 2),
+            VoxelCoord::new(5, 9, 19),
+            VoxelMaterial::Ocean,
+        );
+
+        let mut edited_world = VoxelWorld::new();
+        fill(
+            &mut edited_world,
+            VoxelCoord::new(-10, 0, 0),
+            VoxelCoord::new(10, 0, 28),
+            VoxelMaterial::Stone,
+        );
+        fill(
+            &mut edited_world,
+            VoxelCoord::new(-4, 1, 10),
+            VoxelCoord::new(4, 6, 10),
+            VoxelMaterial::Habitat,
+        );
+        for y in 2..=4 {
+            edited_world.clear(VoxelCoord::new(0, y, 10));
+        }
+        edited_world.set(
+            VoxelCoord::new(0, 3, 10),
+            VoxelCell::new(VoxelMaterial::Receiver),
+        );
+        edited_world.set(
+            VoxelCoord::new(1, 3, 10),
+            VoxelCell::new(VoxelMaterial::SignalPipe),
+        );
+
+        vec![
+            (
+                "enclosed room",
+                enclosed_room,
+                parity_camera(Vec3::new(0.5, 2.5, -4.0)),
+            ),
+            (
+                "pillars and corners",
+                pillars_and_corners,
+                parity_camera(Vec3::new(0.5, 2.5, -5.0)),
+            ),
+            ("stairs", stairs, parity_camera(Vec3::new(0.5, 2.5, -5.0))),
+            (
+                "corridor",
+                corridor,
+                parity_camera(Vec3::new(0.0, 2.5, -4.0)),
+            ),
+            (
+                "open view",
+                open_view,
+                parity_camera(Vec3::new(0.0, 2.0, -4.0)),
+            ),
+            (
+                "chunk boundaries",
+                chunk_boundaries,
+                parity_camera(Vec3::new(0.0, 2.5, -5.0)),
+            ),
+            (
+                "negative coordinates",
+                negative_coordinates,
+                parity_camera(Vec3::new(-12.0, 2.5, -5.0)),
+            ),
+            (
+                "dense world",
+                dense_world,
+                parity_camera(Vec3::new(0.0, 6.0, -5.0)),
+            ),
+            (
+                "edited world",
+                edited_world,
+                parity_camera(Vec3::new(0.0, 2.5, -5.0)),
+            ),
+        ]
     }
 }

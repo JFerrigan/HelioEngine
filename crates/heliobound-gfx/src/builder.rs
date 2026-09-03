@@ -840,7 +840,9 @@ fn star_for_direction(direction: Vec3) -> char {
 
 /// The starfield represents the sky, rather than a backdrop behind the world.
 /// Rays at or below the horizon intentionally receive an empty background.
-fn background_glyph_for_direction(direction: Vec3) -> char {
+/// Deterministic logical sky used by both the CPU scene builder and GPU
+/// presentation bridge. It is intentionally independent of frame tick.
+pub fn background_glyph_for_direction(direction: Vec3) -> char {
     if direction.y > 0.0 {
         star_for_direction(direction)
     } else {

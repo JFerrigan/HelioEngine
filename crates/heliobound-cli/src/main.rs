@@ -16,11 +16,12 @@ use heliobound_core::{
 #[cfg(test)]
 use heliobound_core::{DoomMapConfig, DoomMapGenerator};
 use heliobound_gfx::{
-    raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay, PixelSprite, RenderAsset, Scene,
-    SceneBuilder, SceneCell, TextStyle, Viewport,
+    background_glyph_for_direction, raycast, GraphicsConfig, Layer, MaterialGlyphMap, Overlay,
+    PixelSprite, RenderAsset, Scene, SceneBuilder, SceneCell, TextStyle, Viewport,
 };
 use heliobound_gpu::{
-    CameraUniform, ChunkTableLayout, ResidentChunkTable, SurfaceRenderer, TerrainFrame, UiCell,
+    BackgroundCell, CameraUniform, ChunkTableLayout, PixelSprite as GpuPixelSprite,
+    ResidentChunkTable, SurfaceRenderer, TerrainFrame, TerrainUploadStats, UiCell,
 };
 use pixels::{PixelsBuilder, SurfaceTexture};
 use serde::Deserialize;
@@ -437,21 +438,32 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let dt = (now - last_frame).as_secs_f32().min(0.1);
                     last_frame = now;
 
-                    let presentation = app.frame_presentation(dt, mouse_captured, gpu.is_some());
+                    let presentation = app.frame_presentation(
+                        dt,
+                        mouse_captured,
+                        gpu.as_ref().is_some_and(|renderer| !renderer.is_failed()),
+                    );
                     audio.set_echolocation_interference(app.echolocation_audio_state());
                     play_audio_events(&mut audio, app.drain_audio_events());
                     let rendered_gpu =
                         if let (Some(renderer), Some(request)) = (&mut gpu, presentation.terrain) {
-                            let cells = gpu_ui_cells(&presentation.ui_scene);
+                            let mut gpu_scene = presentation.ui_scene.clone();
+                            add_gpu_status_overlay(&mut gpu_scene, renderer.stats());
+                            let scene_cells = gpu_scene_cells(&gpu_scene);
+                            let sprites = gpu_pixel_sprites(&gpu_scene);
+                            let overlay_cells = gpu_overlay_cells(&gpu_scene);
                             match renderer.render(
                                 app.terrain_world(request.source),
                                 request.camera,
                                 request.max_distance,
-                                &cells,
+                                &scene_cells,
+                                &sprites,
+                                &overlay_cells,
                             ) {
-                                Ok(()) => true,
+                                Ok(_) => true,
                                 Err(error) => {
                                     eprintln!("GPU renderer failed; using CPU fallback: {error}");
+                                    renderer.record_fallback(&error);
                                     false
                                 }
                             }
@@ -459,12 +471,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                             false
                         };
                     if !rendered_gpu {
-                        let cpu_scene = presentation.cpu_scene.unwrap_or_else(|| {
+                        let mut cpu_scene = presentation.cpu_scene.unwrap_or_else(|| {
                             app.cpu_scene_for_terrain(
                                 presentation.terrain.expect("GPU frame has terrain request"),
                                 mouse_captured,
                             )
                         });
+                        if let Some(renderer) = &gpu {
+                            add_gpu_status_overlay(&mut cpu_scene, renderer.stats());
+                        }
                         render_scene(
                             &cpu_scene,
                             pixels.frame_mut(),
@@ -559,6 +574,57 @@ struct FramePresentation {
 struct GpuPresentation<'window> {
     surface: SurfaceRenderer<'window>,
     residents: Option<ResidentChunkTable>,
+    stats: GpuFrameStats,
+}
+
+/// Observable renderer-boundary outcome.  It intentionally records cache
+/// facts rather than timing guesses, so GPU and CPU fallback frames are
+/// diagnosable from the same concise HUD line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GpuFrameStats {
+    backend: GpuBackend,
+    logical_ray_count: u32,
+    resident_chunks: u32,
+    dirty_chunks: u32,
+    upload_bytes: u64,
+    voxel_capacity_bytes: u64,
+    fallback_reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GpuBackend {
+    Gpu,
+    CpuFallback,
+}
+
+impl Default for GpuFrameStats {
+    fn default() -> Self {
+        Self {
+            backend: GpuBackend::Gpu,
+            logical_ray_count: (VIEWPORT.width * VIEWPORT.height) as u32,
+            resident_chunks: 0,
+            dirty_chunks: 0,
+            upload_bytes: 0,
+            voxel_capacity_bytes: 0,
+            fallback_reason: None,
+        }
+    }
+}
+
+impl GpuFrameStats {
+    fn status_line(&self) -> String {
+        match &self.fallback_reason {
+            Some(reason) => format!("renderer CPU fallback: {reason}"),
+            None => format!(
+                "renderer GPU  rays {}  chunks {}/{} dirty  upload {}B  cache {}B",
+                self.logical_ray_count,
+                self.resident_chunks,
+                self.dirty_chunks,
+                self.upload_bytes,
+                self.voxel_capacity_bytes,
+            ),
+        }
+    }
 }
 
 impl<'window> GpuPresentation<'window> {
@@ -566,6 +632,7 @@ impl<'window> GpuPresentation<'window> {
         Ok(Self {
             surface: SurfaceRenderer::new(window)?,
             residents: None,
+            stats: GpuFrameStats::default(),
         })
     }
 
@@ -578,11 +645,31 @@ impl<'window> GpuPresentation<'window> {
         world: &VoxelWorld,
         camera: Camera,
         max_distance: f32,
-        ui_cells: &[UiCell],
-    ) -> Result<(), Box<dyn Error>> {
+        scene_cells: &[UiCell],
+        sprites: &[GpuPixelSprite],
+        overlay_cells: &[UiCell],
+    ) -> Result<GpuFrameStats, Box<dyn Error>> {
+        let background = gpu_background_cells(camera);
         let Some(bounds) = world.bounds() else {
-            self.surface.set_ui_cells(ui_cells);
-            return Ok(self.surface.render_terrain()?);
+            // Empty static worlds still present the CPU-equivalent sky.
+            let upload = self.surface.update_terrain(TerrainFrame {
+                camera: CameraUniform::from_camera(
+                    camera.with_max_distance(max_distance),
+                    VoxelBounds::new(VoxelCoord::new(0, 0, 0)),
+                    ChunkTableLayout::new(heliobound_core::ChunkCoord::new(0, 0, 0), [1; 3]),
+                    1,
+                ),
+                lookup: &[0],
+                background: &background,
+                slot_count: 0,
+                updates: &[],
+            })?;
+            self.surface.set_ui_cells(scene_cells);
+            self.surface.set_pixel_sprites(sprites);
+            self.surface.set_overlay_cells(overlay_cells);
+            self.surface.render_terrain()?;
+            self.stats = stats_for_gpu_frame(0, upload);
+            return Ok(self.stats.clone());
         };
         let chunk_radius = ((max_distance / 16.0).ceil() as i32 + 1).max(1);
         let camera_chunk = VoxelCoord::new(
@@ -620,19 +707,65 @@ impl<'window> GpuPresentation<'window> {
         let max_steps = (max_distance.ceil() as u32)
             .saturating_mul(3)
             .saturating_add(3);
-        self.surface.update_terrain(TerrainFrame {
+        let upload = self.surface.update_terrain(TerrainFrame {
             camera: CameraUniform::from_camera(camera, bounds, layout, max_steps),
             lookup: &residents.lookup_entries(),
+            background: &background,
             slot_count: residents.slot_count(),
             updates: &updates,
         })?;
-        self.surface.set_ui_cells(ui_cells);
+        self.surface.set_ui_cells(scene_cells);
+        self.surface.set_pixel_sprites(sprites);
+        self.surface.set_overlay_cells(overlay_cells);
         self.surface.render_terrain()?;
-        Ok(())
+        self.stats = stats_for_gpu_frame(residents.resident_count() as u32, upload);
+        Ok(self.stats.clone())
+    }
+
+    fn record_fallback(&mut self, error: impl std::fmt::Display) {
+        self.stats.backend = GpuBackend::CpuFallback;
+        self.stats.fallback_reason = Some(error.to_string());
+    }
+
+    fn is_failed(&self) -> bool {
+        self.stats.backend == GpuBackend::CpuFallback
+    }
+
+    fn stats(&self) -> &GpuFrameStats {
+        &self.stats
     }
 }
 
-fn gpu_ui_cells(scene: &Scene) -> Vec<UiCell> {
+fn stats_for_gpu_frame(resident_chunks: u32, upload: TerrainUploadStats) -> GpuFrameStats {
+    GpuFrameStats {
+        backend: GpuBackend::Gpu,
+        logical_ray_count: (VIEWPORT.width * VIEWPORT.height) as u32,
+        resident_chunks,
+        dirty_chunks: upload.dirty_chunks,
+        upload_bytes: upload.bytes_uploaded,
+        voxel_capacity_bytes: upload.voxel_capacity_bytes,
+        fallback_reason: None,
+    }
+}
+
+fn gpu_background_cells(camera: Camera) -> Vec<BackgroundCell> {
+    let mut cells = Vec::with_capacity(VIEWPORT.width * VIEWPORT.height);
+    for y in 0..VIEWPORT.height {
+        for x in 0..VIEWPORT.width {
+            cells.push(BackgroundCell {
+                glyph: background_glyph_for_direction(
+                    camera
+                        .ray_for_cell(x, y, VIEWPORT.width, VIEWPORT.height)
+                        .direction,
+                ) as u32,
+                foreground_rgba: pack_rgba(layer_color("background")),
+            });
+        }
+    }
+    cells
+}
+
+fn gpu_scene_cells(scene: &Scene) -> Vec<UiCell> {
     let mut scene = scene.clone();
     scene.sort_layers();
     let mut cells = Vec::new();
@@ -650,6 +783,13 @@ fn gpu_ui_cells(scene: &Scene) -> Vec<UiCell> {
             cells.push(ui);
         }
     }
+    cells
+}
+
+fn gpu_overlay_cells(scene: &Scene) -> Vec<UiCell> {
+    let mut scene = scene.clone();
+    scene.sort_layers();
+    let mut cells = Vec::new();
     for overlay in &scene.overlays {
         let foreground = pack_rgba(style_color(&overlay.style).unwrap_or([0xf0, 0xc6, 0x5b, 0xff]));
         let background = style_bg_color(&overlay.style).map(pack_rgba);
@@ -662,6 +802,44 @@ fn gpu_ui_cells(scene: &Scene) -> Vec<UiCell> {
         }
     }
     cells
+}
+
+fn gpu_pixel_sprites(scene: &Scene) -> Vec<GpuPixelSprite> {
+    let mut sprites = scene.pixel_sprites.clone();
+    sprites.sort_by_key(|sprite| sprite.z);
+    sprites
+        .into_iter()
+        .map(|sprite| GpuPixelSprite {
+            x: sprite.x,
+            y: sprite.y,
+            scale: u32::from(sprite.scale.max(1)),
+            flags: if sprite.bg.as_deref().and_then(parse_hex_color).is_some() {
+                GpuPixelSprite::OPAQUE_BACKGROUND
+            } else {
+                0
+            },
+            foreground_rgba: pack_rgba(
+                parse_hex_color(&sprite.fg).unwrap_or([0xf0, 0xc6, 0x5b, 0xff]),
+            ),
+            background_rgba: sprite
+                .bg
+                .as_deref()
+                .and_then(parse_hex_color)
+                .map(pack_rgba)
+                .unwrap_or(0),
+            rows: sprite.rows.map(u32::from),
+        })
+        .collect()
+}
+
+fn add_gpu_status_overlay(scene: &mut Scene, stats: &GpuFrameStats) {
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: VIEWPORT.height as i32 - 2,
+        z: 10_000,
+        text: stats.status_line(),
+        style: hud_style(),
+    });
 }
 
 fn pack_rgba([r, g, b, a]: [u8; 4]) -> u32 {
@@ -17941,9 +18119,114 @@ mod tests {
             style: TextStyle::default(),
         });
 
-        let cells = gpu_ui_cells(&scene);
-        assert_eq!(cells.len(), 4);
+        let cells = gpu_scene_cells(&scene);
+        let overlays = gpu_overlay_cells(&scene);
+        assert_eq!(cells.len(), 1);
+        assert_eq!(overlays.len(), 3);
         assert!(cells.iter().all(|cell| !(cell.x == 1 && cell.y == 1)));
         assert_eq!(cells[0].glyph, '+' as u32);
+    }
+
+    #[test]
+    fn gpu_ui_cells_preserve_style_background_and_cpu_draw_order() {
+        let mut scene = Scene::new(VIEWPORT);
+        scene.layers.push(Layer {
+            name: "damage".to_string(),
+            z: 20,
+            cells: vec![SceneCell {
+                x: 7,
+                y: 8,
+                glyph: '!',
+                style: TextStyle {
+                    fg: Some("#112233".to_string()),
+                    bg: None,
+                    bold: true,
+                },
+            }],
+        });
+        scene.layers.push(Layer {
+            name: "reticle".to_string(),
+            z: 30,
+            cells: vec![SceneCell {
+                x: 7,
+                y: 8,
+                glyph: '+',
+                style: TextStyle::default(),
+            }],
+        });
+        scene.overlays.push(Overlay {
+            x: 7,
+            y: 8,
+            z: 40,
+            text: "H".to_string(),
+            style: TextStyle {
+                fg: Some("#aabbcc".to_string()),
+                bg: Some("#010203".to_string()),
+                bold: true,
+            },
+        });
+
+        let cells = gpu_scene_cells(&scene);
+        let overlays = gpu_overlay_cells(&scene);
+        assert_eq!(
+            cells.iter().map(|cell| cell.glyph).collect::<Vec<_>>(),
+            vec!['!' as u32, '+' as u32]
+        );
+        assert_eq!(cells[0].foreground_rgba, 0x112233ff);
+        assert_ne!(cells[0].flags & UiCell::OPAQUE_BACKGROUND, 0);
+        assert_eq!(overlays[0].foreground_rgba, 0xaabbccff);
+        assert_eq!(overlays[0].background_rgba, 0x010203ff);
+        assert_ne!(overlays[0].flags & UiCell::OPAQUE_BACKGROUND, 0);
+    }
+
+    #[test]
+    fn gpu_sprite_conversion_preserves_painter_order_and_colours() {
+        let mut scene = Scene::new(VIEWPORT);
+        scene.pixel_sprites.push(PixelSprite {
+            x: 24,
+            y: 32,
+            z: 9,
+            rows: [0x8000; 16],
+            scale: 2,
+            fg: "#112233".to_string(),
+            bg: None,
+        });
+        scene.pixel_sprites.push(PixelSprite {
+            x: 8,
+            y: 16,
+            z: 3,
+            rows: [0; 16],
+            scale: 0,
+            fg: "not-a-colour".to_string(),
+            bg: Some("#445566".to_string()),
+        });
+
+        let sprites = gpu_pixel_sprites(&scene);
+        assert_eq!(sprites.len(), 2);
+        assert_eq!((sprites[0].x, sprites[0].y), (8, 16));
+        assert_eq!(sprites[0].scale, 1);
+        assert_eq!(sprites[0].foreground_rgba, 0xf0c65bff);
+        assert_eq!(sprites[0].background_rgba, 0x445566ff);
+        assert_ne!(sprites[0].flags & GpuPixelSprite::OPAQUE_BACKGROUND, 0);
+        assert_eq!((sprites[1].x, sprites[1].y), (24, 32));
+        assert_eq!(sprites[1].rows[0], 0x8000);
+        assert_eq!(sprites[1].foreground_rgba, 0x112233ff);
+    }
+
+    #[test]
+    fn gpu_frame_stats_retain_the_latest_fallback_reason() {
+        let mut stats = stats_for_gpu_frame(
+            3,
+            TerrainUploadStats {
+                dirty_chunks: 2,
+                bytes_uploaded: 123,
+                voxel_capacity_bytes: 4096,
+            },
+        );
+        assert_eq!(stats.backend, GpuBackend::Gpu);
+        assert_eq!(stats.logical_ray_count, 14_400);
+        stats.backend = GpuBackend::CpuFallback;
+        stats.fallback_reason = Some("injected frame error".to_string());
+        assert!(stats.status_line().contains("injected frame error"));
     }
 }

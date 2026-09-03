@@ -21,7 +21,9 @@ struct RayHit { hit: bool, distance: f32, coord: vec3i, normal: vec3f, material:
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 @group(0) @binding(1) var<storage, read> chunk_lookup: array<u32>;
-@group(0) @binding(2) var<storage, read> chunk_voxels: array<u32>;
+struct BackgroundCell { glyph: u32, foreground_rgba: u32 };
+@group(0) @binding(2) var<storage, read> background_cells: array<BackgroundCell>;
+@group(0) @binding(3) var<storage, read> chunk_voxels: array<u32>;
 
 @vertex fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
   var positions = array<vec2f, 3>(vec2f(-1.0, -3.0), vec2f(3.0, 1.0), vec2f(-1.0, 1.0));
@@ -115,24 +117,46 @@ fn material_colour(material: u32) -> vec3f {
   }
 }
 fn glyph_for(material: u32, intensity: f32) -> u32 {
-  let level = min(u32(intensity * 4.999), 4u);
-  // Same material ramp ordering as MaterialGlyphMap; one five-character row.
-  var ramp = array<u32, 5>(46u, 44u, 58u, 59u, 59u);
+  // This uses the same rounded ramp index as MaterialGlyphMap::shade.
+  let clamped = clamp(intensity, 0.0, 1.0);
+  let shade4 = min(u32(floor(clamped * 3.0 + 0.5)), 3u);
+  let shade5 = min(u32(floor(clamped * 4.0 + 0.5)), 4u);
   switch material {
-    case 2u, 7u: { ramp = array<u32, 5>(45u,61u,43u,35u,35u); } case 3u: { ramp = array<u32, 5>(126u,61u,45u,43u,43u); }
-    case 4u: { ramp = array<u32, 5>(96u,39u,42u,73u,73u); } case 5u: { ramp = array<u32, 5>(46u,44u,59u,34u,34u); }
-    case 9u: { ramp = array<u32, 5>(58u,45u,124u,72u,72u); } case 10u: { ramp = array<u32, 5>(46u,44u,42u,37u,37u); }
-    case 11u: { ramp = array<u32, 5>(122u,90u,38u,64u,64u); } case 15u: { ramp = array<u32, 5>(91u,93u,72u,77u,77u); }
-    case 16u: { ramp = array<u32, 5>(60u,62u,88u,90u,90u); } case 17u: { ramp = array<u32, 5>(39u,46u,111u,79u,79u); }
-    case 18u: { ramp = array<u32, 5>(105u,33u,42u,64u,64u); } case 19u: { ramp = array<u32, 5>(40u,41u,48u,64u,64u); }
-    case 22u: { ramp = array<u32, 5>(124u,35u,72u,77u,77u); } case 23u: { ramp = array<u32, 5>(46u,95u,61u,43u,43u); }
-    default: {}
+    case 2u, 7u: { return array<u32, 5>(45u,61u,43u,35u,35u)[shade5]; }
+    case 12u: { return array<u32, 5>(46u,44u,33u,124u,89u)[shade5]; }
+    case 1u: { return array<u32, 4>(46u,44u,58u,59u)[shade4]; }
+    case 3u: { return array<u32, 4>(126u,61u,45u,43u)[shade4]; }
+    case 4u: { return array<u32, 4>(96u,39u,42u,73u)[shade4]; }
+    case 5u: { return array<u32, 4>(46u,44u,59u,34u)[shade4]; }
+    case 6u: { return array<u32, 4>(46u,44u,58u,61u)[shade4]; }
+    case 8u: { return array<u32, 4>(46u,44u,58u,126u)[shade4]; }
+    case 9u: { return array<u32, 4>(58u,45u,124u,72u)[shade4]; }
+    case 10u: { return array<u32, 4>(46u,44u,42u,37u)[shade4]; }
+    case 11u: { return array<u32, 4>(122u,90u,38u,64u)[shade4]; }
+    case 13u: { return array<u32, 4>(118u,120u,121u,89u)[shade4]; }
+    case 14u: { return array<u32, 4>(94u,42u,37u,65u)[shade4]; }
+    case 15u: { return array<u32, 4>(91u,93u,72u,77u)[shade4]; }
+    case 16u: { return array<u32, 4>(60u,62u,88u,90u)[shade4]; }
+    case 17u: { return array<u32, 4>(39u,46u,111u,79u)[shade4]; }
+    case 18u: { return array<u32, 4>(105u,33u,42u,64u)[shade4]; }
+    case 19u: { return array<u32, 4>(40u,41u,48u,64u)[shade4]; }
+    case 20u: { return array<u32, 4>(46u,58u,114u,82u)[shade4]; }
+    case 21u: { return array<u32, 4>(46u,45u,61u,43u)[shade4]; }
+    case 22u: { return array<u32, 4>(124u,35u,72u,77u)[shade4]; }
+    case 23u: { return array<u32, 4>(46u,95u,61u,43u)[shade4]; }
+    default: { return array<u32, 5>(46u,58u,43u,35u,64u)[shade5]; }
   }
-  return ramp[level];
+}
+fn unpack_rgba(value: u32) -> vec4f {
+  return vec4f(f32((value >> 24u) & 255u), f32((value >> 16u) & 255u), f32((value >> 8u) & 255u), f32(value & 255u)) / 255.0;
 }
 @fragment fn fs_terrain(@builtin(position) position: vec4f) -> TerrainOut {
   let hit = cast_world(camera.position_and_max_distance.xyz, ray_for_cell(position.xy));
-  if (!hit.hit) { return TerrainOut(32u, vec4f(0.0, 0.0, 0.0, 1.0)); }
+  if (!hit.hit) {
+    let cell = u32(position.x) + u32(position.y) * 160u;
+    let background = background_cells[cell];
+    return TerrainOut(background.glyph, unpack_rgba(background.foreground_rgba));
+  }
   let light = max(dot(hit.normal, normalize(vec3f(-0.35, 0.75, -0.55))), 0.0);
   let distance_fade = clamp(1.0 - hit.distance / 180000.0, 0.2, 1.0);
   let intensity = light * 0.7 + distance_fade * 0.3;

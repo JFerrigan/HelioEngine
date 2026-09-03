@@ -1,6 +1,6 @@
 # GPU Raycaster Status
 
-## Current state: direct GPU terrain foundation / CPU runtime remains active
+## Current state: static GPU terrain path / CPU runtime remains authoritative
 
 - `VoxelWorld` now exposes deterministic dense chunk snapshots restricted to a
   caller-supplied inclusive chunk range.
@@ -17,11 +17,9 @@
   Euclidean negative chunk addressing, axis-aligned handling, and X/Y/Z tie
   ordering. Unit tests cover uniform layout, negative-coordinate table lookup,
   slot reuse, revision uploads, and WGSL validation.
-- The interactive CLI intentionally still uses `pixels` and the CPU renderer.
-  The new terrain pass currently outputs a diagnostic normal/distance image to
-  a physical surface; routing normal gameplay to it before logical targets,
-  glyph/UI passes, and the `AppState` render-request split would remove the
-  current visual/game-mode presentation.
+- The CPU `pixels` renderer remains the default/reference backend. The direct
+  GPU presentation path is opt-in with `HELIOBOUND_RENDERER=gpu` and serves
+  eligible static-world frames through its logical targets and glyph/UI passes.
 
 ## Latest integration check
 
@@ -41,8 +39,36 @@
 - The application was launched in GPU mode on 2026-09-03. A UI bind-layout
   validation error was found and fixed; the repeat launch produced no `wgpu`
   validation or shader errors. This is a smoke check, not visual-parity proof.
+- `heliobound-gpu` now has an adapter-backed, test-only offscreen readback
+  harness for the logical terrain targets. It compares every 160×90 glyph and
+  shaded RGBA terrain cell against `heliobound_gfx::raycast` plus
+  `MaterialGlyphMap` across deterministic enclosed-room, pillars/corners,
+  stairs, corridor, open-view, chunk-boundary, negative-coordinate, dense,
+  and edited-world fixtures. The current fixture comparisons pass.
+- The terrain shader's material glyph selection now uses the CPU reference
+  renderer's rounded ramp indexing, including both four- and five-character
+  material ramps.
+- The static GPU path now uploads the CPU-composed deterministic sky cells as
+  a logical 160×90 background contract. Terrain misses retain those starfield
+  cells, and terrain hits replace them, matching CPU blank/occlusion behavior
+  without interactive readback. Adapter-backed terrain parity fixtures passed
+  after this change, including background glyph and RGBA checks.
+- The CLI now reports GPU logical rays, resident/dirty chunks, upload bytes,
+  voxel cache capacity, and the retained fallback reason. A GPU-frame error
+  switches subsequent frames to the CPU reference backend.
+- Static pixel sprites now have a compact GPU pass using their existing 16 by
+  16 bit rows and CPU framebuffer coordinates. GPU painter order is scene
+  cells, sprites, then text overlays; style foregrounds and opaque sprite/UI
+  backgrounds retain the CPU values.
 
-Next: refactor the CLI's fused `AppState::frame` into simulation plus a terrain
-render request and separate UI scene. Then make the terrain pass render to the
-160×90 logical target, add material/glyph output and GPU UI cells, and use the
-CPU renderer only as the selectable reference fallback.
+This verifies the current static terrain glyph/color contract on the covered
+fixtures only. It does not establish complete presentation parity, GPU Auto
+eligibility, or a default-backend change.
+
+Latest automated check: `cargo test --workspace` passed on 2026-09-03,
+including 201 CLI tests and 6 GPU tests; 2 documented CLI tests remain
+ignored.
+
+Next: manually exercise Corn Maze, Bar, Voxel Sandbox, and Liminal with
+`HELIOBOUND_RENDERER=gpu`, including resize/minimize recovery and edited
+static geometry, before expanding GPU eligibility.
