@@ -34,6 +34,10 @@
   GPU terrain cache, logical 160×90 glyph target, font8x8 atlas compositor,
   and UI-cell pass for those static-world requests. An initialization or frame
   error prints its reason and presents the CPU fallback instead.
+- Successful GPU frames for those modes no longer call `SceneBuilder` for
+  terrain: simulation creates a UI-only scene and the CPU reference scene is
+  built lazily only if a GPU submission fails. This removes the 14,400 CPU
+  terrain rays from that successful path while retaining the fallback.
 - The application was launched in GPU mode on 2026-09-03. A UI bind-layout
   validation error was found and fixed; the repeat launch produced no `wgpu`
   validation or shader errors. This is a smoke check, not visual-parity proof.

@@ -437,12 +437,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let dt = (now - last_frame).as_secs_f32().min(0.1);
                     last_frame = now;
 
-                    let presentation = app.frame_presentation(dt, mouse_captured);
+                    let presentation = app.frame_presentation(dt, mouse_captured, gpu.is_some());
                     audio.set_echolocation_interference(app.echolocation_audio_state());
                     play_audio_events(&mut audio, app.drain_audio_events());
                     let rendered_gpu =
                         if let (Some(renderer), Some(request)) = (&mut gpu, presentation.terrain) {
-                            let cells = gpu_ui_cells(&presentation.cpu_scene);
+                            let cells = gpu_ui_cells(&presentation.ui_scene);
                             match renderer.render(
                                 app.terrain_world(request.source),
                                 request.camera,
@@ -459,8 +459,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                             false
                         };
                     if !rendered_gpu {
+                        let cpu_scene = presentation.cpu_scene.unwrap_or_else(|| {
+                            app.cpu_scene_for_terrain(
+                                presentation.terrain.expect("GPU frame has terrain request"),
+                                mouse_captured,
+                            )
+                        });
                         render_scene(
-                            &presentation.cpu_scene,
+                            &cpu_scene,
                             pixels.frame_mut(),
                             FRAME_WIDTH as usize,
                             FRAME_HEIGHT as usize,
@@ -540,12 +546,10 @@ struct TerrainRenderRequest {
     max_distance: f32,
 }
 
-/// Presentation products after simulation advances.  `cpu_scene` is the
-/// complete existing reference output.  `terrain` is independent metadata for
-/// a GPU terrain pass and is intentionally available even while CPU remains
-/// the active backend.
+/// Presentation products after simulation advances.
 struct FramePresentation {
-    cpu_scene: Scene,
+    cpu_scene: Option<Scene>,
+    ui_scene: Scene,
     terrain: Option<TerrainRenderRequest>,
 }
 
@@ -1667,10 +1671,22 @@ impl AppState {
     /// GPU integration can instead consume `terrain` and resolve the borrowed
     /// world with `terrain_world`, avoiding CPU terrain-cell generation once
     /// the matching UI and dynamic-overlay path is available.
-    fn frame_presentation(&mut self, dt: f32, mouse_captured: bool) -> FramePresentation {
+    fn frame_presentation(
+        &mut self,
+        dt: f32,
+        mouse_captured: bool,
+        prefer_gpu: bool,
+    ) -> FramePresentation {
+        if prefer_gpu && self.terrain_render_request().is_some() {
+            return self.gpu_static_frame(dt, mouse_captured);
+        }
         let cpu_scene = self.cpu_reference_frame(dt, mouse_captured);
         let terrain = self.terrain_render_request();
-        FramePresentation { cpu_scene, terrain }
+        FramePresentation {
+            ui_scene: cpu_scene.clone(),
+            cpu_scene: Some(cpu_scene),
+            terrain,
+        }
     }
 
     /// Compatibility helper for deterministic CPU renderer tests.  Runtime
@@ -1678,7 +1694,122 @@ impl AppState {
     /// at a single explicit boundary.
     #[cfg_attr(not(test), allow(dead_code))]
     fn frame(&mut self, dt: f32, mouse_captured: bool) -> Scene {
-        self.frame_presentation(dt, mouse_captured).cpu_scene
+        self.frame_presentation(dt, mouse_captured, false)
+            .cpu_scene
+            .expect("CPU presentation always builds a reference scene")
+    }
+
+    /// Updates static gameplay modes without invoking `SceneBuilder`'s CPU
+    /// terrain raycaster. The returned scene contains only existing overlay
+    /// layers; terrain is supplied by `TerrainRenderRequest` to the GPU.
+    fn gpu_static_frame(&mut self, dt: f32, mouse_captured: bool) -> FramePresentation {
+        self.tick = self.tick.wrapping_add(1);
+        let mut ui_scene = Scene::new(VIEWPORT);
+        match self.mode {
+            AppMode::CornMaze => {
+                update_jumping_walking_camera(
+                    &mut self.camera,
+                    &mut self.input,
+                    &mut self.walk_motion,
+                    &self.corn_maze.world,
+                    CORN_WALK_PROFILE,
+                    dt,
+                );
+                self.corn_maze.update(self.camera.position);
+                render_corn_maze_scene(
+                    &mut ui_scene,
+                    &self.corn_maze,
+                    &self.camera,
+                    mouse_captured,
+                );
+            }
+            AppMode::BarScene => {
+                update_jumping_walking_camera(
+                    &mut self.camera,
+                    &mut self.input,
+                    &mut self.walk_motion,
+                    &self.bar_scene,
+                    BAR_WALK_PROFILE,
+                    dt,
+                );
+                render_bar_scene(&mut ui_scene, mouse_captured);
+            }
+            AppMode::VoxelSandbox => {
+                match self.sandbox.movement_mode {
+                    SandboxMovementMode::Flight => update_sandbox_camera(
+                        &mut self.camera,
+                        &self.input,
+                        &self.sandbox.world,
+                        dt,
+                    ),
+                    SandboxMovementMode::Walking => update_jumping_walking_camera(
+                        &mut self.camera,
+                        &mut self.input,
+                        &mut self.walk_motion,
+                        &self.sandbox.world,
+                        SANDBOX_WALK_PROFILE,
+                        dt,
+                    ),
+                }
+                render_voxel_sandbox_scene(&mut ui_scene, &self.sandbox, mouse_captured);
+            }
+            AppMode::Liminal => {
+                update_jumping_walking_camera(
+                    &mut self.camera,
+                    &mut self.input,
+                    &mut self.walk_motion,
+                    &self.liminal.world,
+                    LIMINAL_WALK_PROFILE,
+                    dt,
+                );
+                self.liminal.update_player_room(&mut self.camera);
+                render_liminal_scene(&mut ui_scene, &self.liminal, mouse_captured);
+            }
+            _ => unreachable!("GPU frame requested for an unsupported mode"),
+        }
+        let terrain = self
+            .terrain_render_request()
+            .expect("static GPU mode supplies terrain");
+        FramePresentation {
+            cpu_scene: None,
+            ui_scene,
+            terrain: Some(terrain),
+        }
+    }
+
+    /// Builds the existing CPU reference only after a GPU frame error. This
+    /// does not advance simulation a second time.
+    fn cpu_scene_for_terrain(&self, request: TerrainRenderRequest, mouse_captured: bool) -> Scene {
+        match request.source {
+            TerrainWorldSource::CornMaze => {
+                let mut scene =
+                    self.city_builder
+                        .build(&self.corn_maze.world, &self.camera, self.tick);
+                render_corn_maze_scene(&mut scene, &self.corn_maze, &self.camera, mouse_captured);
+                scene
+            }
+            TerrainWorldSource::Bar => {
+                let mut scene = self
+                    .city_builder
+                    .build(&self.bar_scene, &self.camera, self.tick);
+                render_bar_scene(&mut scene, mouse_captured);
+                scene
+            }
+            TerrainWorldSource::VoxelSandbox => {
+                let mut scene =
+                    self.city_builder
+                        .build(&self.sandbox.world, &self.camera, self.tick);
+                render_voxel_sandbox_scene(&mut scene, &self.sandbox, mouse_captured);
+                scene
+            }
+            TerrainWorldSource::Liminal => {
+                let mut scene =
+                    self.city_builder
+                        .build(&self.liminal.world, &self.camera, self.tick);
+                render_liminal_scene(&mut scene, &self.liminal, mouse_captured);
+                scene
+            }
+        }
     }
 
     fn terrain_render_request(&self) -> Option<TerrainRenderRequest> {
@@ -17763,7 +17894,7 @@ mod tests {
     fn terrain_request_identifies_only_static_cpu_worlds() {
         let mut app = AppState::new();
         app.mode = AppMode::BarScene;
-        let presentation = app.frame_presentation(0.0, false);
+        let presentation = app.frame_presentation(0.0, false, false);
         let request = presentation
             .terrain
             .expect("bar terrain should be eligible for a GPU terrain cache");
@@ -17775,7 +17906,7 @@ mod tests {
         ));
 
         app.mode = AppMode::CityWalk;
-        let presentation = app.frame_presentation(0.0, false);
+        let presentation = app.frame_presentation(0.0, false, false);
         assert!(presentation.terrain.is_none());
     }
 
