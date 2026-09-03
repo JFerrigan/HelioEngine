@@ -1,6 +1,6 @@
 # GPU Raycaster Status
 
-## Current state: static GPU terrain path / CPU runtime remains authoritative
+## Current state: GPU-default presentation / CPU reference remains authoritative
 
 - `VoxelWorld` now exposes deterministic dense chunk snapshots restricted to a
   caller-supplied inclusive chunk range.
@@ -17,9 +17,10 @@
   Euclidean negative chunk addressing, axis-aligned handling, and X/Y/Z tie
   ordering. Unit tests cover uniform layout, negative-coordinate table lookup,
   slot reuse, revision uploads, and WGSL validation.
-- The CPU `pixels` renderer remains the default/reference backend. The direct
-  GPU presentation path is opt-in with `HELIOBOUND_RENDERER=gpu` and serves
-  eligible static-world frames through its logical targets and glyph/UI passes.
+- GPU presentation is the default. `HELIOBOUND_RENDERER=cpu` explicitly selects
+  the CPU `pixels` reference backend. GPU initialization failure or any later
+  frame-submission failure permanently selects CPU for that process and retains
+  the observed reason in the status overlay.
 
 ## Latest integration check
 
@@ -67,10 +68,19 @@
   16 bit rows and CPU framebuffer coordinates. GPU painter order is scene
   cells, sprites, then text overlays; style foregrounds and opaque sprite/UI
   backgrounds retain the CPU values.
+- Every menu, gameplay, viewer, editor, playtest, and Freeplay state now uses
+  the GPU presentation surface by default. Static Corn Maze, Bar, Voxel
+  Sandbox, and Liminal retain direct GPU DDA terrain. All other states use a
+  generic complete-scene GPU compositor request: their authoritative CPU scene
+  is converted once into painter-ordered logical cells, sprites, and overlays,
+  then presented by the GPU. This includes analytic planet terrain, dynamic
+  actor worlds, render assets, and Echolocation's face-filtered result without
+  creating a second simulation world.
 
 This verifies the current static terrain glyph/color contract on the covered
-fixtures only. It does not establish complete presentation parity, GPU Auto
-eligibility, or a default-backend change.
+fixtures only. The generic compositor routes all application modes through the
+GPU by default, but complete adapter-backed parity fixtures for dynamic worlds,
+assets, procedural planets, and Echolocation remain future verification work.
 
 Latest automated check: `cargo test --workspace` passed on 2026-09-03,
 including 201 CLI tests and 6 GPU tests; 2 documented CLI tests remain
