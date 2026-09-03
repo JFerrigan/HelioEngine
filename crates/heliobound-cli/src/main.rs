@@ -345,17 +345,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             .build()
             .expect("failed to create pixels surface")
     };
-    // GPU terrain is intentionally opt-in until every gameplay presentation
-    // path has a GPU equivalent.  This gives the direct renderer a real-app
-    // exercise path without risking a black/partial default UI on unsupported
-    // modes; CPU `pixels` remains the authoritative reference presentation.
-    let mut gpu = if std::env::var("HELIOBOUND_RENDERER")
-        .is_ok_and(|value| value.eq_ignore_ascii_case("gpu"))
-    {
+    // GPU is the normal presentation backend. The CPU pixels renderer remains
+    // an explicit reference override and the retained, process-lifetime
+    // fallback if surface initialization or a later submission fails.
+    let force_cpu_renderer =
+        std::env::var("HELIOBOUND_RENDERER").is_ok_and(|value| value.eq_ignore_ascii_case("cpu"));
+    let mut gpu_fallback_reason = None;
+    let mut gpu = if !force_cpu_renderer {
         match GpuPresentation::new(window.as_ref()) {
             Ok(renderer) => Some(renderer),
             Err(error) => {
                 eprintln!("GPU renderer unavailable; using CPU fallback: {error}");
+                gpu_fallback_reason = Some(error.to_string());
                 None
             }
         }
@@ -445,11 +446,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     );
                     audio.set_echolocation_interference(app.echolocation_audio_state());
                     play_audio_events(&mut audio, app.drain_audio_events());
-                    let rendered_gpu =
-                        if let (Some(renderer), Some(request)) = (&mut gpu, presentation.terrain) {
+                    let rendered_gpu = if let Some(renderer) = &mut gpu {
+                        if let Some(request) = presentation.terrain {
                             let mut gpu_scene = presentation.ui_scene.clone();
                             add_gpu_status_overlay(&mut gpu_scene, renderer.stats());
-                            let scene_cells = gpu_scene_cells(&gpu_scene);
+                            let scene_cells = gpu_terrain_overlay_cells(&gpu_scene);
                             let sprites = gpu_pixel_sprites(&gpu_scene);
                             let overlay_cells = gpu_overlay_cells(&gpu_scene);
                             match renderer.render(
@@ -467,9 +468,23 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     false
                                 }
                             }
+                        } else if let Some(scene) = presentation.cpu_scene.as_ref() {
+                            let mut gpu_scene = scene.clone();
+                            add_gpu_status_overlay(&mut gpu_scene, renderer.stats());
+                            match renderer.render_scene(&gpu_scene) {
+                                Ok(_) => true,
+                                Err(error) => {
+                                    eprintln!("GPU renderer failed; using CPU fallback: {error}");
+                                    renderer.record_fallback(&error);
+                                    false
+                                }
+                            }
                         } else {
                             false
-                        };
+                        }
+                    } else {
+                        false
+                    };
                     if !rendered_gpu {
                         let mut cpu_scene = presentation.cpu_scene.unwrap_or_else(|| {
                             app.cpu_scene_for_terrain(
@@ -479,6 +494,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         });
                         if let Some(renderer) = &gpu {
                             add_gpu_status_overlay(&mut cpu_scene, renderer.stats());
+                        } else if let Some(reason) = &gpu_fallback_reason {
+                            add_cpu_fallback_overlay(&mut cpu_scene, reason);
                         }
                         render_scene(
                             &cpu_scene,
@@ -538,10 +555,10 @@ enum AppMode {
 /// GPU cache is resolved from `AppState` immediately before submission.
 ///
 /// Only modes whose terrain is not assembled from per-frame actor voxels are
-/// listed here.  Modes with figures, enemies, visibility masking, or
-/// mixed-resolution assets continue through the CPU reference renderer until
-/// their corresponding GPU overlay paths preserve the existing occlusion and
-/// presentation semantics.
+/// listed here. Modes with figures, enemies, visibility masking, or
+/// mixed-resolution assets use the complete-scene GPU compositor request;
+/// their CPU scene remains the authoritative source until each gains a direct
+/// terrain request with parity coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerrainWorldSource {
     CornMaze,
@@ -722,6 +739,33 @@ impl<'window> GpuPresentation<'window> {
         Ok(self.stats.clone())
     }
 
+    /// Present an authoritative CPU-built scene through the GPU compositor.
+    /// This is the bridge for modes whose terrain is not yet a direct GPU DDA
+    /// request (procedural planets, dynamic actors, assets, and face-masked
+    /// Echolocation). It preserves the CPU painter's canonical ordering while
+    /// keeping window presentation, scaling, sprites, and text on the GPU.
+    fn render_scene(&mut self, scene: &Scene) -> Result<GpuFrameStats, Box<dyn Error>> {
+        let background = gpu_blank_background_cells();
+        let upload = self.surface.update_terrain(TerrainFrame {
+            camera: CameraUniform::from_camera(
+                Camera::new(Vec3::ZERO),
+                VoxelBounds::new(VoxelCoord::new(0, 0, 0)),
+                ChunkTableLayout::new(heliobound_core::ChunkCoord::new(0, 0, 0), [1; 3]),
+                1,
+            ),
+            lookup: &[0],
+            background: &background,
+            slot_count: 0,
+            updates: &[],
+        })?;
+        self.surface.set_ui_cells(&gpu_scene_cells(scene));
+        self.surface.set_pixel_sprites(&gpu_pixel_sprites(scene));
+        self.surface.set_overlay_cells(&gpu_overlay_cells(scene));
+        self.surface.render_terrain()?;
+        self.stats = stats_for_gpu_frame(0, upload);
+        Ok(self.stats.clone())
+    }
+
     fn record_fallback(&mut self, error: impl std::fmt::Display) {
         self.stats.backend = GpuBackend::CpuFallback;
         self.stats.fallback_reason = Some(error.to_string());
@@ -765,12 +809,35 @@ fn gpu_background_cells(camera: Camera) -> Vec<BackgroundCell> {
     cells
 }
 
+fn gpu_blank_background_cells() -> Vec<BackgroundCell> {
+    vec![
+        BackgroundCell {
+            glyph: ' ' as u32,
+            foreground_rgba: 0x000000ff,
+        };
+        VIEWPORT.width * VIEWPORT.height
+    ]
+}
+
+/// Convert every scene layer into one painter-ordered GPU cell stream. This
+/// is deliberately shared by menus and CPU-reference terrain modes so style,
+/// backgrounds, equal-z ordering, and glyph behaviour cannot diverge.
 fn gpu_scene_cells(scene: &Scene) -> Vec<UiCell> {
+    gpu_scene_cells_with_terrain(scene, true)
+}
+
+/// Direct terrain frames already populate the logical target in the terrain
+/// pass; only their non-terrain scene layers belong in the UI stream.
+fn gpu_terrain_overlay_cells(scene: &Scene) -> Vec<UiCell> {
+    gpu_scene_cells_with_terrain(scene, false)
+}
+
+fn gpu_scene_cells_with_terrain(scene: &Scene, include_terrain: bool) -> Vec<UiCell> {
     let mut scene = scene.clone();
     scene.sort_layers();
     let mut cells = Vec::new();
     for layer in &scene.layers {
-        if matches!(layer.name.as_str(), "background" | "voxels" | "planet") {
+        if !include_terrain && matches!(layer.name.as_str(), "background" | "voxels" | "planet") {
             continue;
         }
         let fallback = layer_color(layer.name.as_str());
@@ -838,6 +905,16 @@ fn add_gpu_status_overlay(scene: &mut Scene, stats: &GpuFrameStats) {
         y: VIEWPORT.height as i32 - 2,
         z: 10_000,
         text: stats.status_line(),
+        style: hud_style(),
+    });
+}
+
+fn add_cpu_fallback_overlay(scene: &mut Scene, reason: &str) {
+    scene.overlays.push(Overlay {
+        x: 2,
+        y: VIEWPORT.height as i32 - 2,
+        z: 10_000,
+        text: format!("renderer CPU fallback: {reason}"),
         style: hud_style(),
     });
 }
@@ -18089,7 +18166,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ui_conversion_excludes_cpu_terrain_layers() {
+    fn gpu_terrain_overlay_conversion_excludes_cpu_terrain_layers() {
         let mut scene = Scene::new(VIEWPORT);
         scene.layers.push(Layer {
             name: "voxels".to_string(),
@@ -18119,12 +18196,16 @@ mod tests {
             style: TextStyle::default(),
         });
 
-        let cells = gpu_scene_cells(&scene);
+        let cells = gpu_terrain_overlay_cells(&scene);
         let overlays = gpu_overlay_cells(&scene);
         assert_eq!(cells.len(), 1);
         assert_eq!(overlays.len(), 3);
         assert!(cells.iter().all(|cell| !(cell.x == 1 && cell.y == 1)));
         assert_eq!(cells[0].glyph, '+' as u32);
+
+        let full_scene_cells = gpu_scene_cells(&scene);
+        assert_eq!(full_scene_cells.len(), 2);
+        assert_eq!(full_scene_cells[0].glyph, '#' as u32);
     }
 
     #[test]
