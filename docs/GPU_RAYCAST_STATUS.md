@@ -92,6 +92,11 @@ static geometry, before expanding GPU eligibility.
 - Resize, minimize/restore, sustained-play surface recovery, and duplicate
   simulation checks remain pending. Voxel Sandbox placement/removal and its
   GPU-cache update check also remain pending.
+- A repeat launch from the same environment again built successfully, opened
+  the native process, and exited before input could reach the menu. It emitted
+  no `wgpu`, shader, or surface error; only the macOS input-method startup
+  logs were observed. This likewise provides no mode, status-overlay,
+  painter-order, recovery, or cache-edit result.
 
 This unattended launch is not an interactive GPU validation result and does
 not change GPU eligibility, default-backend behavior, or CPU fallback
