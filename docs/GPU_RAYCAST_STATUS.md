@@ -79,3 +79,20 @@ ignored.
 Next: manually exercise Corn Maze, Bar, Voxel Sandbox, and Liminal with
 `HELIOBOUND_RENDERER=gpu`, including resize/minimize recovery and edited
 static geometry, before expanding GPU eligibility.
+
+## Runtime validation attempt — 2026-09-03
+
+- Ran `HELIOBOUND_RENDERER=gpu cargo run -p heliobound-cli` in this validation
+  environment. The native process initialized and then exited normally before
+  menu input could be delivered. Its output contained only macOS input-method
+  startup logs; no `wgpu`, shader, or surface error was emitted.
+- No eligible mode was entered, no GPU status overlay was observed, and no
+  visual-painter-order comparison was performed. Corn Maze, Bar, Voxel
+  Sandbox, and Liminal therefore remain pending.
+- Resize, minimize/restore, sustained-play surface recovery, and duplicate
+  simulation checks remain pending. Voxel Sandbox placement/removal and its
+  GPU-cache update check also remain pending.
+
+This unattended launch is not an interactive GPU validation result and does
+not change GPU eligibility, default-backend behavior, or CPU fallback
+semantics.
