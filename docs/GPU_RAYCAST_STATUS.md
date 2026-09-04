@@ -76,6 +76,17 @@
   then presented by the GPU. This includes analytic planet terrain, dynamic
   actor worlds, render assets, and Echolocation's face-filtered result without
   creating a second simulation world.
+- GPU submission now accepts one typed `RenderRequest` containing the terrain
+  source/background, painter-ordered logical cells, pixel sprites, and final
+  text overlays. The direct-DDA and complete-scene compatibility paths both
+  use that boundary, so no interactive caller can accidentally retain a prior
+  frame's transient UI/sprite/overlay buffers. This is a renderer-boundary
+  hardening step, not direct-terrain parity for the compatibility modes.
+- Direct terrain requests now include an ordered, frame-local dynamic voxel
+  buffer with separate GPU capacity/count telemetry. It replaces transient
+  solids every submitted frame and never invalidates static chunk residency.
+  This has shader/unit validation only; dynamic-mode eligibility and
+  asset-local DDA parity remain pending.
 
 This verifies the current static terrain glyph/color contract on the covered
 fixtures only. The generic compositor routes all application modes through the

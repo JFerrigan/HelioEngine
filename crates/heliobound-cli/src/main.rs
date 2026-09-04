@@ -20,8 +20,9 @@ use heliobound_gfx::{
     PixelSprite, RenderAsset, Scene, SceneBuilder, SceneCell, TextStyle, Viewport,
 };
 use heliobound_gpu::{
-    BackgroundCell, CameraUniform, ChunkTableLayout, PixelSprite as GpuPixelSprite,
-    ResidentChunkTable, SurfaceRenderer, TerrainFrame, TerrainUploadStats, UiCell,
+    AssetVoxel, BackgroundCell, CameraUniform, ChunkTableLayout, DynamicVoxel,
+    PixelSprite as GpuPixelSprite, RenderAsset as GpuRenderAsset, RenderRequest,
+    ResidentChunkTable, SurfaceRenderer, TerrainFrame, TerrainSource, TerrainUploadStats, UiCell,
 };
 use pixels::{PixelsBuilder, SurfaceTexture};
 use serde::Deserialize;
@@ -447,7 +448,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     audio.set_echolocation_interference(app.echolocation_audio_state());
                     play_audio_events(&mut audio, app.drain_audio_events());
                     let rendered_gpu = if let Some(renderer) = &mut gpu {
-                        if let Some(request) = presentation.terrain {
+                        if let Some(request) = presentation.terrain.as_ref() {
                             let mut gpu_scene = presentation.ui_scene.clone();
                             add_gpu_status_overlay(&mut gpu_scene, renderer.stats());
                             let scene_cells = gpu_terrain_overlay_cells(&gpu_scene);
@@ -457,6 +458,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 app.terrain_world(request.source),
                                 request.camera,
                                 request.max_distance,
+                                &request.dynamic_voxels,
+                                &request.assets,
+                                &request.asset_voxels,
                                 &scene_cells,
                                 &sprites,
                                 &overlay_cells,
@@ -488,7 +492,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                     if !rendered_gpu {
                         let mut cpu_scene = presentation.cpu_scene.unwrap_or_else(|| {
                             app.cpu_scene_for_terrain(
-                                presentation.terrain.expect("GPU frame has terrain request"),
+                                presentation
+                                    .terrain
+                                    .as_ref()
+                                    .expect("GPU frame has terrain request"),
                                 mouse_captured,
                             )
                         });
@@ -561,9 +568,17 @@ enum AppMode {
 /// terrain request with parity coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerrainWorldSource {
+    City,
+    CityShooter,
     CornMaze,
     Bar,
+    AssetViewer,
+    MapViewer,
+    MapEditor,
+    MapPlaytest,
+    Freeplay,
     VoxelSandbox,
+    Zombies,
     Liminal,
 }
 
@@ -571,18 +586,23 @@ enum TerrainWorldSource {
 /// consumes this request together with `AppState::terrain_world`; keeping the
 /// world borrowed from application state prevents accidental full-world
 /// copies or a second authoritative representation.
-#[derive(Clone, Copy, Debug)]
-struct TerrainRenderRequest {
+#[derive(Clone, Debug)]
+struct DirectVoxelRenderRequest {
     source: TerrainWorldSource,
     camera: Camera,
     max_distance: f32,
+    /// Ordered frame-local render solids. Static chunk residency stays
+    /// revisioned; this list is replaced after every simulation tick.
+    dynamic_voxels: Vec<DynamicVoxel>,
+    assets: Vec<GpuRenderAsset>,
+    asset_voxels: Vec<AssetVoxel>,
 }
 
 /// Presentation products after simulation advances.
 struct FramePresentation {
     cpu_scene: Option<Scene>,
     ui_scene: Scene,
-    terrain: Option<TerrainRenderRequest>,
+    terrain: Option<DirectVoxelRenderRequest>,
 }
 
 /// CLI-owned bridge from the authoritative sparse world to the direct GPU
@@ -605,6 +625,10 @@ struct GpuFrameStats {
     dirty_chunks: u32,
     upload_bytes: u64,
     voxel_capacity_bytes: u64,
+    dynamic_voxels: u32,
+    dynamic_capacity_bytes: u64,
+    assets: u32,
+    asset_capacity_bytes: u64,
     fallback_reason: Option<String>,
 }
 
@@ -623,6 +647,10 @@ impl Default for GpuFrameStats {
             dirty_chunks: 0,
             upload_bytes: 0,
             voxel_capacity_bytes: 0,
+            dynamic_voxels: 0,
+            dynamic_capacity_bytes: 0,
+            assets: 0,
+            asset_capacity_bytes: 0,
             fallback_reason: None,
         }
     }
@@ -633,12 +661,16 @@ impl GpuFrameStats {
         match &self.fallback_reason {
             Some(reason) => format!("renderer CPU fallback: {reason}"),
             None => format!(
-                "renderer GPU  rays {}  chunks {}/{} dirty  upload {}B  cache {}B",
+                "renderer GPU  rays {}  chunks {}/{} dirty  dynamic {}  assets {}  upload {}B  cache {}B+{}B+{}B",
                 self.logical_ray_count,
                 self.resident_chunks,
                 self.dirty_chunks,
+                self.dynamic_voxels,
+                self.assets,
                 self.upload_bytes,
                 self.voxel_capacity_bytes,
+                self.dynamic_capacity_bytes,
+                self.asset_capacity_bytes,
             ),
         }
     }
@@ -662,29 +694,74 @@ impl<'window> GpuPresentation<'window> {
         world: &VoxelWorld,
         camera: Camera,
         max_distance: f32,
+        dynamic_voxels: &[DynamicVoxel],
+        assets: &[GpuRenderAsset],
+        asset_voxels: &[AssetVoxel],
         scene_cells: &[UiCell],
         sprites: &[GpuPixelSprite],
         overlay_cells: &[UiCell],
     ) -> Result<GpuFrameStats, Box<dyn Error>> {
         let background = gpu_background_cells(camera);
-        let Some(bounds) = world.bounds() else {
+        // Dynamic geometry is deliberately outside the revisioned world cache,
+        // but it must still extend the DDA slab.  Otherwise an actor beyond a
+        // static map edge can be uploaded successfully and remain impossible
+        // for the shader to visit.
+        let mut effective_bounds = world.bounds();
+        for voxel in dynamic_voxels {
+            let coord = VoxelCoord::new(voxel.x, voxel.y, voxel.z);
+            match &mut effective_bounds {
+                Some(bounds) => bounds.include(coord),
+                None => effective_bounds = Some(VoxelBounds::new(coord)),
+            }
+        }
+        // Assets use sub-voxel local grids, but the world DDA slab is still
+        // integer voxel based. Include every transformed broad-phase box so a
+        // small placed asset beyond map geometry remains reachable.
+        for asset in assets {
+            let min = VoxelCoord::new(
+                asset.min[0].floor() as i32,
+                asset.min[1].floor() as i32,
+                asset.min[2].floor() as i32,
+            );
+            let max = VoxelCoord::new(
+                (asset.max[0].ceil() as i32).saturating_sub(1),
+                (asset.max[1].ceil() as i32).saturating_sub(1),
+                (asset.max[2].ceil() as i32).saturating_sub(1),
+            );
+            match &mut effective_bounds {
+                Some(bounds) => {
+                    bounds.include(min);
+                    bounds.include(max);
+                }
+                None => {
+                    let mut bounds = VoxelBounds::new(min);
+                    bounds.include(max);
+                    effective_bounds = Some(bounds);
+                }
+            }
+        }
+        let Some(bounds) = effective_bounds else {
             // Empty static worlds still present the CPU-equivalent sky.
-            let upload = self.surface.update_terrain(TerrainFrame {
-                camera: CameraUniform::from_camera(
-                    camera.with_max_distance(max_distance),
-                    VoxelBounds::new(VoxelCoord::new(0, 0, 0)),
-                    ChunkTableLayout::new(heliobound_core::ChunkCoord::new(0, 0, 0), [1; 3]),
-                    1,
-                ),
-                lookup: &[0],
-                background: &background,
-                slot_count: 0,
-                updates: &[],
+            let upload = self.surface.render(RenderRequest {
+                terrain: TerrainSource::Dda(TerrainFrame {
+                    camera: CameraUniform::from_camera(
+                        camera.with_max_distance(max_distance),
+                        VoxelBounds::new(VoxelCoord::new(0, 0, 0)),
+                        ChunkTableLayout::new(heliobound_core::ChunkCoord::new(0, 0, 0), [1; 3]),
+                        1,
+                    ),
+                    lookup: &[0],
+                    background: &background,
+                    slot_count: 0,
+                    updates: &[],
+                    dynamic_voxels,
+                    assets,
+                    asset_voxels,
+                }),
+                scene_cells,
+                pixel_sprites: sprites,
+                overlay_cells,
             })?;
-            self.surface.set_ui_cells(scene_cells);
-            self.surface.set_pixel_sprites(sprites);
-            self.surface.set_overlay_cells(overlay_cells);
-            self.surface.render_terrain()?;
             self.stats = stats_for_gpu_frame(0, upload);
             return Ok(self.stats.clone());
         };
@@ -724,17 +801,21 @@ impl<'window> GpuPresentation<'window> {
         let max_steps = (max_distance.ceil() as u32)
             .saturating_mul(3)
             .saturating_add(3);
-        let upload = self.surface.update_terrain(TerrainFrame {
-            camera: CameraUniform::from_camera(camera, bounds, layout, max_steps),
-            lookup: &residents.lookup_entries(),
-            background: &background,
-            slot_count: residents.slot_count(),
-            updates: &updates,
+        let upload = self.surface.render(RenderRequest {
+            terrain: TerrainSource::Dda(TerrainFrame {
+                camera: CameraUniform::from_camera(camera, bounds, layout, max_steps),
+                lookup: &residents.lookup_entries(),
+                background: &background,
+                slot_count: residents.slot_count(),
+                updates: &updates,
+                dynamic_voxels,
+                assets,
+                asset_voxels,
+            }),
+            scene_cells,
+            pixel_sprites: sprites,
+            overlay_cells,
         })?;
-        self.surface.set_ui_cells(scene_cells);
-        self.surface.set_pixel_sprites(sprites);
-        self.surface.set_overlay_cells(overlay_cells);
-        self.surface.render_terrain()?;
         self.stats = stats_for_gpu_frame(residents.resident_count() as u32, upload);
         Ok(self.stats.clone())
     }
@@ -746,22 +827,17 @@ impl<'window> GpuPresentation<'window> {
     /// keeping window presentation, scaling, sprites, and text on the GPU.
     fn render_scene(&mut self, scene: &Scene) -> Result<GpuFrameStats, Box<dyn Error>> {
         let background = gpu_blank_background_cells();
-        let upload = self.surface.update_terrain(TerrainFrame {
-            camera: CameraUniform::from_camera(
-                Camera::new(Vec3::ZERO),
-                VoxelBounds::new(VoxelCoord::new(0, 0, 0)),
-                ChunkTableLayout::new(heliobound_core::ChunkCoord::new(0, 0, 0), [1; 3]),
-                1,
-            ),
-            lookup: &[0],
-            background: &background,
-            slot_count: 0,
-            updates: &[],
+        let scene_cells = gpu_scene_cells(scene);
+        let sprites = gpu_pixel_sprites(scene);
+        let overlay_cells = gpu_overlay_cells(scene);
+        let upload = self.surface.render(RenderRequest {
+            terrain: TerrainSource::Empty {
+                background: &background,
+            },
+            scene_cells: &scene_cells,
+            pixel_sprites: &sprites,
+            overlay_cells: &overlay_cells,
         })?;
-        self.surface.set_ui_cells(&gpu_scene_cells(scene));
-        self.surface.set_pixel_sprites(&gpu_pixel_sprites(scene));
-        self.surface.set_overlay_cells(&gpu_overlay_cells(scene));
-        self.surface.render_terrain()?;
         self.stats = stats_for_gpu_frame(0, upload);
         Ok(self.stats.clone())
     }
@@ -788,6 +864,10 @@ fn stats_for_gpu_frame(resident_chunks: u32, upload: TerrainUploadStats) -> GpuF
         dirty_chunks: upload.dirty_chunks,
         upload_bytes: upload.bytes_uploaded,
         voxel_capacity_bytes: upload.voxel_capacity_bytes,
+        dynamic_voxels: upload.dynamic_voxels,
+        dynamic_capacity_bytes: upload.dynamic_capacity_bytes,
+        assets: upload.assets,
+        asset_capacity_bytes: upload.asset_capacity_bytes,
         fallback_reason: None,
     }
 }
@@ -1932,7 +2012,7 @@ impl AppState {
         mouse_captured: bool,
         prefer_gpu: bool,
     ) -> FramePresentation {
-        if prefer_gpu && self.terrain_render_request().is_some() {
+        if prefer_gpu && self.has_direct_frame_builder() {
             return self.gpu_static_frame(dt, mouse_captured);
         }
         let cpu_scene = self.cpu_reference_frame(dt, mouse_captured);
@@ -1942,6 +2022,21 @@ impl AppState {
             cpu_scene: Some(cpu_scene),
             terrain,
         }
+    }
+
+    /// Modes whose simulation and UI have been extracted from the reference
+    /// scene builder. Other finite modes still emit a direct terrain request
+    /// after their compatibility scene is composed, preserving the same
+    /// authoritative-world selection while their UI extraction lands.
+    fn has_direct_frame_builder(&self) -> bool {
+        matches!(
+            self.mode,
+            AppMode::CityWalk
+                | AppMode::CornMaze
+                | AppMode::BarScene
+                | AppMode::VoxelSandbox
+                | AppMode::Liminal
+        )
     }
 
     /// Compatibility helper for deterministic CPU renderer tests.  Runtime
@@ -1956,11 +2051,23 @@ impl AppState {
 
     /// Updates static gameplay modes without invoking `SceneBuilder`'s CPU
     /// terrain raycaster. The returned scene contains only existing overlay
-    /// layers; terrain is supplied by `TerrainRenderRequest` to the GPU.
+    /// layers; terrain is supplied by `DirectVoxelRenderRequest` to the GPU.
     fn gpu_static_frame(&mut self, dt: f32, mouse_captured: bool) -> FramePresentation {
         self.tick = self.tick.wrapping_add(1);
         let mut ui_scene = Scene::new(VIEWPORT);
         match self.mode {
+            AppMode::CityWalk => {
+                update_jumping_walking_camera(
+                    &mut self.camera,
+                    &mut self.input,
+                    &mut self.walk_motion,
+                    &self.city,
+                    STANDARD_WALK_PROFILE,
+                    dt,
+                );
+                self.city_figures.update(&self.city, &self.camera, dt);
+                render_city_walk_scene(&mut ui_scene, &self.city_figures, mouse_captured);
+            }
             AppMode::CornMaze => {
                 update_jumping_walking_camera(
                     &mut self.camera,
@@ -2020,6 +2127,11 @@ impl AppState {
                 self.liminal.update_player_room(&mut self.camera);
                 render_liminal_scene(&mut ui_scene, &self.liminal, mouse_captured);
             }
+            // The remaining finite modes still use the CPU reference scene
+            // for their UI composition while their terrain request is being
+            // submitted directly. Their dedicated extraction lives next to
+            // the reference cases below; this fallback is deliberately
+            // unreachable for the static fast paths above.
             _ => unreachable!("GPU frame requested for an unsupported mode"),
         }
         let terrain = self
@@ -2034,8 +2146,35 @@ impl AppState {
 
     /// Builds the existing CPU reference only after a GPU frame error. This
     /// does not advance simulation a second time.
-    fn cpu_scene_for_terrain(&self, request: TerrainRenderRequest, mouse_captured: bool) -> Scene {
+    fn cpu_scene_for_terrain(
+        &self,
+        request: &DirectVoxelRenderRequest,
+        mouse_captured: bool,
+    ) -> Scene {
         match request.source {
+            TerrainWorldSource::City => {
+                let render_world = city_world_with_figures(&self.city, &self.city_figures);
+                let mut scene = self
+                    .city_builder
+                    .build(&render_world, &self.camera, self.tick);
+                render_city_walk_scene(&mut scene, &self.city_figures, mouse_captured);
+                scene
+            }
+            TerrainWorldSource::CityShooter => {
+                let render_world = shooter_world_with_enemies(&self.doom_map, &self.shooter);
+                let mut scene = self
+                    .city_builder
+                    .build(&render_world, &self.camera, self.tick);
+                render_shooter_scene(
+                    &mut scene,
+                    &self.camera,
+                    &self.shooter,
+                    &self.weapon_asset,
+                    self.viewmodel_bob.offset(),
+                    mouse_captured,
+                );
+                scene
+            }
             TerrainWorldSource::CornMaze => {
                 let mut scene =
                     self.city_builder
@@ -2064,21 +2203,75 @@ impl AppState {
                 render_liminal_scene(&mut scene, &self.liminal, mouse_captured);
                 scene
             }
+            TerrainWorldSource::AssetViewer
+            | TerrainWorldSource::MapViewer
+            | TerrainWorldSource::MapEditor
+            | TerrainWorldSource::MapPlaytest
+            | TerrainWorldSource::Freeplay
+            | TerrainWorldSource::Zombies => {
+                // These requests are currently formed beside their already
+                // built reference scene, so this lazy fallback entry point is
+                // never selected for them.
+                unreachable!("a compatibility direct request retains its CPU scene")
+            }
         }
     }
 
-    fn terrain_render_request(&self) -> Option<TerrainRenderRequest> {
+    fn terrain_render_request(&self) -> Option<DirectVoxelRenderRequest> {
         let source = match self.mode {
+            AppMode::CityWalk => TerrainWorldSource::City,
+            AppMode::CityShooter => TerrainWorldSource::CityShooter,
             AppMode::CornMaze => TerrainWorldSource::CornMaze,
             AppMode::BarScene => TerrainWorldSource::Bar,
+            AppMode::AssetViewer => TerrainWorldSource::AssetViewer,
+            AppMode::MapViewer => TerrainWorldSource::MapViewer,
+            AppMode::MapEditor => TerrainWorldSource::MapEditor,
+            AppMode::MapPlaytest => TerrainWorldSource::MapPlaytest,
+            AppMode::Freeplay
+                if self
+                    .freeplay
+                    .as_ref()
+                    .is_some_and(|state| state.mode() != FreeplayMode::Echolocation) =>
+            {
+                TerrainWorldSource::Freeplay
+            }
             AppMode::VoxelSandbox => TerrainWorldSource::VoxelSandbox,
+            AppMode::Zombies => TerrainWorldSource::Zombies,
             AppMode::Liminal => TerrainWorldSource::Liminal,
             _ => return None,
         };
-        Some(TerrainRenderRequest {
+        let (assets, asset_voxels) = if source == TerrainWorldSource::MapEditor {
+            gpu_render_assets(
+                &self
+                    .map_editor
+                    .as_ref()
+                    .expect("map editor mode requires editor state")
+                    .render_assets(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        Some(DirectVoxelRenderRequest {
             source,
             camera: self.camera,
             max_distance: self.city_builder.config.max_distance,
+            dynamic_voxels: match source {
+                TerrainWorldSource::City => dynamic_voxel_delta(
+                    &self.city,
+                    &city_world_with_figures(&self.city, &self.city_figures),
+                ),
+                TerrainWorldSource::CityShooter => dynamic_voxel_delta(
+                    &self.doom_map,
+                    &shooter_world_with_enemies(&self.doom_map, &self.shooter),
+                ),
+                TerrainWorldSource::Zombies => dynamic_voxel_delta(
+                    &self.zombies_map,
+                    &zombies_world_with_zombies(&self.zombies_map, &self.zombies),
+                ),
+                _ => Vec::new(),
+            },
+            assets,
+            asset_voxels,
         })
     }
 
@@ -2087,9 +2280,37 @@ impl AppState {
     /// with an unrelated world.
     fn terrain_world(&self, source: TerrainWorldSource) -> &VoxelWorld {
         match source {
+            TerrainWorldSource::City => &self.city,
+            TerrainWorldSource::CityShooter => &self.doom_map,
             TerrainWorldSource::CornMaze => &self.corn_maze.world,
             TerrainWorldSource::Bar => &self.bar_scene,
+            TerrainWorldSource::AssetViewer => &self.asset_viewer.selected_asset().world,
+            TerrainWorldSource::MapViewer => self
+                .map_viewer
+                .as_ref()
+                .expect("map viewer mode requires viewer state")
+                .render_world(),
+            TerrainWorldSource::MapEditor => self
+                .map_editor
+                .as_ref()
+                .expect("map editor mode requires editor state")
+                .render_world(),
+            TerrainWorldSource::MapPlaytest => {
+                &self
+                    .map_playtest
+                    .as_ref()
+                    .expect("map playtest mode requires state")
+                    .world
+            }
+            TerrainWorldSource::Freeplay => {
+                &self
+                    .freeplay
+                    .as_ref()
+                    .expect("freeplay mode requires state")
+                    .world
+            }
             TerrainWorldSource::VoxelSandbox => &self.sandbox.world,
+            TerrainWorldSource::Zombies => &self.zombies_map,
             TerrainWorldSource::Liminal => &self.liminal.world,
         }
     }
@@ -11319,6 +11540,77 @@ fn city_world_with_figures(base: &VoxelWorld, figures: &CityFigureState) -> Voxe
     world
 }
 
+/// Extract the compact transient stamp from a fully assembled reference world.
+/// This is intentionally presentation-only: the original static world remains
+/// authoritative for collision and revisioned GPU residency.
+fn dynamic_voxel_delta(base: &VoxelWorld, assembled: &VoxelWorld) -> Vec<DynamicVoxel> {
+    // Include removals as explicit zero-material overrides. The GPU shader
+    // distinguishes a matching zero record from no record, so a runtime door
+    // can clear a static cell without forcing a static-cache invalidation.
+    let mut coordinates = base
+        .voxels()
+        .into_iter()
+        .map(|(coord, _)| coord)
+        .chain(assembled.voxels().into_iter().map(|(coord, _)| coord))
+        .collect::<Vec<_>>();
+    coordinates.sort_by_key(|coord| (coord.z, coord.y, coord.x));
+    coordinates.dedup();
+    coordinates
+        .into_iter()
+        .filter_map(|coord| {
+            let before = base.get(coord);
+            let after = assembled.get(coord);
+            (before != after).then_some(DynamicVoxel {
+                x: coord.x,
+                y: coord.y,
+                z: coord.z,
+                material: after
+                    .map(|cell| heliobound_gpu::encode_voxel(cell.material))
+                    .unwrap_or(0),
+            })
+        })
+        .collect()
+}
+
+/// Flatten the graphics crate's sparse, transformed asset representation into
+/// the GPU's POD buffers without changing its authoring-space semantics.
+fn gpu_render_assets(render_assets: &[RenderAsset]) -> (Vec<GpuRenderAsset>, Vec<AssetVoxel>) {
+    let mut assets = Vec::with_capacity(render_assets.len());
+    let mut voxels = Vec::new();
+    for asset in render_assets {
+        let offset = voxels.len() as u32;
+        let mut local_voxels = asset.voxels.iter().collect::<Vec<_>>();
+        local_voxels.sort_by_key(|(coord, _)| (coord.z, coord.y, coord.x));
+        voxels.extend(
+            local_voxels
+                .into_iter()
+                .map(|(coord, material)| AssetVoxel {
+                    x: coord.x,
+                    y: coord.y,
+                    z: coord.z,
+                    material: heliobound_gpu::encode_voxel(*material),
+                }),
+        );
+        assets.push(GpuRenderAsset {
+            min: [asset.min.x, asset.min.y, asset.min.z, 0.0],
+            max: [asset.max.x, asset.max.y, asset.max.z, 0.0],
+            anchor: [asset.anchor.x, asset.anchor.y, asset.anchor.z, 0.0],
+            voxel_size: asset.voxel_size,
+            yaw_degrees: asset.yaw_degrees as f32,
+            ghost: asset.ghost as u32,
+            voxel_offset: offset,
+            dimensions: [
+                asset.dimensions[0].max(0) as u32,
+                asset.dimensions[1].max(0) as u32,
+                asset.dimensions[2].max(0) as u32,
+                (voxels.len() as u32).saturating_sub(offset),
+            ],
+            pivot: [asset.pivot[0], asset.pivot[1], asset.pivot[2], 0.0],
+        });
+    }
+    (assets, voxels)
+}
+
 fn shooter_world_with_enemies(base: &VoxelWorld, shooter: &ShooterState) -> VoxelWorld {
     let mut world = base.clone();
     for enemy in &shooter.enemies {
@@ -18146,7 +18438,7 @@ mod tests {
     }
 
     #[test]
-    fn terrain_request_identifies_only_static_cpu_worlds() {
+    fn terrain_request_identifies_authoritative_world_and_dynamic_snapshot() {
         let mut app = AppState::new();
         app.mode = AppMode::BarScene;
         let presentation = app.frame_presentation(0.0, false, false);
@@ -18162,7 +18454,11 @@ mod tests {
 
         app.mode = AppMode::CityWalk;
         let presentation = app.frame_presentation(0.0, false, false);
-        assert!(presentation.terrain.is_none());
+        let request = presentation
+            .terrain
+            .expect("city terrain uses the direct request boundary");
+        assert_eq!(request.source, TerrainWorldSource::City);
+        assert!(!request.dynamic_voxels.is_empty());
     }
 
     #[test]
@@ -18295,6 +18591,55 @@ mod tests {
     }
 
     #[test]
+    fn gpu_asset_snapshot_keeps_transform_palette_and_stable_local_order() {
+        let mut voxels = HashMap::new();
+        voxels.insert(VoxelCoord::new(1, 0, 0), VoxelMaterial::Custom([1, 2, 3]));
+        voxels.insert(VoxelCoord::new(0, 0, 0), VoxelMaterial::Beacon);
+        let asset = RenderAsset {
+            min: Vec3::new(4.0, 2.0, 8.0),
+            max: Vec3::new(5.0, 3.0, 9.0),
+            voxels,
+            dimensions: [2, 1, 1],
+            voxel_size: 0.5,
+            pivot: [0.5, 0.0, 0.5],
+            anchor: Vec3::new(4.5, 2.0, 8.5),
+            yaw_degrees: 90,
+            ghost: true,
+        };
+        let (assets, voxels) = gpu_render_assets(&[asset]);
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].anchor[..3], [4.5, 2.0, 8.5]);
+        assert_eq!(assets[0].yaw_degrees, 90.0);
+        assert_eq!(assets[0].ghost, 1);
+        assert_eq!(assets[0].dimensions, [2, 1, 1, 2]);
+        assert_eq!(voxels[0].x, 0);
+        assert_eq!(
+            voxels[0].material,
+            heliobound_gpu::encode_voxel(VoxelMaterial::Beacon)
+        );
+        assert_eq!(voxels[1].x, 1);
+        assert_eq!(voxels[1].material, 0x8001_0203);
+    }
+
+    #[test]
+    fn dynamic_snapshot_explicitly_represents_removed_static_voxels() {
+        let coord = VoxelCoord::new(3, 2, -1);
+        let mut base = VoxelWorld::new();
+        base.set(coord, VoxelCell::new(VoxelMaterial::PuzzleDoor));
+        let mut assembled = base.clone();
+        assembled.clear(coord);
+        assert_eq!(
+            dynamic_voxel_delta(&base, &assembled),
+            vec![DynamicVoxel {
+                x: 3,
+                y: 2,
+                z: -1,
+                material: 0,
+            }]
+        );
+    }
+
+    #[test]
     fn gpu_frame_stats_retain_the_latest_fallback_reason() {
         let mut stats = stats_for_gpu_frame(
             3,
@@ -18302,6 +18647,10 @@ mod tests {
                 dirty_chunks: 2,
                 bytes_uploaded: 123,
                 voxel_capacity_bytes: 4096,
+                dynamic_voxels: 0,
+                dynamic_capacity_bytes: 16,
+                assets: 0,
+                asset_capacity_bytes: 0,
             },
         );
         assert_eq!(stats.backend, GpuBackend::Gpu);

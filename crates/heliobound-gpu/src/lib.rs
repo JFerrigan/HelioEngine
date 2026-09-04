@@ -439,9 +439,15 @@ struct TerrainGpuBuffers {
     lookup: wgpu::Buffer,
     background: wgpu::Buffer,
     voxels: wgpu::Buffer,
+    dynamic_voxels: wgpu::Buffer,
+    assets: wgpu::Buffer,
+    asset_voxels: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     lookup_capacity: u64,
     voxel_capacity: u64,
+    dynamic_capacity: u64,
+    asset_capacity: u64,
+    asset_voxel_capacity: u64,
 }
 
 struct LogicalTargets {
@@ -485,6 +491,73 @@ pub struct TerrainFrame<'a> {
     pub background: &'a [BackgroundCell],
     pub slot_count: u32,
     pub updates: &'a [ChunkSlotUpload],
+    /// Frame-local solid geometry. It never enters the revisioned static
+    /// cache, so moving actors and doors cannot invalidate map residency.
+    pub dynamic_voxels: &'a [DynamicVoxel],
+    /// Ordered mixed-resolution presentation assets. They remain separate
+    /// from static chunk residency and dynamic unit voxels.
+    pub assets: &'a [RenderAsset],
+    pub asset_voxels: &'a [AssetVoxel],
+}
+
+/// A single authoritative, frame-local solid voxel. Request order is stable
+/// and later equal-coordinate entries intentionally win, matching ordered
+/// simulation stamping.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct DynamicVoxel {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub material: u32,
+}
+
+/// Sparse local cell in a mixed-resolution render asset.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct AssetVoxel {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub material: u32,
+}
+
+/// GPU presentation record for one transformed asset. `voxel_offset` and
+/// `dimensions[3]` address the ordered `asset_voxels` snapshot.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct RenderAsset {
+    pub min: [f32; 4],
+    pub max: [f32; 4],
+    pub anchor: [f32; 4],
+    pub voxel_size: f32,
+    pub yaw_degrees: f32,
+    pub ghost: u32,
+    pub voxel_offset: u32,
+    pub dimensions: [u32; 4],
+    pub pivot: [f32; 4],
+}
+
+/// The terrain source for one complete GPU frame.  A direct DDA request keeps
+/// voxel terrain on the GPU; `Empty` is useful for a complete logical scene
+/// supplied by the caller (menus and the CPU reference fallback bridge).
+/// Both variants retain a logical background so the terrain pass always
+/// initializes every cell deterministically.
+pub enum TerrainSource<'a> {
+    Dda(TerrainFrame<'a>),
+    Empty { background: &'a [BackgroundCell] },
+}
+
+/// One post-simulation presentation request.  This is the only public frame
+/// submission boundary: terrain/background, ordered logical cells, physical
+/// pixel sprites, and final text overlays are supplied together.  It keeps
+/// GPU cache state strictly presentation-only while preventing a caller from
+/// accidentally reusing UI data from a previous frame.
+pub struct RenderRequest<'a> {
+    pub terrain: TerrainSource<'a>,
+    pub scene_cells: &'a [UiCell],
+    pub pixel_sprites: &'a [PixelSprite],
+    pub overlay_cells: &'a [UiCell],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -492,6 +565,10 @@ pub struct TerrainUploadStats {
     pub dirty_chunks: u32,
     pub bytes_uploaded: u64,
     pub voxel_capacity_bytes: u64,
+    pub dynamic_voxels: u32,
+    pub dynamic_capacity_bytes: u64,
+    pub assets: u32,
+    pub asset_capacity_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -524,6 +601,30 @@ impl fmt::Display for TerrainDataError {
 }
 
 impl std::error::Error for TerrainDataError {}
+
+#[derive(Debug)]
+pub enum RenderRequestError {
+    Terrain(TerrainDataError),
+    Surface(SurfaceRendererError),
+}
+
+impl fmt::Display for RenderRequestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Terrain(error) => error.fmt(f),
+            Self::Surface(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for RenderRequestError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Terrain(error) => Some(error),
+            Self::Surface(error) => Some(error),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum SurfaceRendererError {
@@ -734,6 +835,40 @@ impl<'window> SurfaceRenderer<'window> {
         self.sprite_count = sprites.len() as u32;
     }
 
+    /// Submit a complete presentation request.  The individual upload/setter
+    /// methods remain available for focused renderer tests, but application
+    /// code should use this method so every submitted frame replaces all
+    /// transient composition buffers.
+    pub fn render(
+        &mut self,
+        request: RenderRequest<'_>,
+    ) -> Result<TerrainUploadStats, RenderRequestError> {
+        let upload = match request.terrain {
+            TerrainSource::Dda(frame) => self.update_terrain(frame),
+            TerrainSource::Empty { background } => self.update_terrain(TerrainFrame {
+                camera: CameraUniform::from_camera(
+                    Camera::new(heliobound_core::Vec3::ZERO),
+                    VoxelBounds::new(heliobound_core::VoxelCoord::new(0, 0, 0)),
+                    ChunkTableLayout::new(ChunkCoord::new(0, 0, 0), [1; 3]),
+                    1,
+                ),
+                lookup: &[0],
+                background,
+                slot_count: 0,
+                updates: &[],
+                dynamic_voxels: &[],
+                assets: &[],
+                asset_voxels: &[],
+            }),
+        }
+        .map_err(RenderRequestError::Terrain)?;
+        self.set_ui_cells(request.scene_cells);
+        self.set_pixel_sprites(request.pixel_sprites);
+        self.set_overlay_cells(request.overlay_cells);
+        self.render_terrain().map_err(RenderRequestError::Surface)?;
+        Ok(upload)
+    }
+
     /// Synchronize the direct-GPU terrain cache. The CPU remains authoritative:
     /// this method only writes the current camera/table and the caller-selected
     /// dirty chunk slots. It performs no GPU-to-CPU readback.
@@ -769,9 +904,17 @@ impl<'window> SurfaceRenderer<'window> {
             &self.terrain_bind_group_layout,
             frame.lookup.len() as u64,
             frame.slot_count.max(1) as u64 * CHUNK_VOXELS as u64,
+            frame.dynamic_voxels.len() as u64,
+            frame.assets.len() as u64,
+            frame.asset_voxels.len() as u64,
         );
+        let mut camera = frame.camera;
+        // The otherwise padding `w` is an explicit frame-local count; the
+        // static lookup dimensions remain xyz.
+        camera.table_dimensions_and_padding[3] = frame.dynamic_voxels.len() as u32;
+        camera.up_and_padding[3] = frame.assets.len() as f32;
         self.queue
-            .write_buffer(&self.terrain.camera, 0, bytemuck::bytes_of(&frame.camera));
+            .write_buffer(&self.terrain.camera, 0, bytemuck::bytes_of(&camera));
         self.queue
             .write_buffer(&self.terrain.lookup, 0, bytemuck::cast_slice(frame.lookup));
         self.queue.write_buffer(
@@ -792,10 +935,43 @@ impl<'window> SurfaceRenderer<'window> {
             );
             bytes_uploaded += (CHUNK_VOXELS as usize * std::mem::size_of::<u32>()) as u64;
         }
+        if !frame.dynamic_voxels.is_empty() {
+            self.queue.write_buffer(
+                &self.terrain.dynamic_voxels,
+                0,
+                bytemuck::cast_slice(frame.dynamic_voxels),
+            );
+            bytes_uploaded += std::mem::size_of_val(frame.dynamic_voxels) as u64;
+        }
+        if !frame.assets.is_empty() {
+            self.queue
+                .write_buffer(&self.terrain.assets, 0, bytemuck::cast_slice(frame.assets));
+            bytes_uploaded += std::mem::size_of_val(frame.assets) as u64;
+        }
+        if !frame.asset_voxels.is_empty() {
+            self.queue.write_buffer(
+                &self.terrain.asset_voxels,
+                0,
+                bytemuck::cast_slice(frame.asset_voxels),
+            );
+            bytes_uploaded += std::mem::size_of_val(frame.asset_voxels) as u64;
+        }
+        if !frame.asset_voxels.is_empty() {
+            self.queue.write_buffer(
+                &self.terrain.asset_voxels,
+                0,
+                bytemuck::cast_slice(frame.asset_voxels),
+            );
+            bytes_uploaded += std::mem::size_of_val(frame.asset_voxels) as u64;
+        }
         Ok(TerrainUploadStats {
             dirty_chunks: frame.updates.len() as u32,
             bytes_uploaded,
             voxel_capacity_bytes: self.terrain.voxel_capacity,
+            dynamic_voxels: frame.dynamic_voxels.len() as u32,
+            dynamic_capacity_bytes: self.terrain.dynamic_capacity,
+            assets: frame.assets.len() as u32,
+            asset_capacity_bytes: self.terrain.asset_capacity + self.terrain.asset_voxel_capacity,
         })
     }
 
@@ -1073,16 +1249,34 @@ impl TerrainGpuBuffers {
             "heliobound terrain chunk slots",
             CHUNK_VOXELS as u64,
         );
-        let bind_group =
-            create_terrain_bind_group(device, layout, &camera, &lookup, &background, &voxels);
+        let dynamic_voxels = create_storage_buffer(device, "heliobound dynamic voxels", 4);
+        let assets = create_storage_buffer(device, "heliobound render assets", 24);
+        let asset_voxels = create_storage_buffer(device, "heliobound render asset voxels", 4);
+        let bind_group = create_terrain_bind_group(
+            device,
+            layout,
+            &camera,
+            &lookup,
+            &background,
+            &voxels,
+            &dynamic_voxels,
+            &assets,
+            &asset_voxels,
+        );
         Self {
             camera,
             lookup,
             background,
             voxels,
+            dynamic_voxels,
+            assets,
+            asset_voxels,
             bind_group,
             lookup_capacity: 1,
             voxel_capacity: CHUNK_VOXELS as u64 * 4,
+            dynamic_capacity: 16,
+            asset_capacity: 96,
+            asset_voxel_capacity: 16,
         }
     }
 
@@ -1093,6 +1287,9 @@ impl TerrainGpuBuffers {
         layout: &wgpu::BindGroupLayout,
         lookup_values: u64,
         voxel_values: u64,
+        dynamic_values: u64,
+        asset_values: u64,
+        asset_voxel_values: u64,
     ) {
         let required_lookup = lookup_values.max(1);
         let required_voxels = voxel_values.max(1) * 4;
@@ -1121,6 +1318,42 @@ impl TerrainGpuBuffers {
             self.voxel_capacity = new_capacity;
             changed = true;
         }
+        let required_dynamic =
+            (dynamic_values.max(1) * std::mem::size_of::<DynamicVoxel>() as u64).max(16);
+        if required_dynamic > self.dynamic_capacity {
+            self.dynamic_capacity = required_dynamic.next_power_of_two();
+            self.dynamic_voxels = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("heliobound dynamic voxels"),
+                size: self.dynamic_capacity,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            changed = true;
+        }
+        let required_assets =
+            (asset_values.max(1) * std::mem::size_of::<RenderAsset>() as u64).max(96);
+        if required_assets > self.asset_capacity {
+            self.asset_capacity = required_assets.next_power_of_two();
+            self.assets = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("heliobound render assets"),
+                size: self.asset_capacity,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            changed = true;
+        }
+        let required_asset_voxels =
+            (asset_voxel_values.max(1) * std::mem::size_of::<AssetVoxel>() as u64).max(16);
+        if required_asset_voxels > self.asset_voxel_capacity {
+            self.asset_voxel_capacity = required_asset_voxels.next_power_of_two();
+            self.asset_voxels = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("heliobound render asset voxels"),
+                size: self.asset_voxel_capacity,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            changed = true;
+        }
         if changed {
             self.bind_group = create_terrain_bind_group(
                 device,
@@ -1129,6 +1362,9 @@ impl TerrainGpuBuffers {
                 &self.lookup,
                 &self.background,
                 &self.voxels,
+                &self.dynamic_voxels,
+                &self.assets,
+                &self.asset_voxels,
             );
         }
     }
@@ -1194,6 +1430,36 @@ fn create_terrain_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLay
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(16),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(96),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 6,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(16),
+                },
+                count: None,
+            },
         ],
     })
 }
@@ -1205,6 +1471,9 @@ fn create_terrain_bind_group(
     lookup: &wgpu::Buffer,
     background: &wgpu::Buffer,
     voxels: &wgpu::Buffer,
+    dynamic_voxels: &wgpu::Buffer,
+    assets: &wgpu::Buffer,
+    asset_voxels: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("heliobound terrain bind group"),
@@ -1225,6 +1494,18 @@ fn create_terrain_bind_group(
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: voxels.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: dynamic_voxels.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: assets.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: asset_voxels.as_entire_binding(),
             },
         ],
     })
@@ -1893,6 +2174,12 @@ mod tests {
             );
             self.queue
                 .write_buffer(&background_buffer, 0, bytemuck::cast_slice(&background));
+            let dynamic_buffer =
+                create_storage_buffer(&self.device, "heliobound offscreen dynamic voxels", 4);
+            let asset_buffer =
+                create_storage_buffer(&self.device, "heliobound offscreen render assets", 24);
+            let asset_voxel_buffer =
+                create_storage_buffer(&self.device, "heliobound offscreen render asset voxels", 4);
             for update in &updates {
                 self.queue.write_buffer(
                     &voxel_buffer,
@@ -1907,6 +2194,9 @@ mod tests {
                 &lookup_buffer,
                 &background_buffer,
                 &voxel_buffer,
+                &dynamic_buffer,
+                &asset_buffer,
+                &asset_voxel_buffer,
             );
             let targets = LogicalTargets::new(&self.device);
             let byte_len = (LOGICAL_WIDTH * LOGICAL_HEIGHT * 4) as u64;
