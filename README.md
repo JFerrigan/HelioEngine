@@ -1,27 +1,37 @@
 # Heliobound
 
-Heliobound is a native hard-science-fiction simulation prototype built around a 3D voxel world rendered as 2D ASCII.
+Heliobound is a native Rust prototype for exploring hard-science-fiction
+worlds through a 3D voxel simulation rendered as a crisp 2D ASCII interface.
+It is designed as an engine foundation: a spatial substrate that can grow into
+systems for exploration, environments, authored scenarios, and simulation.
 
-The current goal is not a playable game loop. The goal is a clean engine foundation:
+## Highlights
 
-- chunked voxel storage
-- camera and ray primitives
-- procedural planet generation
-- per-cell ASCII projection through voxel traversal
-- room for future simulation systems above the spatial layer
-- ASCII first, then low-color and pixel-art rendering later
+- A sparse, chunked voxel world with typed materials and negative-space support.
+- Deterministic procedural worlds, including planet-scale virtual terrain that
+  avoids materializing invisible interiors.
+- Camera-driven DDA raycasting that projects 3D scenes into a 160×90 logical
+  ASCII display.
+- GPU-default presentation through `wgpu`, with a CPU reference renderer kept
+  available for validation and automatic fallback.
+- Data-driven maps and mixed-resolution voxel assets for reusable authored
+  environments.
+- Native tools for browsing assets, inspecting maps, editing finite maps, and
+  testing unsaved work in place.
 
-## Current Shape
+## Architecture
 
-- `crates/heliobound-core`: camera math, rays, voxel coordinates, materials, chunked voxel world, virtual procedural planets
-- `crates/heliobound-gfx`: scene model, ASCII renderer, voxel raycaster, virtual planet renderer, material-to-glyph mapping
-- `crates/heliobound-cli`: native window bootstrap and deterministic demo scene
-- `docs/`: design notes and architecture decisions
+The workspace keeps durable simulation state separate from visual projection:
 
-Start with [docs/foundation.md](docs/foundation.md) for the current root structure.
-For the graphics layer, read [docs/graphics.md](docs/graphics.md).
-For known frame costs and the staged optimization plan, read
-[docs/performance.md](docs/performance.md).
+| Crate | Responsibility |
+| --- | --- |
+| `heliobound-core` | Spatial math, voxel storage, materials, map compilation, and procedural terrain. |
+| `heliobound-gfx` | Scene composition, CPU reference rendering, voxel traversal, and material-to-glyph mapping. |
+| `heliobound-gpu` | GPU terrain caching, logical glyph composition, sprites, UI, and surface presentation. |
+| `heliobound-cli` | Native application bootstrap, controls, modes, tools, and demo composition. |
+
+This separation keeps rendering downstream from authoritative world state and
+makes the visual path testable without opening a desktop window.
 
 ## Run
 
@@ -30,29 +40,36 @@ For known frame costs and the staged optimization plan, read
 cargo run -p heliobound-cli
 ```
 
-For smoother rendering, run the optimized build:
+For an optimized build:
 
 ```bash
 cargo run --release -p heliobound-cli
 ```
 
-The current planet is rendered as a virtual procedural body at 1000x the original prototype scale. Local voxel shells are still supported for smaller bodies and future landing-zone detail, but planet-scale rendering does not materialize billions of surface voxels.
+GPU presentation is selected by default. Set `HELIOBOUND_RENDERER=cpu` to run
+the software `pixels` reference renderer explicitly.
 
-For the voxel asset viewer and drop-in `*.hbasset.json` authoring workflow, see
-the dedicated [voxel asset usage guide](docs/voxel-assets.md). Assets belong in
-[`assets/voxel-assets`](assets/voxel-assets) and are discovered at startup.
+## Explore and author
 
-For the pan-and-orbit gameplay map viewer and an overview of how maps are
-currently represented, see [maps and the map viewer](docs/maps.md).
-The planned versioned external map contract is in
-[data-driven map authoring](docs/map-authoring.md).
+The application includes multiple voxel environments, a map viewer, an asset
+viewer, and an in-progress keyboard-first map editor. Reusable assets are
+loaded from [`assets/voxel-assets`](assets/voxel-assets); authored map
+blueprints live in [`assets/voxel-maps`](assets/voxel-maps).
 
-## Controls
+For authoring contracts and controls, start with:
 
-- Click the window to capture mouse look.
-- `W` / `S`: thrust forward and backward.
-- `A` / `D`: strafe left and right.
-- `Space` / `Ctrl`: move up and down.
-- `Q` / `E`: roll.
-- `Shift`: boost.
-- `Escape`: release the mouse; press again to quit.
+- [Voxel assets](docs/voxel-assets.md)
+- [Maps and map viewer](docs/maps.md)
+- [Data-driven map authoring](docs/map-authoring.md)
+- [Map editor roadmap](docs/map-editor.md)
+
+## Technical notes
+
+The GPU renderer maintains bounded chunk residency and renders one terrain ray
+per logical cell without interactive GPU-to-CPU terrain readback. Its output
+is checked against the CPU renderer with adapter-backed parity tests, including
+final presentation color handling.
+
+See the [foundation](docs/foundation.md), [graphics](docs/graphics.md), and
+[GPU renderer status](docs/GPU_RAYCAST_STATUS.md) for deeper design and
+validation detail.
