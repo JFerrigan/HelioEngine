@@ -956,14 +956,6 @@ impl<'window> SurfaceRenderer<'window> {
             );
             bytes_uploaded += std::mem::size_of_val(frame.asset_voxels) as u64;
         }
-        if !frame.asset_voxels.is_empty() {
-            self.queue.write_buffer(
-                &self.terrain.asset_voxels,
-                0,
-                bytemuck::cast_slice(frame.asset_voxels),
-            );
-            bytes_uploaded += std::mem::size_of_val(frame.asset_voxels) as u64;
-        }
         Ok(TerrainUploadStats {
             dirty_chunks: frame.updates.len() as u32,
             bytes_uploaded,

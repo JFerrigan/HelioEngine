@@ -561,11 +561,9 @@ enum AppMode {
 /// dynamic presentation data: the CPU world remains authoritative and the
 /// GPU cache is resolved from `AppState` immediately before submission.
 ///
-/// Only modes whose terrain is not assembled from per-frame actor voxels are
-/// listed here. Modes with figures, enemies, visibility masking, or
-/// mixed-resolution assets use the complete-scene GPU compositor request;
-/// their CPU scene remains the authoritative source until each gains a direct
-/// terrain request with parity coverage.
+/// Each source resolves to the post-simulation world owned by `AppState`.
+/// Dynamic solids and mixed-resolution assets travel separately in the
+/// request, so this enum never needs a cloned, presentation-only world.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerrainWorldSource {
     City,
@@ -580,6 +578,7 @@ enum TerrainWorldSource {
     VoxelSandbox,
     Zombies,
     Liminal,
+    DroneGate,
 }
 
 /// The terrain portion of one post-simulation frame.  A future GPU backend
@@ -2029,14 +2028,17 @@ impl AppState {
     /// after their compatibility scene is composed, preserving the same
     /// authoritative-world selection while their UI extraction lands.
     fn has_direct_frame_builder(&self) -> bool {
-        matches!(
-            self.mode,
-            AppMode::CityWalk
-                | AppMode::CornMaze
-                | AppMode::BarScene
-                | AppMode::VoxelSandbox
-                | AppMode::Liminal
-        )
+        match self.mode {
+            AppMode::PlanetFlight | AppMode::EchoLocation => false,
+            AppMode::Freeplay => self
+                .freeplay
+                .as_ref()
+                .is_some_and(|state| state.mode() != FreeplayMode::Echolocation),
+            AppMode::Menu | AppMode::GamesMenu | AppMode::FreeplayMenu | AppMode::DevToolsMenu => {
+                false
+            }
+            _ => true,
+        }
     }
 
     /// Compatibility helper for deterministic CPU renderer tests.  Runtime
@@ -2127,11 +2129,194 @@ impl AppState {
                 self.liminal.update_player_room(&mut self.camera);
                 render_liminal_scene(&mut ui_scene, &self.liminal, mouse_captured);
             }
-            // The remaining finite modes still use the CPU reference scene
-            // for their UI composition while their terrain request is being
-            // submitted directly. Their dedicated extraction lives next to
-            // the reference cases below; this fallback is deliberately
-            // unreachable for the static fast paths above.
+            AppMode::CityShooter => {
+                let before_move = self.camera.position;
+                update_jumping_walking_camera(
+                    &mut self.camera,
+                    &mut self.input,
+                    &mut self.walk_motion,
+                    &self.doom_map,
+                    STANDARD_WALK_PROFILE,
+                    dt,
+                );
+                self.viewmodel_bob.update(
+                    horizontal_distance(before_move, self.camera.position),
+                    moving_on_ground(&self.input),
+                    dt,
+                );
+                if self
+                    .shooter
+                    .update(&self.doom_map, self.camera.position, dt)
+                {
+                    self.audio_events.push(SoundEffect::PlayerHurt);
+                }
+                render_shooter_scene(
+                    &mut ui_scene,
+                    &self.camera,
+                    &self.shooter,
+                    &self.weapon_asset,
+                    self.viewmodel_bob.offset(),
+                    mouse_captured,
+                );
+            }
+            AppMode::AssetViewer => {
+                self.asset_viewer.update(&self.input, dt);
+                self.camera = self.asset_viewer.camera();
+                render_asset_viewer_scene(&mut ui_scene, &self.asset_viewer, mouse_captured);
+            }
+            AppMode::MapViewer => {
+                let viewer = self
+                    .map_viewer
+                    .as_mut()
+                    .expect("map viewer mode requires viewer state");
+                viewer.update(&self.input, dt);
+                self.camera = viewer.camera();
+                render_map_viewer_scene(&mut ui_scene, viewer, mouse_captured);
+            }
+            AppMode::MapEditor => {
+                let editor = self
+                    .map_editor
+                    .as_mut()
+                    .expect("map editor mode requires editor state");
+                editor.update(&self.input, dt);
+                self.camera = editor.camera();
+                render_map_editor_scene(&mut ui_scene, editor, mouse_captured);
+            }
+            AppMode::MapPlaytest => {
+                let playtest = self
+                    .map_playtest
+                    .as_mut()
+                    .expect("map playtest mode requires state");
+                match playtest.mode {
+                    MapPlaytestMode::Flight => {
+                        update_flight_camera(&mut self.camera, &self.input, dt)
+                    }
+                    MapPlaytestMode::Explorer => update_jumping_walking_camera(
+                        &mut self.camera,
+                        &mut self.input,
+                        &mut self.walk_motion,
+                        &playtest.world,
+                        STANDARD_WALK_PROFILE,
+                        dt,
+                    ),
+                    MapPlaytestMode::Shooter => {
+                        let before_move = self.camera.position;
+                        update_jumping_walking_camera(
+                            &mut self.camera,
+                            &mut self.input,
+                            &mut self.walk_motion,
+                            &playtest.world,
+                            STANDARD_WALK_PROFILE,
+                            dt,
+                        );
+                        playtest.viewmodel_bob.update(
+                            horizontal_distance(before_move, self.camera.position),
+                            moving_on_ground(&self.input),
+                            dt,
+                        );
+                        playtest.shooter.update_effects(dt);
+                    }
+                }
+                render_map_playtest_scene(&mut ui_scene, playtest, mouse_captured);
+                if playtest.mode == MapPlaytestMode::Shooter {
+                    render_map_playtest_shooter_scene(
+                        &mut ui_scene,
+                        &self.camera,
+                        playtest,
+                        &self.weapon_asset,
+                    );
+                }
+            }
+            AppMode::Freeplay => {
+                let freeplay = self
+                    .freeplay
+                    .as_mut()
+                    .expect("freeplay mode requires state");
+                match freeplay.mode() {
+                    FreeplayMode::Flight => update_flight_camera(&mut self.camera, &self.input, dt),
+                    FreeplayMode::Explorer => update_jumping_walking_camera(
+                        &mut self.camera,
+                        &mut self.input,
+                        &mut self.walk_motion,
+                        &freeplay.world,
+                        STANDARD_WALK_PROFILE,
+                        dt,
+                    ),
+                    FreeplayMode::Shooter => {
+                        let before_move = self.camera.position;
+                        update_jumping_walking_camera(
+                            &mut self.camera,
+                            &mut self.input,
+                            &mut self.walk_motion,
+                            &freeplay.world,
+                            STANDARD_WALK_PROFILE,
+                            dt,
+                        );
+                        freeplay.viewmodel_bob.update(
+                            horizontal_distance(before_move, self.camera.position),
+                            moving_on_ground(&self.input),
+                            dt,
+                        );
+                        freeplay.shooter.update_effects(dt);
+                    }
+                    FreeplayMode::Echolocation => {
+                        unreachable!("echo freeplay stays on CPU terrain")
+                    }
+                }
+                freeplay.camera = self.camera;
+                render_freeplay_scene(
+                    &mut ui_scene,
+                    freeplay,
+                    &self.camera,
+                    &self.weapon_asset,
+                    mouse_captured,
+                );
+            }
+            AppMode::Zombies => {
+                let before_move = self.camera.position;
+                self.zombies.update_player(
+                    &mut self.camera,
+                    &mut self.input,
+                    &mut self.walk_motion,
+                    &self.zombies_map,
+                    dt,
+                );
+                self.viewmodel_bob.update(
+                    horizontal_distance(before_move, self.camera.position),
+                    moving_on_ground(&self.input),
+                    dt,
+                );
+                self.zombies_map =
+                    zombies_world_with_runtime_overlays(&self.zombies_blueprint, &self.zombies);
+                if self.zombies.update_rounds_and_zombies(
+                    &self.zombies_map,
+                    self.camera.position,
+                    dt,
+                ) {
+                    self.audio_events.push(SoundEffect::PlayerHurt);
+                }
+                render_zombies_scene(
+                    &mut ui_scene,
+                    &self.camera,
+                    &self.zombies,
+                    &self.weapon_asset,
+                    self.viewmodel_bob.offset(),
+                    mouse_captured,
+                );
+            }
+            AppMode::DroneGateRunner => {
+                if let Some(effect) =
+                    self.drone_gate_runner
+                        .update_camera(&mut self.camera, &self.input, dt)
+                {
+                    self.audio_events.push(effect);
+                }
+                render_drone_gate_runner_scene(
+                    &mut ui_scene,
+                    &self.drone_gate_runner,
+                    mouse_captured,
+                );
+            }
             _ => unreachable!("GPU frame requested for an unsupported mode"),
         }
         let terrain = self
@@ -2208,11 +2393,101 @@ impl AppState {
             | TerrainWorldSource::MapEditor
             | TerrainWorldSource::MapPlaytest
             | TerrainWorldSource::Freeplay
-            | TerrainWorldSource::Zombies => {
-                // These requests are currently formed beside their already
-                // built reference scene, so this lazy fallback entry point is
-                // never selected for them.
-                unreachable!("a compatibility direct request retains its CPU scene")
+            | TerrainWorldSource::Zombies
+            | TerrainWorldSource::DroneGate => {
+                // The direct request was formed after simulation. Rebuild
+                // only presentation terrain from that exact state; never tick
+                // gameplay again while recovering from a GPU error.
+                let mut scene = if request.source == TerrainWorldSource::MapEditor {
+                    let editor = self
+                        .map_editor
+                        .as_ref()
+                        .expect("map editor mode requires editor state");
+                    self.map_builder.build_with_render_assets(
+                        editor.render_world(),
+                        &editor.render_assets(),
+                        &self.camera,
+                        self.tick,
+                    )
+                } else if request.source == TerrainWorldSource::CityShooter {
+                    let render_world = shooter_world_with_enemies(&self.doom_map, &self.shooter);
+                    self.city_builder
+                        .build(&render_world, &self.camera, self.tick)
+                } else if request.source == TerrainWorldSource::Zombies {
+                    let render_world = zombies_world_with_zombies(&self.zombies_map, &self.zombies);
+                    self.city_builder
+                        .build(&render_world, &self.camera, self.tick)
+                } else if request.source == TerrainWorldSource::MapViewer {
+                    self.map_builder.build(
+                        self.terrain_world(request.source),
+                        &self.camera,
+                        self.tick,
+                    )
+                } else {
+                    self.city_builder.build(
+                        self.terrain_world(request.source),
+                        &self.camera,
+                        self.tick,
+                    )
+                };
+                match request.source {
+                    TerrainWorldSource::AssetViewer => {
+                        render_asset_viewer_scene(&mut scene, &self.asset_viewer, mouse_captured)
+                    }
+                    TerrainWorldSource::MapViewer => render_map_viewer_scene(
+                        &mut scene,
+                        self.map_viewer
+                            .as_ref()
+                            .expect("map viewer mode requires viewer state"),
+                        mouse_captured,
+                    ),
+                    TerrainWorldSource::MapEditor => render_map_editor_scene(
+                        &mut scene,
+                        self.map_editor
+                            .as_ref()
+                            .expect("map editor mode requires editor state"),
+                        mouse_captured,
+                    ),
+                    TerrainWorldSource::MapPlaytest => {
+                        let playtest = self
+                            .map_playtest
+                            .as_ref()
+                            .expect("map playtest mode requires state");
+                        render_map_playtest_scene(&mut scene, playtest, mouse_captured);
+                        if playtest.mode == MapPlaytestMode::Shooter {
+                            render_map_playtest_shooter_scene(
+                                &mut scene,
+                                &self.camera,
+                                playtest,
+                                &self.weapon_asset,
+                            );
+                        }
+                    }
+                    TerrainWorldSource::Freeplay => render_freeplay_scene(
+                        &mut scene,
+                        self.freeplay
+                            .as_ref()
+                            .expect("freeplay mode requires state"),
+                        &self.camera,
+                        &self.weapon_asset,
+                        mouse_captured,
+                    ),
+                    TerrainWorldSource::Zombies => render_zombies_scene(
+                        &mut scene,
+                        &self.camera,
+                        &self.zombies,
+                        &self.weapon_asset,
+                        self.viewmodel_bob.offset(),
+                        mouse_captured,
+                    ),
+                    TerrainWorldSource::DroneGate => render_drone_gate_runner_scene(
+                        &mut scene,
+                        &self.drone_gate_runner,
+                        mouse_captured,
+                    ),
+                    _ => unreachable!(),
+                }
+                scene
             }
         }
     }
@@ -2238,6 +2513,7 @@ impl AppState {
             AppMode::VoxelSandbox => TerrainWorldSource::VoxelSandbox,
             AppMode::Zombies => TerrainWorldSource::Zombies,
             AppMode::Liminal => TerrainWorldSource::Liminal,
+            AppMode::DroneGateRunner => TerrainWorldSource::DroneGate,
             _ => return None,
         };
         let (assets, asset_voxels) = if source == TerrainWorldSource::MapEditor {
@@ -2312,6 +2588,7 @@ impl AppState {
             TerrainWorldSource::VoxelSandbox => &self.sandbox.world,
             TerrainWorldSource::Zombies => &self.zombies_map,
             TerrainWorldSource::Liminal => &self.liminal.world,
+            TerrainWorldSource::DroneGate => self.drone_gate_runner.render_world(),
         }
     }
 
@@ -3352,6 +3629,9 @@ struct DroneGateRunnerState {
     velocity: Vec3,
     best_streak: u64,
     elapsed: f32,
+    /// The render world is a post-simulation snapshot, retained so the GPU
+    /// request and a lazy CPU fallback observe the identical gate set.
+    render_world: VoxelWorld,
 }
 
 impl DroneGateRunnerState {
@@ -3371,7 +3651,7 @@ impl DroneGateRunnerState {
         let direction = horizontal(second_gate - first_gate);
         let start_position = first_gate - direction * DRONE_GATE_START_BACK;
         let start_position = Vec3::new(start_position.x, first_gate.y, start_position.z);
-        Self {
+        let mut state = Self {
             config,
             course,
             course_cursor,
@@ -3382,7 +3662,10 @@ impl DroneGateRunnerState {
             velocity: Vec3::ZERO,
             best_streak: 0,
             elapsed: 0.0,
-        }
+            render_world: VoxelWorld::new(),
+        };
+        state.refresh_render_world();
+        state
     }
 
     fn update_camera(
@@ -3447,15 +3730,18 @@ impl DroneGateRunnerState {
         self.elapsed += dt;
         if self.course.gates.is_empty() {
             self.previous_position = player_position;
+            self.refresh_render_world();
             return None;
         }
 
         if self.crossed_active_gate(self.previous_position, player_position) {
             self.advance_gate();
             self.previous_position = player_position;
+            self.refresh_render_world();
             return Some(SoundEffect::GateSuccess);
         }
         self.previous_position = player_position;
+        self.refresh_render_world();
         None
     }
 
@@ -3506,8 +3792,12 @@ impl DroneGateRunnerState {
             .map(|target| target.position)
     }
 
-    fn render_world(&self) -> VoxelWorld {
-        build_drone_gate_runner_world(self)
+    fn refresh_render_world(&mut self) {
+        self.render_world = build_drone_gate_runner_world(self);
+    }
+
+    fn render_world(&self) -> &VoxelWorld {
+        &self.render_world
     }
 
     fn visible_gate_range(&self) -> (usize, usize) {
@@ -8867,7 +9157,7 @@ fn build_map_catalog_from(maps: &MapCatalog) -> Vec<PreviewMap> {
         ),
         PreviewMap::new(
             "drone gate course",
-            drone_runner.render_world(),
+            drone_runner.render_world().clone(),
             drone_start_camera,
             "CLI generator",
         ),
@@ -18459,6 +18749,35 @@ mod tests {
             .expect("city terrain uses the direct request boundary");
         assert_eq!(request.source, TerrainWorldSource::City);
         assert!(!request.dynamic_voxels.is_empty());
+    }
+
+    #[test]
+    fn direct_eligible_frames_emit_post_simulation_requests_without_cpu_scenes() {
+        let mut app = AppState::new();
+        for mode in [AppMode::CityWalk, AppMode::CityShooter, AppMode::Zombies] {
+            app.mode = mode;
+            let before_tick = app.tick;
+            let presentation = app.frame_presentation(0.0, false, true);
+            assert_eq!(app.tick, before_tick.wrapping_add(1));
+            assert!(
+                presentation.cpu_scene.is_none(),
+                "{mode:?} retained a CPU terrain scene"
+            );
+            assert!(
+                presentation.terrain.is_some(),
+                "{mode:?} omitted its direct request"
+            );
+        }
+
+        app.start_drone_gate_runner();
+        let presentation = app.frame_presentation(0.0, false, true);
+        let request = presentation.terrain.expect("drone gate direct request");
+        assert_eq!(request.source, TerrainWorldSource::DroneGate);
+        assert!(std::ptr::eq(
+            app.terrain_world(request.source),
+            app.drone_gate_runner.render_world()
+        ));
+        assert!(presentation.cpu_scene.is_none());
     }
 
     #[test]
