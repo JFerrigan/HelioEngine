@@ -230,6 +230,16 @@ fn glyph_for(material: u32, intensity: f32) -> u32 {
 fn unpack_rgba(value: u32) -> vec4f {
   return vec4f(f32((value >> 24u) & 255u), f32((value >> 16u) & 255u), f32((value >> 8u) & 255u), f32(value & 255u)) / 255.0;
 }
+// Material, asset, and sky values are authored display-space sRGB colours.
+// Rgba8UnormSrgb targets expect linear fragment output and return linear
+// samples to the glyph compositor, preserving the CPU renderer's byte values.
+fn srgb_to_linear(channel: f32) -> f32 {
+  if (channel <= 0.04045) { return channel / 12.92; }
+  return pow((channel + 0.055) / 1.055, 2.4);
+}
+fn srgb_to_linear_colour(colour: vec3f) -> vec3f {
+  return vec3f(srgb_to_linear(colour.r), srgb_to_linear(colour.g), srgb_to_linear(colour.b));
+}
 @fragment fn fs_terrain(@builtin(position) position: vec4f) -> TerrainOut {
   let direction = ray_for_cell(position.xy);
   let world_hit = cast_world(camera.position_and_max_distance.xyz, direction);
@@ -239,13 +249,14 @@ fn unpack_rgba(value: u32) -> vec4f {
   if (!hit.hit) {
     let cell = u32(position.x) + u32(position.y) * 160u;
     let background = background_cells[cell];
-    return TerrainOut(background.glyph, unpack_rgba(background.foreground_rgba));
+    let colour = unpack_rgba(background.foreground_rgba);
+    return TerrainOut(background.glyph, vec4f(srgb_to_linear_colour(colour.rgb), colour.a));
   }
   let light = max(dot(hit.normal, normalize(vec3f(-0.35, 0.75, -0.55))), 0.0);
   let distance_fade = clamp(1.0 - hit.distance / 180000.0, 0.2, 1.0);
   let intensity = light * 0.7 + distance_fade * 0.3;
   let brightness = clamp(0.48 + light * 0.52, 0.35, 1.0);
   let colour = material_colour(hit.material) * brightness * select(1.0, 0.55, hit.ghost != 0u);
-  return TerrainOut(glyph_for(hit.material, intensity), vec4f(colour, 1.0));
+  return TerrainOut(glyph_for(hit.material, intensity), vec4f(srgb_to_linear_colour(colour), 1.0));
 }
 @fragment fn fs_diagnostic() -> @location(0) vec4f { return vec4f(0.0, 0.0, 0.0, 1.0); }

@@ -479,6 +479,9 @@ struct PresentationUniform {
     physical_size: [f32; 2],
     logical_size: [f32; 2],
     scale_and_origin: [f32; 4],
+    /// One when the final render target performs linear-to-sRGB encoding.
+    /// The compositor encodes explicitly for the rare non-sRGB surface format.
+    surface_is_srgb: [u32; 4],
 }
 
 /// Per-frame terrain-cache synchronization input. `lookup` is the complete
@@ -1118,7 +1121,10 @@ impl<'window> SurfaceRenderer<'window> {
         self.queue.write_buffer(
             &self.presentation,
             0,
-            bytemuck::bytes_of(&presentation_uniform(self.size)),
+            bytemuck::bytes_of(&presentation_uniform(
+                self.size,
+                self.config.format.is_srgb(),
+            )),
         );
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1574,7 +1580,10 @@ fn create_terrain_pipeline(
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
                 Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    // Authored terrain colours are sRGB bytes. The terrain
+                    // shader writes their linear equivalents, and the sRGB
+                    // target preserves the authored bytes for the glyph pass.
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
@@ -1608,7 +1617,7 @@ impl LogicalTargets {
         let glyph_texture = create("heliobound logical glyph IDs", wgpu::TextureFormat::R32Uint);
         let colour_texture = create(
             "heliobound logical glyph colours",
-            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
         );
         Self {
             glyphs: glyph_texture.create_view(&wgpu::TextureViewDescriptor::default()),
@@ -1674,7 +1683,7 @@ fn create_glyph_atlas(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Textu
     texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-fn presentation_uniform(size: PhysicalSize<u32>) -> PresentationUniform {
+fn presentation_uniform(size: PhysicalSize<u32>, surface_is_srgb: bool) -> PresentationUniform {
     let scale = ((size.width / LOGICAL_WIDTH).min(size.height / LOGICAL_HEIGHT)).max(1) as f32;
     let used_width = LOGICAL_WIDTH as f32 * scale;
     let used_height = LOGICAL_HEIGHT as f32 * scale;
@@ -1687,6 +1696,7 @@ fn presentation_uniform(size: PhysicalSize<u32>) -> PresentationUniform {
             (size.height as f32 - used_height) * 0.5,
             0.0,
         ],
+        surface_is_srgb: [surface_is_srgb as u32, 0, 0, 0],
     }
 }
 
@@ -2349,6 +2359,204 @@ mod tests {
                 })
                 .collect()
         }
+
+        /// Exercise the final glyph, UI, sprite, and overlay compositor against
+        /// a readback target. This is deliberately separate from logical DDA
+        /// parity: a correct terrain target can still present wrong bytes.
+        fn render_presentation(&self, format: wgpu::TextureFormat) -> Vec<u8> {
+            let size = PhysicalSize::new(LOGICAL_WIDTH * 8, LOGICAL_HEIGHT * 8);
+            let targets = LogicalTargets::new(&self.device);
+            let atlas = create_glyph_atlas(&self.device, &self.queue);
+            let presentation = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("heliobound offscreen presentation uniform"),
+                size: std::mem::size_of::<PresentationUniform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.queue.write_buffer(
+                &presentation,
+                0,
+                bytemuck::bytes_of(&presentation_uniform(size, format.is_srgb())),
+            );
+            let glyph_layout = create_glyph_bind_group_layout(&self.device);
+            let glyph_bind_group = create_glyph_bind_group(
+                &self.device,
+                &glyph_layout,
+                &targets,
+                &atlas,
+                &presentation,
+            );
+            let glyph_pipeline = create_glyph_pipeline(&self.device, format, &glyph_layout);
+            let ui_layout = create_ui_bind_group_layout(&self.device);
+            let scene_cells =
+                [UiCell::new(11, 10, 'A', 0xf0_c6_5b_ff).with_background(0x0c_22_38_ff)];
+            let overlay_cells =
+                [UiCell::new(10, 10, 'A', 0xc8_dc_f0_ff).with_background(0x1a_24_36_ff)];
+            let scene_ui = UiGpuBuffer::new(&self.device, &ui_layout, &atlas, &presentation);
+            let overlay_ui = UiGpuBuffer::new(&self.device, &ui_layout, &atlas, &presentation);
+            self.queue
+                .write_buffer(&scene_ui.cells, 0, bytemuck::cast_slice(&scene_cells));
+            self.queue
+                .write_buffer(&overlay_ui.cells, 0, bytemuck::cast_slice(&overlay_cells));
+            let ui_pipeline = create_ui_pipeline(&self.device, format, &ui_layout);
+            let sprite_layout = create_sprite_bind_group_layout(&self.device);
+            let sprites = SpriteGpuBuffer::new(&self.device, &sprite_layout, &presentation);
+            let sprite = PixelSprite {
+                x: 200,
+                y: 200,
+                scale: 1,
+                flags: PixelSprite::OPAQUE_BACKGROUND,
+                foreground_rgba: 0xff_50_78_ff,
+                background_rgba: 0x0a_14_1e_ff,
+                rows: [0x8000; 16],
+            };
+            self.queue
+                .write_buffer(&sprites.sprites, 0, bytemuck::bytes_of(&sprite));
+            let sprite_pipeline = create_sprite_pipeline(&self.device, format, &sprite_layout);
+
+            let mut glyphs = vec![0u32; (LOGICAL_WIDTH * LOGICAL_HEIGHT) as usize];
+            let mut colours = vec![[0u8; 4]; (LOGICAL_WIDTH * LOGICAL_HEIGHT) as usize];
+            let terrain = 3 + 3 * LOGICAL_WIDTH as usize;
+            let sky = 5 + 3 * LOGICAL_WIDTH as usize;
+            glyphs[terrain] = '#' as u32;
+            colours[terrain] = [0xa8, 0x86, 0x62, 255];
+            glyphs[sky] = '.' as u32;
+            colours[sky] = [0x50, 0x58, 0x66, 255];
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &targets.glyph_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytemuck::cast_slice(&glyphs),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(LOGICAL_WIDTH * 4),
+                    rows_per_image: Some(LOGICAL_HEIGHT),
+                },
+                wgpu::Extent3d {
+                    width: LOGICAL_WIDTH,
+                    height: LOGICAL_HEIGHT,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &targets.colour_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytemuck::cast_slice(&colours),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(LOGICAL_WIDTH * 4),
+                    rows_per_image: Some(LOGICAL_HEIGHT),
+                },
+                wgpu::Extent3d {
+                    width: LOGICAL_WIDTH,
+                    height: LOGICAL_HEIGHT,
+                    depth_or_array_layers: 1,
+                },
+            );
+            let output = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("heliobound offscreen final presentation"),
+                size: wgpu::Extent3d {
+                    width: size.width,
+                    height: size.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = output.create_view(&wgpu::TextureViewDescriptor::default());
+            let readback = readback_buffer(
+                &self.device,
+                "heliobound offscreen final presentation readback",
+                (size.width * size.height * 4) as u64,
+            );
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("heliobound offscreen final compositor encoder"),
+                });
+            let mut draw = |pipeline: &wgpu::RenderPipeline,
+                            bind_group: &wgpu::BindGroup,
+                            vertices,
+                            instances,
+                            load| {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("heliobound offscreen compositor pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.draw(0..vertices, 0..instances);
+            };
+            draw(
+                &glyph_pipeline,
+                &glyph_bind_group,
+                3,
+                1,
+                wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            );
+            draw(&ui_pipeline, &scene_ui.bind_group, 6, 1, wgpu::LoadOp::Load);
+            draw(
+                &sprite_pipeline,
+                &sprites.bind_group,
+                6,
+                1,
+                wgpu::LoadOp::Load,
+            );
+            draw(
+                &ui_pipeline,
+                &overlay_ui.bind_group,
+                6,
+                1,
+                wgpu::LoadOp::Load,
+            );
+            drop(draw);
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &output,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(size.width * 4),
+                        rows_per_image: Some(size.height),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: size.width,
+                    height: size.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.queue.submit([encoder.finish()]);
+            map_readback(&self.device, &readback)
+        }
     }
 
     fn readback_buffer(device: &wgpu::Device, label: &'static str, size: u64) -> wgpu::Buffer {
@@ -2472,6 +2680,115 @@ mod tests {
         )
         .validate(&module)
         .expect("glyph compositor WGSL must validate");
+    }
+
+    #[test]
+    fn adapter_backed_final_compositor_preserves_authored_srgb_bytes() {
+        let Some(gpu) = OffscreenTerrainReadback::new() else {
+            eprintln!("skipping GPU presentation parity fixture: no adapter is available");
+            return;
+        };
+        let srgb = gpu.render_presentation(wgpu::TextureFormat::Rgba8UnormSrgb);
+        let fallback = gpu.render_presentation(wgpu::TextureFormat::Rgba8Unorm);
+        let ink = glyph_ink_pixel('A');
+        let blank = glyph_blank_pixel('A');
+        let checks = [
+            // Terrain material colour and deterministic sky colour pass through
+            // the sRGB logical target and final glyph compositor.
+            (
+                3 * 8 + glyph_ink_pixel('#').0,
+                3 * 8 + glyph_ink_pixel('#').1,
+                [0xa8, 0x86, 0x62, 255],
+                "terrain material",
+            ),
+            (
+                5 * 8 + glyph_ink_pixel('.').0,
+                3 * 8 + glyph_ink_pixel('.').1,
+                [0x50, 0x58, 0x66, 255],
+                "sky",
+            ),
+            // Styled scene UI preserves foreground and opaque background.
+            (
+                11 * 8 + ink.0,
+                10 * 8 + ink.1,
+                [0xf0, 0xc6, 0x5b, 255],
+                "scene UI foreground",
+            ),
+            (
+                11 * 8 + blank.0,
+                10 * 8 + blank.1,
+                [0x0c, 0x22, 0x38, 255],
+                "scene UI background",
+            ),
+            // Final overlay is painter-ordered after UI and sprites.
+            (
+                10 * 8 + ink.0,
+                10 * 8 + ink.1,
+                [0xc8, 0xdc, 0xf0, 255],
+                "overlay text foreground",
+            ),
+            (
+                10 * 8 + blank.0,
+                10 * 8 + blank.1,
+                [0x1a, 0x24, 0x36, 255],
+                "overlay text background",
+            ),
+            (200, 200, [0xff, 0x50, 0x78, 255], "pixel sprite foreground"),
+            (201, 200, [0x0a, 0x14, 0x1e, 255], "pixel sprite background"),
+        ];
+        for (x, y, expected, label) in checks {
+            let presented = presentation_pixel(&srgb, x, y);
+            let fallback_presented = presentation_pixel(&fallback, x, y);
+            assert_rgba_near(presented, expected, label);
+            assert_rgba_near(fallback_presented, expected, label);
+            assert_rgba_near(
+                fallback_presented,
+                presented,
+                "sRGB and non-sRGB presentation equivalence",
+            );
+        }
+    }
+
+    fn glyph_ink_pixel(glyph: char) -> (u32, u32) {
+        let rows = BASIC_FONTS
+            .get(glyph)
+            .expect("test glyph is present in font atlas");
+        for (y, row) in rows.iter().enumerate() {
+            for x in 0..8 {
+                if row & (1 << x) != 0 {
+                    return (x, y as u32);
+                }
+            }
+        }
+        panic!("test glyph must contain ink");
+    }
+
+    fn glyph_blank_pixel(glyph: char) -> (u32, u32) {
+        let rows = BASIC_FONTS
+            .get(glyph)
+            .expect("test glyph is present in font atlas");
+        for (y, row) in rows.iter().enumerate() {
+            for x in 0..8 {
+                if row & (1 << x) == 0 {
+                    return (x, y as u32);
+                }
+            }
+        }
+        panic!("test glyph must contain a blank pixel");
+    }
+
+    fn presentation_pixel(bytes: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let index = ((y * LOGICAL_WIDTH * 8 + x) * 4) as usize;
+        bytes[index..index + 4].try_into().expect("RGBA pixel")
+    }
+
+    fn assert_rgba_near(actual: [u8; 4], expected: [u8; 4], label: &str) {
+        for channel in 0..4 {
+            assert!(
+                (actual[channel] as i16 - expected[channel] as i16).abs() <= 1,
+                "{label}: expected {expected:?}, received {actual:?}"
+            );
+        }
     }
 
     #[test]

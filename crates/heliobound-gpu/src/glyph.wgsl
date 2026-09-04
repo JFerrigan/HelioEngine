@@ -4,6 +4,7 @@ struct Presentation {
   physical_size: vec2f,
   logical_size: vec2f,
   scale_and_origin: vec4f,
+  surface_is_srgb: vec4u,
 };
 struct FullscreenOut { @builtin(position) position: vec4f };
 
@@ -23,6 +24,25 @@ fn atlas_bit(glyph: u32, pixel: vec2u) -> f32 {
 fn physical_to_cell(pixel: vec2f) -> vec2i {
   return vec2i(floor((pixel - presentation.scale_and_origin.yz) / presentation.scale_and_origin.x));
 }
+fn srgb_to_linear(channel: f32) -> f32 {
+  if (channel <= 0.04045) { return channel / 12.92; }
+  return pow((channel + 0.055) / 1.055, 2.4);
+}
+fn linear_to_srgb(channel: f32) -> f32 {
+  if (channel <= 0.0031308) { return channel * 12.92; }
+  return 1.055 * pow(channel, 1.0 / 2.4) - 0.055;
+}
+fn authored_srgb_to_linear(colour: vec4f) -> vec4f {
+  return vec4f(
+    srgb_to_linear(colour.r), srgb_to_linear(colour.g), srgb_to_linear(colour.b), colour.a
+  );
+}
+fn presentation_colour(colour: vec4f, surface_is_srgb: u32) -> vec4f {
+  if (surface_is_srgb != 0u) { return colour; }
+  return vec4f(
+    linear_to_srgb(colour.r), linear_to_srgb(colour.g), linear_to_srgb(colour.b), colour.a
+  );
+}
 @fragment fn fs_glyph(@builtin(position) position: vec4f) -> @location(0) vec4f {
   let cell = physical_to_cell(position.xy);
   if (any(cell < vec2i(0)) || cell.x >= i32(presentation.logical_size.x) || cell.y >= i32(presentation.logical_size.y)) { return vec4f(0.0, 0.0, 0.0, 1.0); }
@@ -32,7 +52,7 @@ fn physical_to_cell(pixel: vec2f) -> vec2i {
   let glyph_pixel = (local * vec2u(8u)) / u32(presentation.scale_and_origin.x);
   let glyph = textureLoad(glyph_ids, cell, 0).r;
   let colour = textureLoad(glyph_colours, cell, 0);
-  return vec4f(colour.rgb * atlas_bit(glyph, glyph_pixel), 1.0);
+  return presentation_colour(vec4f(colour.rgb * atlas_bit(glyph, glyph_pixel), 1.0), presentation.surface_is_srgb.x);
 }
 
 struct UiCell { x: i32, y: i32, glyph: u32, flags: u32, foreground_rgba: u32, background_rgba: u32 };
@@ -66,8 +86,8 @@ fn unpack_rgba(value: u32) -> vec4f {
 @fragment fn fs_ui(in: UiOut) -> @location(0) vec4f {
   let local = vec2u((vec2f(in.position.xy) - ui_presentation.scale_and_origin.yz - vec2f(in.cell) * ui_presentation.scale_and_origin.x) * 8.0 / ui_presentation.scale_and_origin.x);
   let atlas = vec2i(i32((in.glyph & 255u) % 16u) * 8 + i32(local.x), i32((in.glyph & 255u) / 16u) * 8 + i32(local.y));
-  if (textureLoad(ui_atlas, atlas, 0).r > 0.5) { return unpack_rgba(in.foreground); }
-  if ((in.flags & 1u) != 0u) { return unpack_rgba(in.background); }
+  if (textureLoad(ui_atlas, atlas, 0).r > 0.5) { return presentation_colour(authored_srgb_to_linear(unpack_rgba(in.foreground)), ui_presentation.surface_is_srgb.x); }
+  if ((in.flags & 1u) != 0u) { return presentation_colour(authored_srgb_to_linear(unpack_rgba(in.background)), ui_presentation.surface_is_srgb.x); }
   return vec4f(0.0);
 }
 
@@ -103,7 +123,7 @@ struct SpriteOut {
   let origin = sprite_presentation.scale_and_origin.yz + vec2f(f32(source.x), f32(source.y)) * factor;
   let source_pixel = vec2u(floor((in.position.xy - origin) / (factor * f32(source.scale))));
   let bit = (source.rows[source_pixel.y] & (1u << (15u - source_pixel.x))) != 0u;
-  if (bit) { return unpack_rgba(source.foreground_rgba); }
-  if ((source.flags & 1u) != 0u) { return unpack_rgba(source.background_rgba); }
+  if (bit) { return presentation_colour(authored_srgb_to_linear(unpack_rgba(source.foreground_rgba)), sprite_presentation.surface_is_srgb.x); }
+  if ((source.flags & 1u) != 0u) { return presentation_colour(authored_srgb_to_linear(unpack_rgba(source.background_rgba)), sprite_presentation.surface_is_srgb.x); }
   return vec4f(0.0);
 }
