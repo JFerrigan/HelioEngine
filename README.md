@@ -5,6 +5,12 @@ worlds through a 3D voxel simulation rendered as a crisp 2D ASCII interface.
 It is designed as an engine foundation: a spatial substrate that can grow into
 systems for exploration, environments, authored scenarios, and simulation.
 
+## In action
+
+| Corn Maze | Map Editor |
+| --- | --- |
+| ![Corn Maze gameplay rendered in Heliobound's ASCII interface](assets/screenshots/cornmaze.png) | ![Heliobound map editor rendering a voxel city](assets/screenshots/editor.png) |
+
 ## Highlights
 
 - A sparse, chunked voxel world with typed materials and negative-space support.
