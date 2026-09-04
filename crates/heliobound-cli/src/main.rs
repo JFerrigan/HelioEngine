@@ -18781,6 +18781,100 @@ mod tests {
     }
 
     #[test]
+    fn direct_route_entries_advance_once_and_borrow_their_authoritative_world() {
+        let mut app = AppState::new();
+        let routes: &[(fn(&mut AppState), TerrainWorldSource)] = &[
+            (AppState::start_city, TerrainWorldSource::City),
+            (AppState::start_shooter, TerrainWorldSource::CityShooter),
+            (AppState::start_corn_maze, TerrainWorldSource::CornMaze),
+            (AppState::start_bar, TerrainWorldSource::Bar),
+            (
+                AppState::start_asset_viewer,
+                TerrainWorldSource::AssetViewer,
+            ),
+            (AppState::start_map_viewer, TerrainWorldSource::MapViewer),
+            (
+                AppState::start_voxel_sandbox,
+                TerrainWorldSource::VoxelSandbox,
+            ),
+            (AppState::start_zombies, TerrainWorldSource::Zombies),
+            (AppState::start_liminal, TerrainWorldSource::Liminal),
+            (
+                AppState::start_drone_gate_runner,
+                TerrainWorldSource::DroneGate,
+            ),
+        ];
+        for &(start, source) in routes {
+            start(&mut app);
+            let before_tick = app.tick;
+            let presentation = app.frame_presentation(0.0, false, true);
+            let request = presentation
+                .terrain
+                .expect("finite non-Echolocation route must emit a direct request");
+            assert_eq!(app.tick, before_tick.wrapping_add(1));
+            assert_eq!(request.source, source);
+            assert!(presentation.cpu_scene.is_none());
+            assert!(std::ptr::eq(
+                app.terrain_world(request.source),
+                app.terrain_world(source)
+            ));
+        }
+
+        app.start_map_editor();
+        app.handle_keyboard(&PhysicalKey::Code(KeyCode::Enter), ElementState::Pressed);
+        let before_tick = app.tick;
+        let presentation = app.frame_presentation(0.0, false, true);
+        let request = presentation.terrain.expect("opened editor direct request");
+        assert_eq!(app.tick, before_tick.wrapping_add(1));
+        assert_eq!(request.source, TerrainWorldSource::MapEditor);
+        assert!(presentation.cpu_scene.is_none());
+
+        app.start_map_playtest(MapPlaytestMode::Shooter);
+        let before_tick = app.tick;
+        let presentation = app.frame_presentation(0.0, false, true);
+        let request = presentation.terrain.expect("playtest direct request");
+        assert_eq!(app.tick, before_tick.wrapping_add(1));
+        assert_eq!(request.source, TerrainWorldSource::MapPlaytest);
+        assert!(presentation.cpu_scene.is_none());
+
+        app.start_freeplay_menu();
+        app.start_freeplay();
+        let before_tick = app.tick;
+        let presentation = app.frame_presentation(0.0, false, true);
+        let request = presentation
+            .terrain
+            .expect("non-Echolocation freeplay direct request");
+        assert_eq!(app.tick, before_tick.wrapping_add(1));
+        assert_eq!(request.source, TerrainWorldSource::Freeplay);
+        assert!(presentation.cpu_scene.is_none());
+    }
+
+    #[test]
+    fn lazy_cpu_fallback_reuses_the_post_update_direct_snapshot_without_another_tick() {
+        let mut app = AppState::new();
+        app.start_zombies();
+        let before_tick = app.tick;
+        let presentation = app.frame_presentation(0.0, false, true);
+        let request = presentation
+            .terrain
+            .expect("zombies supplies direct terrain after simulation");
+        assert!(presentation.cpu_scene.is_none());
+        assert_eq!(app.tick, before_tick.wrapping_add(1));
+
+        // This is the same lazy path used after a renderer initialization or
+        // submission error. It rebuilds presentation only; simulation remains
+        // at the successful direct request's post-update tick.
+        let fallback = app.cpu_scene_for_terrain(&request, false);
+        assert_eq!(app.tick, before_tick.wrapping_add(1));
+        assert_eq!(fallback.viewport, VIEWPORT);
+
+        let mut stats = GpuFrameStats::default();
+        stats.backend = GpuBackend::CpuFallback;
+        stats.fallback_reason = Some("injected submission failure".to_string());
+        assert!(stats.status_line().contains("injected submission failure"));
+    }
+
+    #[test]
     fn gpu_terrain_overlay_conversion_excludes_cpu_terrain_layers() {
         let mut scene = Scene::new(VIEWPORT);
         scene.layers.push(Layer {

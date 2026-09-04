@@ -25,10 +25,9 @@
 ## Latest integration check
 
 - The CLI now has an explicit post-simulation `FramePresentation` boundary.
-  Corn Maze, Bar, Voxel Sandbox, and Liminal can supply an authoritative
-  static-world terrain request without cloning their world; modes with dynamic
-  voxel actors, mixed-resolution assets, or Echolocation face filtering remain
-  on the CPU reference path.
+  Every finite non-Echolocation route supplies an authoritative borrowed-world
+  direct terrain request after one simulation update; Planet Flight and all
+  Echolocation terrain remain CPU-reference paths.
 - `HELIOBOUND_RENDERER=gpu` initializes the direct surface and exercises the
   GPU terrain cache, logical 160×90 glyph target, font8x8 atlas compositor,
   and UI-cell pass for those static-world requests. An initialization or frame
@@ -82,24 +81,29 @@
   use that boundary, so no interactive caller can accidentally retain a prior
   frame's transient UI/sprite/overlay buffers. This is a renderer-boundary
   hardening step, not direct-terrain parity for the compatibility modes.
-- Direct terrain requests now include an ordered, frame-local dynamic voxel
-  buffer with separate GPU capacity/count telemetry. It replaces transient
-  solids every submitted frame and never invalidates static chunk residency.
-  This has shader/unit validation only; dynamic-mode eligibility and
-  asset-local DDA parity remain pending.
+- Direct terrain requests include ordered, frame-local dynamic voxel and
+  mixed-resolution asset buffers with separate capacity/count telemetry.
+  Dynamic entries replace or remove static solids without invalidating static
+  chunk residency, and assets retain quarter-turn transforms, pivots, scales,
+  custom colors, ghost dimming, and normals.
+- Adapter-backed readback now compares empty and populated dynamic/asset
+  buffers with the CPU asset-aware reference, including dynamic replacements,
+  removals, static/dynamic/asset tie ordering, geometry beyond static bounds,
+  and custom/ghost assets across all quarter-turn yaws. These are automated
+  parity fixtures only; they do not substitute for interactive desktop checks.
 
-This verifies the current static terrain glyph/color contract on the covered
-fixtures only. The generic compositor routes all application modes through the
-GPU by default, but complete adapter-backed parity fixtures for dynamic worlds,
-assets, procedural planets, and Echolocation remain future verification work.
+This verifies the direct finite non-Echolocation terrain glyph/color contract
+on the covered automated fixtures only. Planet Flight and Echolocation retain
+CPU terrain, and desktop visual validation remains pending before any runtime
+eligibility claim changes.
 
 Latest automated check: `cargo test --workspace` passed on 2026-09-03,
-including 201 CLI tests and 6 GPU tests; 2 documented CLI tests remain
+including 208 CLI tests and 7 GPU tests; 2 documented CLI tests remain
 ignored.
 
-Next: manually exercise Corn Maze, Bar, Voxel Sandbox, and Liminal with
-`HELIOBOUND_RENDERER=gpu`, including resize/minimize recovery and edited
-static geometry, before expanding GPU eligibility.
+Next: manually exercise the direct finite routes with `HELIOBOUND_RENDERER=gpu`,
+including resize/minimize recovery, dynamic actors/doors, and transformed
+assets, before changing desktop eligibility claims.
 
 ## Runtime validation attempt — 2026-09-03
 

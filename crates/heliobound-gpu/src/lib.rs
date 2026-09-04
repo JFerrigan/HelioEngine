@@ -2053,7 +2053,10 @@ fn create_graphics_pipeline(
 mod tests {
     use super::*;
     use heliobound_core::{Vec3, VoxelCell, VoxelCoord, VoxelWorld};
-    use heliobound_gfx::{background_glyph_for_direction, raycast, MaterialGlyphMap};
+    use heliobound_gfx::{
+        background_glyph_for_direction, raycast, GraphicsConfig, MaterialGlyphMap,
+        RenderAsset as CpuRenderAsset, SceneBuilder, Viewport,
+    };
     use std::sync::mpsc;
 
     /// Adapter-backed test helper. It renders the same logical 160 by 90
@@ -2102,8 +2105,49 @@ mod tests {
             })
         }
 
-        fn render(&self, world: &VoxelWorld, camera: Camera) -> Vec<(u32, [u8; 4])> {
-            let bounds = world.bounds().expect("parity fixture must not be empty");
+        fn render(
+            &self,
+            world: &VoxelWorld,
+            camera: Camera,
+            dynamic_voxels: &[DynamicVoxel],
+            assets: &[RenderAsset],
+            asset_voxels: &[AssetVoxel],
+        ) -> Vec<(u32, [u8; 4])> {
+            // Dynamic cells and asset broad-phase bounds must participate in
+            // the slab just as they do in the interactive request path. This
+            // intentionally permits an otherwise empty static world.
+            let mut bounds = world.bounds();
+            for voxel in dynamic_voxels {
+                let coord = VoxelCoord::new(voxel.x, voxel.y, voxel.z);
+                match &mut bounds {
+                    Some(bounds) => bounds.include(coord),
+                    None => bounds = Some(VoxelBounds::new(coord)),
+                }
+            }
+            for asset in assets {
+                let min = VoxelCoord::new(
+                    asset.min[0].floor() as i32,
+                    asset.min[1].floor() as i32,
+                    asset.min[2].floor() as i32,
+                );
+                let max = VoxelCoord::new(
+                    (asset.max[0].ceil() as i32).saturating_sub(1),
+                    (asset.max[1].ceil() as i32).saturating_sub(1),
+                    (asset.max[2].ceil() as i32).saturating_sub(1),
+                );
+                match &mut bounds {
+                    Some(bounds) => {
+                        bounds.include(min);
+                        bounds.include(max);
+                    }
+                    None => {
+                        let mut asset_bounds = VoxelBounds::new(min);
+                        asset_bounds.include(max);
+                        bounds = Some(asset_bounds);
+                    }
+                }
+            }
+            let bounds = bounds.expect("parity fixture must contain geometry");
             let min = ChunkCoord::new(
                 bounds.min.x.div_euclid(CHUNK_EDGE as i32),
                 bounds.min.y.div_euclid(CHUNK_EDGE as i32),
@@ -2166,12 +2210,21 @@ mod tests {
             );
             self.queue
                 .write_buffer(&background_buffer, 0, bytemuck::cast_slice(&background));
-            let dynamic_buffer =
-                create_storage_buffer(&self.device, "heliobound offscreen dynamic voxels", 4);
-            let asset_buffer =
-                create_storage_buffer(&self.device, "heliobound offscreen render assets", 24);
-            let asset_voxel_buffer =
-                create_storage_buffer(&self.device, "heliobound offscreen render asset voxels", 4);
+            let dynamic_buffer = create_storage_buffer(
+                &self.device,
+                "heliobound offscreen dynamic voxels",
+                (dynamic_voxels.len().max(1) * std::mem::size_of::<DynamicVoxel>()) as u64,
+            );
+            let asset_buffer = create_storage_buffer(
+                &self.device,
+                "heliobound offscreen render assets",
+                (assets.len().max(1) * std::mem::size_of::<RenderAsset>()) as u64,
+            );
+            let asset_voxel_buffer = create_storage_buffer(
+                &self.device,
+                "heliobound offscreen render asset voxels",
+                (asset_voxels.len().max(1) * std::mem::size_of::<AssetVoxel>()) as u64,
+            );
             for update in &updates {
                 self.queue.write_buffer(
                     &voxel_buffer,
@@ -2179,6 +2232,23 @@ mod tests {
                     bytemuck::cast_slice(&update.upload.voxels),
                 );
             }
+            if !dynamic_voxels.is_empty() {
+                self.queue
+                    .write_buffer(&dynamic_buffer, 0, bytemuck::cast_slice(dynamic_voxels));
+            }
+            if !assets.is_empty() {
+                self.queue
+                    .write_buffer(&asset_buffer, 0, bytemuck::cast_slice(assets));
+            }
+            if !asset_voxels.is_empty() {
+                self.queue
+                    .write_buffer(&asset_voxel_buffer, 0, bytemuck::cast_slice(asset_voxels));
+            }
+            let mut camera_uniform = camera_uniform;
+            camera_uniform.table_dimensions_and_padding[3] = dynamic_voxels.len() as u32;
+            camera_uniform.up_and_padding[3] = assets.len() as f32;
+            self.queue
+                .write_buffer(&camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
             let bind_group = create_terrain_bind_group(
                 &self.device,
                 &self.terrain_layout,
@@ -2411,7 +2481,7 @@ mod tests {
             return;
         };
         for (name, world, camera) in parity_fixtures() {
-            let actual = gpu.render(&world, camera);
+            let actual = gpu.render(&world, camera, &[], &[], &[]);
             let materials = MaterialGlyphMap;
             for y in 0..LOGICAL_HEIGHT as usize {
                 for x in 0..LOGICAL_WIDTH as usize {
@@ -2460,6 +2530,239 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn adapter_backed_dynamic_and_asset_terrain_matches_cpu_reference() {
+        let Some(gpu) = OffscreenTerrainReadback::new() else {
+            eprintln!("skipping GPU dynamic/asset parity fixtures: no adapter is available");
+            return;
+        };
+
+        let mut static_world = VoxelWorld::new();
+        fill(
+            &mut static_world,
+            VoxelCoord::new(-6, 0, 8),
+            VoxelCoord::new(6, 0, 18),
+            VoxelMaterial::Stone,
+        );
+        static_world.set(
+            VoxelCoord::new(0, 2, 11),
+            VoxelCell::new(VoxelMaterial::Gate),
+        );
+        static_world.set(
+            VoxelCoord::new(2, 2, 11),
+            VoxelCell::new(VoxelMaterial::PuzzleDoor),
+        );
+        static_world.set(
+            VoxelCoord::new(-2, 2, 11),
+            VoxelCell::new(VoxelMaterial::Gate),
+        );
+
+        // This is the same authoritative post-simulation world that the CPU
+        // fallback renders: a replacement, an opened door, and geometry past
+        // the original static edge.
+        let dynamic = [
+            DynamicVoxel {
+                x: 0,
+                y: 2,
+                z: 11,
+                material: encode_voxel(VoxelMaterial::Receiver),
+            },
+            DynamicVoxel {
+                x: 2,
+                y: 2,
+                z: 11,
+                material: 0,
+            },
+            DynamicVoxel {
+                x: 0,
+                y: 2,
+                z: 11,
+                material: encode_voxel(VoxelMaterial::Beacon),
+            },
+            DynamicVoxel {
+                x: 0,
+                y: 3,
+                z: 24,
+                material: encode_voxel(VoxelMaterial::CarbonLife),
+            },
+        ];
+        let mut assembled = static_world.clone();
+        assembled.set(
+            VoxelCoord::new(0, 2, 11),
+            VoxelCell::new(VoxelMaterial::Beacon),
+        );
+        assembled.clear(VoxelCoord::new(2, 2, 11));
+        assembled.set(
+            VoxelCoord::new(0, 3, 24),
+            VoxelCell::new(VoxelMaterial::CarbonLife),
+        );
+
+        let mut cpu_assets = Vec::new();
+        let mut gpu_assets = Vec::new();
+        let mut gpu_asset_voxels = Vec::new();
+        // Exact ties are intentional: static terrain wins at -2, while the
+        // later dynamic entry wins the same static coordinate at 0.
+        for x in [-2.0, 0.0] {
+            let anchor = Vec3::new(x, 2.0, 11.0);
+            let mut voxels = std::collections::HashMap::new();
+            voxels.insert(
+                VoxelCoord::new(0, 0, 0),
+                VoxelMaterial::Custom([240, 60, 80]),
+            );
+            cpu_assets.push(CpuRenderAsset {
+                min: anchor,
+                max: anchor + Vec3::new(1.0, 1.0, 1.0),
+                voxels,
+                dimensions: [1, 1, 1],
+                voxel_size: 1.0,
+                pivot: [0.0; 3],
+                anchor,
+                yaw_degrees: 0,
+                ghost: false,
+            });
+            let offset = gpu_asset_voxels.len() as u32;
+            gpu_asset_voxels.push(AssetVoxel {
+                x: 0,
+                y: 0,
+                z: 0,
+                material: encode_voxel(VoxelMaterial::Custom([240, 60, 80])),
+            });
+            gpu_assets.push(RenderAsset {
+                min: [anchor.x, anchor.y, anchor.z, 0.0],
+                max: [anchor.x + 1.0, anchor.y + 1.0, anchor.z + 1.0, 0.0],
+                anchor: [anchor.x, anchor.y, anchor.z, 0.0],
+                voxel_size: 1.0,
+                yaw_degrees: 0.0,
+                ghost: 0,
+                voxel_offset: offset,
+                dimensions: [1, 1, 1, 1],
+                pivot: [0.0; 4],
+            });
+        }
+        for (turn, yaw) in [0_u16, 90, 180, 270].into_iter().enumerate() {
+            let anchor = Vec3::new(-3.0 + turn as f32 * 2.0, 1.0, 14.0 + turn as f32);
+            let mut voxels = std::collections::HashMap::new();
+            voxels.insert(
+                VoxelCoord::new(0, 0, 0),
+                VoxelMaterial::Custom([20, 180, 240]),
+            );
+            voxels.insert(VoxelCoord::new(1, 1, 1), VoxelMaterial::Beacon);
+            cpu_assets.push(CpuRenderAsset {
+                min: anchor - Vec3::new(0.5, 0.0, 0.5),
+                max: anchor + Vec3::new(0.5, 1.0, 0.5),
+                voxels,
+                dimensions: [2, 2, 2],
+                voxel_size: 0.5,
+                pivot: [1.0, 0.0, 1.0],
+                anchor,
+                yaw_degrees: yaw,
+                ghost: turn % 2 == 1,
+            });
+            let offset = gpu_asset_voxels.len() as u32;
+            gpu_asset_voxels.extend([
+                AssetVoxel {
+                    x: 0,
+                    y: 0,
+                    z: 0,
+                    material: encode_voxel(VoxelMaterial::Custom([20, 180, 240])),
+                },
+                AssetVoxel {
+                    x: 1,
+                    y: 1,
+                    z: 1,
+                    material: encode_voxel(VoxelMaterial::Beacon),
+                },
+            ]);
+            gpu_assets.push(RenderAsset {
+                min: [anchor.x - 0.5, anchor.y, anchor.z - 0.5, 0.0],
+                max: [anchor.x + 0.5, anchor.y + 1.0, anchor.z + 0.5, 0.0],
+                anchor: [anchor.x, anchor.y, anchor.z, 0.0],
+                voxel_size: 0.5,
+                yaw_degrees: yaw as f32,
+                ghost: (turn % 2 == 1) as u32,
+                voxel_offset: offset,
+                dimensions: [2, 2, 2, 2],
+                pivot: [1.0, 0.0, 1.0, 0.0],
+            });
+        }
+        assert_gpu_frame_matches_cpu(
+            &gpu,
+            "dynamic replacement/removal and transformed assets",
+            &static_world,
+            &assembled,
+            &cpu_assets,
+            parity_camera(Vec3::new(0.0, 2.5, -4.0)),
+            &dynamic,
+            &gpu_assets,
+            &gpu_asset_voxels,
+        );
+    }
+
+    fn assert_gpu_frame_matches_cpu(
+        gpu: &OffscreenTerrainReadback,
+        name: &str,
+        static_world: &VoxelWorld,
+        cpu_world: &VoxelWorld,
+        cpu_assets: &[CpuRenderAsset],
+        camera: Camera,
+        dynamic_voxels: &[DynamicVoxel],
+        assets: &[RenderAsset],
+        asset_voxels: &[AssetVoxel],
+    ) {
+        let actual = gpu.render(static_world, camera, dynamic_voxels, assets, asset_voxels);
+        let builder = SceneBuilder::new(
+            GraphicsConfig {
+                viewport: Viewport {
+                    width: LOGICAL_WIDTH as usize,
+                    height: LOGICAL_HEIGHT as usize,
+                },
+                max_distance: camera.max_distance,
+            },
+            MaterialGlyphMap,
+        );
+        let scene = builder.build_with_render_assets(cpu_world, cpu_assets, &camera, 0);
+        let mut expected = (0..LOGICAL_HEIGHT as usize)
+            .flat_map(|y| {
+                (0..LOGICAL_WIDTH as usize).map(move |x| {
+                    (
+                        background_glyph_for_direction(
+                            camera
+                                .ray_for_cell(x, y, LOGICAL_WIDTH as usize, LOGICAL_HEIGHT as usize)
+                                .direction,
+                        ) as u32,
+                        [0x50, 0x58, 0x66, 255],
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let terrain = scene
+            .layers
+            .iter()
+            .find(|layer| layer.name == "voxels")
+            .expect("CPU reference terrain layer");
+        for cell in &terrain.cells {
+            let index = cell.y as usize * LOGICAL_WIDTH as usize + cell.x as usize;
+            expected[index] = (
+                cell.glyph as u32,
+                hex_colour(cell.style.fg.as_deref().expect("voxel colour")),
+            );
+        }
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(
+                actual.0, expected.0,
+                "{name}: glyph mismatch at cell {index}"
+            );
+            for channel in 0..4 {
+                assert!(
+                    (actual.1[channel] as i16 - expected.1[channel] as i16).abs() <= 1,
+                    "{name}: colour mismatch at cell {index}, channel {channel}: GPU {:?}, CPU {:?}",
+                    actual.1,
+                    expected.1,
+                );
             }
         }
     }
