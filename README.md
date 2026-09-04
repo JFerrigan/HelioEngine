@@ -1,9 +1,9 @@
 # Heliobound
 
-Heliobound is a native Rust prototype for exploring hard-science-fiction
-worlds through a 3D voxel simulation rendered as a crisp 2D ASCII interface.
-It is designed as an engine foundation: a spatial substrate that can grow into
-systems for exploration, environments, authored scenarios, and simulation.
+Heliobound is a native Rust prototype for exploring 3D voxel worlds through a
+crisp 2D ASCII interface. It is designed as an engine foundation: a spatial
+substrate that can grow into systems for exploration, environments, authored
+scenarios, and simulation.
 
 ## In action
 
